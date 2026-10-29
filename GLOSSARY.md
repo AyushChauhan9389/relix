@@ -39,9 +39,6 @@ _Avoid_: user (ambiguous with profile)
 One person's space inside Relix. It has its own addon list, library, progress, watched flags and settings.
 _Avoid_: user
 
-**Kids profile**:
-A profile restricted to addons a parent allowed, which never sees adult addons.
-
 **Library**:
 The titles a profile has saved, shown as "My List".
 _Avoid_: watchlist, favourites

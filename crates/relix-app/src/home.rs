@@ -6,8 +6,6 @@ use freya::router::*;
 use relix_proto::addon::MetaPreview;
 
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
-use crate::profiles::avatar_color;
-use crate::store::Profile;
 use crate::{Ctx, Route};
 
 pub const BG: (u8, u8, u8) = (20, 20, 20);
@@ -59,7 +57,7 @@ impl Component for Home {
     }
 }
 
-pub fn nav(profile: &Profile) -> Rect {
+pub fn nav() -> Rect {
     let link = |text: &'static str, active: bool| {
         label()
             .text(text)
@@ -91,18 +89,7 @@ pub fn nav(profile: &Profile) -> Rect {
                 .cross_align(Alignment::Center)
                 .spacing(24.)
                 .child(Link::new(Route::Addons).child(link("Addons", false)))
-                .child(link("Search", false))
-                .child(
-                    Link::new(Route::Profiles).child(
-                        rect()
-                            .width(Size::px(32.))
-                            .height(Size::px(32.))
-                            .corner_radius(4.)
-                            .background(avatar_color(profile))
-                            .center()
-                            .child(label().text(profile.name.chars().next().unwrap_or('?').to_uppercase().to_string()).font_weight(FontWeight::BOLD)),
-                    ),
-                ),
+                .child(link("Search", false)),
         )
 }
 

@@ -1,6 +1,5 @@
 //! Local data: profiles and per-profile records, shaped like the sync server's (ADR 0006).
 
-use relix_proto::addon::Addon;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -10,15 +9,11 @@ pub struct Store {
     db: Connection,
 }
 
+// ponytail: one implicit profile for now (profiles UI removed); records keep the id so profiles can return.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     pub id: String,
     pub name: String,
-    pub kids: bool,
-    // ponytail: stored as typed; a 4-digit PIN is a child lock, hashing it wouldn't stop anyone with disk access.
-    pub pin: Option<String>,
-    /// Manifest URLs a kids profile may use.
-    pub allowed_addons: Vec<String>,
 }
 
 /// One synced piece of profile data, see GLOSSARY.md.
@@ -28,19 +23,6 @@ pub struct Record {
     pub kind: String,
     pub key: String,
     pub value: String,
-}
-
-impl Profile {
-    /// Kids profiles get only allowlisted addons; nobody in a kids profile gets adult addons.
-    pub fn visible_addons<'a>(&self, addons: &'a [Addon]) -> Vec<&'a Addon> {
-        addons
-            .iter()
-            .filter(|a| {
-                !self.kids
-                    || (!a.manifest.behavior_hints.adult && self.allowed_addons.contains(&a.manifest_url.to_string()))
-            })
-            .collect()
-    }
 }
 
 impl Store {
@@ -60,10 +42,7 @@ impl Store {
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS profiles (
                  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-                 name TEXT NOT NULL,
-                 kids INTEGER NOT NULL DEFAULT 0,
-                 pin TEXT,
-                 allowed_addons TEXT NOT NULL DEFAULT '[]'
+                 name TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS records (
                  profile TEXT NOT NULL,
@@ -75,43 +54,32 @@ impl Store {
                  PRIMARY KEY (profile, kind, key)
              );",
         )?;
+        let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            // Local write order, for "most recent first" lists.
+            db.execute_batch("ALTER TABLE records ADD COLUMN updated INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 1;")?;
+        }
         Ok(Self { db })
     }
 
-    pub fn create_profile(&self, name: &str, kids: bool) -> Result<Profile> {
-        let id: String = self.db.query_row(
-            "INSERT INTO profiles (name, kids) VALUES (?1, ?2) RETURNING id",
-            params![name, kids],
-            |r| r.get(0),
-        )?;
-        Ok(Profile { id, name: name.into(), kids, pin: None, allowed_addons: vec![] })
-    }
-
-    pub fn save_profile(&self, p: &Profile) -> Result<()> {
-        self.db.execute(
-            "UPDATE profiles SET name = ?2, kids = ?3, pin = ?4, allowed_addons = ?5 WHERE id = ?1",
-            params![p.id, p.name, p.kids, p.pin, serde_json::to_string(&p.allowed_addons)?],
-        )?;
-        Ok(())
+    pub fn create_profile(&self, name: &str) -> Result<Profile> {
+        let id: String =
+            self.db.query_row("INSERT INTO profiles (name) VALUES (?1) RETURNING id", params![name], |r| r.get(0))?;
+        Ok(Profile { id, name: name.into() })
     }
 
     pub fn profiles(&self) -> Result<Vec<Profile>> {
-        let mut stmt = self.db.prepare("SELECT id, name, kids, pin, allowed_addons FROM profiles ORDER BY rowid")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, String>(4)?))
-        })?;
-        rows.map(|row| {
-            let (id, name, kids, pin, allowed) = row?;
-            Ok(Profile { id, name, kids, pin, allowed_addons: serde_json::from_str(&allowed)? })
-        })
-        .collect()
+        let mut stmt = self.db.prepare("SELECT id, name FROM profiles ORDER BY rowid")?;
+        let rows = stmt.query_map([], |r| Ok(Profile { id: r.get(0)?, name: r.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Writes a record and marks it for the next sync.
     pub fn put<T: Serialize>(&self, profile: &str, kind: &str, key: &str, value: &T) -> Result<()> {
         self.db.execute(
-            "INSERT INTO records (profile, kind, key, value, dirty) VALUES (?1, ?2, ?3, ?4, 1)
-             ON CONFLICT (profile, kind, key) DO UPDATE SET value = excluded.value, dirty = 1",
+            "INSERT INTO records (profile, kind, key, value, dirty, updated)
+             VALUES (?1, ?2, ?3, ?4, 1, (SELECT coalesce(max(updated), 0) + 1 FROM records))
+             ON CONFLICT (profile, kind, key) DO UPDATE SET value = excluded.value, dirty = 1, updated = excluded.updated",
             params![profile, kind, key, serde_json::to_string(value)?],
         )?;
         Ok(())
@@ -129,6 +97,19 @@ impl Store {
         Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
     }
 
+    /// Every record of `kind` for a profile, most recently written first.
+    pub fn list<T: DeserializeOwned>(&self, profile: &str, kind: &str) -> Result<Vec<(String, T)>> {
+        let mut stmt = self.db.prepare(
+            "SELECT key, value FROM records WHERE profile = ?1 AND kind = ?2 ORDER BY updated DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map(params![profile, kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.map(|row| {
+            let (key, value) = row?;
+            Ok((key, serde_json::from_str(&value)?))
+        })
+        .collect()
+    }
+
     /// Records changed locally and not yet accepted by the sync server.
     pub fn dirty(&self) -> Result<Vec<Record>> {
         let mut stmt = self.db.prepare("SELECT profile, kind, key, value FROM records WHERE dirty = 1 ORDER BY rowid")?;
@@ -142,22 +123,12 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relix_proto::addon::{Addon, manifest_url};
-
-    fn addon(id: &str, adult: bool) -> Addon {
-        let manifest = serde_json::from_value(serde_json::json!({
-            "id": id, "version": "1.0.0", "name": id,
-            "behaviorHints": { "adult": adult },
-        }))
-        .unwrap();
-        Addon { manifest_url: manifest_url(&format!("https://{id}.example/manifest.json")).unwrap(), manifest }
-    }
 
     #[test]
     fn records_round_trip_per_profile() {
         let store = Store::in_memory().unwrap();
-        let a = store.create_profile("Ayush", false).unwrap();
-        let b = store.create_profile("Kid", true).unwrap();
+        let a = store.create_profile("Ayush").unwrap();
+        let b = store.create_profile("Other").unwrap();
 
         store.put(&a.id, "progress", "tt1:1:1", &42.5).unwrap();
         assert_eq!(store.get::<f64>(&a.id, "progress", "tt1:1:1").unwrap(), Some(42.5));
@@ -170,7 +141,7 @@ mod tests {
     #[test]
     fn local_writes_are_dirty_until_synced() {
         let store = Store::in_memory().unwrap();
-        let p = store.create_profile("Ayush", false).unwrap();
+        let p = store.create_profile("Ayush").unwrap();
         store.put(&p.id, "library", "tt1", &true).unwrap();
         store.put(&p.id, "library", "tt2", &true).unwrap();
 
@@ -179,24 +150,24 @@ mod tests {
     }
 
     #[test]
-    fn profiles_list_in_creation_order() {
+    fn lists_every_record_of_a_kind_newest_first() {
         let store = Store::in_memory().unwrap();
-        store.create_profile("Ayush", false).unwrap();
-        store.create_profile("Kid", true).unwrap();
-        let names: Vec<(String, bool)> = store.profiles().unwrap().into_iter().map(|p| (p.name, p.kids)).collect();
-        assert_eq!(names, [("Ayush".to_owned(), false), ("Kid".to_owned(), true)]);
+        let p = store.create_profile("Ayush").unwrap();
+        store.put(&p.id, "library", "tt1", &"one").unwrap();
+        store.put(&p.id, "library", "tt2", &"two").unwrap();
+        store.put(&p.id, "progress", "tt3", &"other kind").unwrap();
+        store.put(&p.id, "library", "tt1", &"one again").unwrap();
+
+        let got = store.list::<String>(&p.id, "library").unwrap();
+        assert_eq!(got, [("tt1".to_owned(), "one again".to_owned()), ("tt2".to_owned(), "two".to_owned())]);
     }
 
     #[test]
-    fn kids_see_only_allowed_non_adult_addons() {
-        let addons = [addon("cinemeta", false), addon("debrid", false), addon("spicy", true)];
-        let mut kid = Profile { id: "k".into(), name: "Kid".into(), kids: true, pin: None, allowed_addons: vec![] };
-        kid.allowed_addons = vec![addons[0].manifest_url.to_string(), addons[2].manifest_url.to_string()];
-        let ids = |p: &Profile| p.visible_addons(&addons).iter().map(|a| a.manifest.id.clone()).collect::<Vec<_>>();
-
-        assert_eq!(ids(&kid), ["cinemeta"], "adult addons stay hidden even when allowlisted");
-
-        let adult = Profile { kids: false, ..kid };
-        assert_eq!(ids(&adult), ["cinemeta", "debrid", "spicy"]);
+    fn profiles_list_in_creation_order() {
+        let store = Store::in_memory().unwrap();
+        store.create_profile("Ayush").unwrap();
+        store.create_profile("Other").unwrap();
+        let names: Vec<String> = store.profiles().unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["Ayush", "Other"]);
     }
 }

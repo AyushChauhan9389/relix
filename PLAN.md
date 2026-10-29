@@ -24,7 +24,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Search:** queries every catalog that supports `search` in parallel, one row per catalog, debounced at 300ms.
 - **Addon install:** paste a manifest URL, or open a `stremio://` deep link (registered as a URL handler on all three OSes). "Configure" opens the addon's `/configure` page in the system browser.
 - **Torrents:** greyed out with "Coming soon" until phase 4. After that, P2P is off by default and turned on after a one-time notice.
-- **Profiles:** local profiles from the MVP. A kids profile sees only the addons a parent allowed, never addons with `behaviorHints.adult`, and can have a PIN lock.
+- **Profiles:** deferred (removed 2026-10-29). The app runs as one implicit profile; records still carry a profile id so profiles (and kids mode) can return without a migration.
 - **Navigation:** spatial focus from phase 1. Arrow keys, Enter and Esc work on every screen.
 - **Look:** dark, Netflix-like. All colours, spacing and type live in one theme module so a designed theme can drop in later.
 - **Player:** mpv window with uosc. Custom buttons through script messages: next episode, subtitles from addons, stream switcher. Progress comes back from libmpv events.
@@ -66,7 +66,7 @@ Targeted tests only: addon routing and extra encoding, sync merge rules, key der
 ## Phases
 
 0. **Spikes:** the workspace builds; the addon client fetches Cinemeta's home rows and a stream list, with the routing tests passing; a Freya window shows Cinemeta rows; the app launches mpv on a URL stream.
-1. **MVP:** Home, detail page with seasons and episodes, stream list, URL playback, installing addons, local profiles, spatial focus.
+1. **MVP:** Home, detail page with seasons and episodes, stream list, URL playback, installing addons, spatial focus.
 2. **Library:** library, continue-watching, search, discover, subtitles.
 3. **Accounts:** server, sync, encryption, QR login.
 4. **Torrents:** librqbit.
