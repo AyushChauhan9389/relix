@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 freya = { version = "=0.5.0-rc.13", features = ["remote-asset", "sdk-tokio"] }
+libmpv2 = { version = "6", default-features = false }
 relix-proto = { version = "0.1.0", path = "../relix-proto" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "charset"] }
 serde = "1.0.229"
