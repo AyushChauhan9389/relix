@@ -2,9 +2,12 @@ use std::time::Duration;
 
 use freya::animation::*;
 use freya::prelude::*;
+use freya::router::*;
 use relix_proto::addon::MetaPreview;
 
-const BG: (u8, u8, u8) = (20, 20, 20);
+use crate::{Ctx, Route};
+
+pub const BG: (u8, u8, u8) = (20, 20, 20);
 const POSTER_W: f32 = 150.;
 const POSTER_H: f32 = 225.;
 const ROW_H: f32 = POSTER_H + 60.;
@@ -19,27 +22,23 @@ pub struct Row {
     pub metas: Vec<MetaPreview>,
 }
 
-/// Top nav over a vertically virtualized page: item 0 is the hero, the rest are rows.
+/// A vertically virtualized page: item 0 is the hero, the rest are rows.
 #[derive(PartialEq)]
-pub struct Home {
-    pub rows: Vec<Row>,
-}
+pub struct Home;
 
 impl Component for Home {
     fn render(&self) -> impl IntoElement {
-        let featured: Vec<MetaPreview> = self
-            .rows
+        let rows = use_consume::<Ctx>().rows.read().clone();
+        let featured: Vec<MetaPreview> = rows
             .first()
             .map(|r| r.metas.iter().filter(|m| m.background.is_some()).take(FEATURED).cloned().collect())
             .unwrap_or_default();
-        let len = self.rows.len() + 1;
+        let len = rows.len() + 1;
 
         rect()
             .expanded()
-            .background(BG)
-            .color(Color::WHITE)
             .child(
-                VirtualScrollView::new_with_data((featured, self.rows.clone()), |item, (featured, rows)| {
+                VirtualScrollView::new_with_data((featured, rows), |item, (featured, rows)| {
                     if item.index == 0 {
                         Hero { items: featured.clone() }.into()
                     } else {
@@ -49,11 +48,10 @@ impl Component for Home {
                 .length(len)
                 .item_size(ItemSize::Dynamic(Callback::new(|i| if i == 0 { HERO_H } else { ROW_H }))),
             )
-            .child(nav().layer(Layer::Overlay))
     }
 }
 
-fn nav() -> Rect {
+pub fn nav() -> Rect {
     let link = |text: &'static str, active: bool| {
         label()
             .text(text)
@@ -70,8 +68,11 @@ fn nav() -> Rect {
         .cross_align(Alignment::Center)
         .spacing(28.)
         .background(LinearGradient::new().angle(180.).stop(((0, 0, 0, 0.8), 0.)).stop(((0, 0, 0, 0.), 100.)))
-        .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20)))
-        .child(link("Home", true))
+        .child(
+            Link::new(Route::Home)
+                .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20))),
+        )
+        .child(Link::new(Route::Home).child(link("Home", true)))
         .child(link("Series", false))
         .child(link("Movies", false))
         .child(link("My List", false))
@@ -131,20 +132,20 @@ impl Component for Hero {
             .height(Size::px(HERO_H))
             .overflow(Overflow::Clip)
             // Freya doesn't order siblings on the same layer, so every stacked piece gets its own.
-            .maybe_child(behind.map(|m| backdrop(m).layer(1)))
-            .child(backdrop(meta).layer(2).opacity(fade.get().value()))
+            .maybe_child(behind.map(|m| backdrop(m.background.as_deref()).layer(1)))
+            .child(backdrop(meta.background.as_deref()).layer(2).opacity(fade.get().value()))
             .child(details(meta).layer(5))
             .child(dots(len, current).layer(5))
             .into_element()
     }
 }
 
-fn layer() -> Rect {
+pub fn layer() -> Rect {
     rect().position(Position::new_absolute().top(0.).left(0.)).width(Size::percent(100.)).height(Size::percent(100.))
 }
 
-fn backdrop(meta: &MetaPreview) -> Rect {
-    match meta.background.as_deref().and_then(|u| Url::parse(u).ok()) {
+pub fn backdrop(background: Option<&str>) -> Rect {
+    match background.and_then(|u| Url::parse(u).ok()) {
         Some(url) => layer()
             .child(
                 ImageViewer::new(url)
@@ -169,20 +170,11 @@ fn shade() -> Rect {
 }
 
 fn details(meta: &MetaPreview) -> Rect {
-    let title: Element = match meta.logo.as_deref().and_then(|u| Url::parse(u).ok()) {
-        Some(url) => ImageViewer::new(url)
-            .width(Size::px(420.))
-            .height(Size::px(150.))
-            .aspect_ratio(AspectRatio::Min)
-            .into(),
-        None => label().text(meta.name.clone()).font_size(56.).font_weight(FontWeight::BOLD).into(),
-    };
-
     rect()
         .position(Position::new_absolute().left(48.).bottom(110.))
         .width(Size::px(560.))
         .spacing(16.)
-        .child(title)
+        .child(title_art(meta.logo.as_deref(), &meta.name))
         .maybe_child(meta.release_info.clone().map(|r| label().text(r).font_size(16.).color((70, 211, 105))))
         .maybe_child(meta.description.clone().map(|d| {
             paragraph().max_lines(3).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
@@ -191,12 +183,32 @@ fn details(meta: &MetaPreview) -> Rect {
             rect()
                 .horizontal()
                 .spacing(12.)
-                .child(button("Play", (255, 255, 255), (0, 0, 0)))
-                .child(button("More Info", (109, 109, 110, 0.7), (255, 255, 255))),
+                .child(button("Play", (255, 255, 255), (0, 0, 0)).on_press(open_title(meta)))
+                .child(button("More Info", (109, 109, 110, 0.7), (255, 255, 255)).on_press(open_title(meta))),
         )
 }
 
-fn button(text: &'static str, bg: impl Into<Color>, fg: impl Into<Color>) -> impl IntoElement {
+/// Navigates to a title's detail page.
+pub fn open_title(meta: &MetaPreview) -> impl FnMut(Event<PressEventData>) + 'static {
+    let route = Route::Detail { kind: meta.r#type.clone(), id: meta.id.clone() };
+    move |_| {
+        let _ = RouterContext::get().push(route.clone());
+    }
+}
+
+/// The title's logo, or its name when the addon has no logo.
+pub fn title_art(logo: Option<&str>, name: &str) -> Element {
+    match logo.and_then(|u| Url::parse(u).ok()) {
+        Some(url) => ImageViewer::new(url)
+            .width(Size::px(420.))
+            .height(Size::px(150.))
+            .aspect_ratio(AspectRatio::Min)
+            .into(),
+        None => label().text(name.to_owned()).font_size(56.).font_weight(FontWeight::BOLD).into(),
+    }
+}
+
+pub fn button(text: &'static str, bg: impl Into<Color>, fg: impl Into<Color>) -> Rect {
     rect()
         .padding(Gaps::new(10., 28., 10., 24.))
         .corner_radius(4.)
@@ -247,6 +259,7 @@ impl Component for PosterRow {
 fn poster(meta: &MetaPreview) -> Element {
     match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
         Some(url) => rect()
+            .on_press(open_title(meta))
             .corner_radius(4.)
             .overflow(Overflow::Clip)
             .child(ImageViewer::new(url).width(Size::px(POSTER_W)).height(Size::px(POSTER_H)))
@@ -257,6 +270,7 @@ fn poster(meta: &MetaPreview) -> Element {
             .corner_radius(4.)
             .background((50, 50, 50))
             .center()
+            .on_press(open_title(meta))
             .child(meta.name.clone())
             .into(),
     }

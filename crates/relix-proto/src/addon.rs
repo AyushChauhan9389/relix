@@ -339,3 +339,36 @@ pub struct Subtitle {
     pub url: String,
     pub lang: String,
 }
+
+/// A series' episodes grouped by season: regular seasons ascending, specials (season 0) last.
+pub fn seasons(videos: &[Video]) -> Vec<(u32, Vec<&Video>)> {
+    let mut map = std::collections::BTreeMap::<u32, Vec<&Video>>::new();
+    for v in videos {
+        if let Some(season) = v.season {
+            map.entry(season).or_default().push(v);
+        }
+    }
+    for eps in map.values_mut() {
+        eps.sort_by_key(|v| v.episode);
+    }
+    let mut out: Vec<_> = map.into_iter().collect();
+    let specials_first = out.first().is_some_and(|(s, _)| *s == 0);
+    out.rotate_left(usize::from(specials_first));
+    out
+}
+
+/// Stream responses keyed by the answering addon's index, ordered by addon-list order.
+pub fn stream_groups(mut arrived: Vec<(usize, Vec<Stream>)>) -> Vec<(usize, Vec<Stream>)> {
+    arrived.sort_by_key(|(i, _)| *i);
+    arrived
+}
+
+impl Stream {
+    /// The URL mpv can play directly. Torrents, YouTube and external links aren't playable yet.
+    pub fn playable_url(&self) -> Option<&str> {
+        match &self.source {
+            StreamSource::Url { url } => Some(url),
+            _ => None,
+        }
+    }
+}
