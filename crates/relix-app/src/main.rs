@@ -1,14 +1,20 @@
+mod addons;
 mod detail;
 mod home;
 mod player;
+mod store;
+
+use std::rc::Rc;
 
 use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, manifest_url};
 use tokio::task::JoinSet;
 
+use addons::Addons;
 use detail::Detail;
 use home::{Home, Row};
+use store::{Profile, Store};
 
 /// Preinstalled addons (PLAN.md: defaults).
 const DEFAULT_ADDONS: [&str; 2] =
@@ -29,12 +35,45 @@ fn main() {
     launch(LaunchConfig::new().with_window(WindowConfig::new(app).with_title("Relix").with_size(1440., 900.)))
 }
 
+/// Where Relix keeps its database: the usual per-user app data folder of each OS.
+fn data_dir() -> std::path::PathBuf {
+    let env = |k| std::env::var_os(k).map(std::path::PathBuf::from);
+    let base = if cfg!(windows) {
+        env("APPDATA")
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|h| h.join("Library/Application Support"))
+    } else {
+        env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))
+    };
+    base.unwrap_or_default().join("relix")
+}
+
 /// App-wide data every screen reads.
 #[derive(Clone)]
 pub struct Ctx {
     pub http: reqwest::Client,
+    pub store: Rc<Store>,
+    pub profile: State<Profile>,
+    /// The current profile's addon list, in order.
     pub addons: State<Vec<Addon>>,
     pub rows: State<Vec<Row>>,
+}
+
+impl Ctx {
+    /// The addons the current profile may use (kids filtering applied).
+    pub fn visible_addons(&self) -> Vec<Addon> {
+        self.profile.read().visible_addons(&self.addons.read()).into_iter().cloned().collect()
+    }
+
+    /// Persists the addon list and rebuilds Home's rows from it.
+    pub fn save_addons(&self, addons: Vec<Addon>) {
+        let mut this = self.clone();
+        if let Err(e) = self.store.put(&self.profile.peek().id, "addons", "list", &addons) {
+            eprintln!("saving addons: {e}");
+        }
+        this.addons.set(addons);
+        spawn(load_rows(this));
+    }
 }
 
 pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: String) -> reqwest::Result<T> {
@@ -42,12 +81,25 @@ pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: Str
 }
 
 fn app() -> impl IntoElement {
-    let addons = use_state(Vec::<Addon>::new);
+    use_init_theme(dark_theme);
+    let store = use_hook(|| Rc::new(Store::open(&data_dir().join("relix.db")).expect("open database")));
+    // ponytail: first profile until the profile picker (phase 1, slice 4) lands.
+    let profile = use_state(|| {
+        let first = store.profiles().ok().and_then(|p| p.into_iter().next());
+        first.unwrap_or_else(|| store.create_profile("Me", false).expect("create profile"))
+    });
+    let saved = store.get::<Vec<Addon>>(&profile.peek().id, "addons", "list").ok().flatten();
+    let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
-    let ctx = use_provide_context(|| Ctx { http: reqwest::Client::new(), addons, rows });
+    let ctx = use_provide_context(|| Ctx { http: reqwest::Client::new(), store: store.clone(), profile, addons, rows });
 
     use_hook(move || {
-        spawn(load_home(ctx));
+        spawn(async move {
+            if saved.is_none() {
+                install_defaults(&ctx).await;
+            }
+            load_rows(ctx).await;
+        });
     });
 
     // `--route /title/movie/tt1375666` opens a screen directly, for development.
@@ -59,30 +111,49 @@ fn app() -> impl IntoElement {
     Router::<Route>::new(move || RouterConfig::default().with_initial_path(initial.clone()))
 }
 
-async fn load_home(mut ctx: Ctx) {
+async fn install_defaults(ctx: &Ctx) {
+    let mut addons = vec![];
     for url in DEFAULT_ADDONS {
         let url = manifest_url(url).unwrap();
         match get::<Manifest>(ctx.http.clone(), url.to_string()).await {
-            Ok(manifest) => ctx.addons.write().push(Addon { manifest_url: url, manifest }),
+            Ok(manifest) => addons.push(Addon { manifest_url: url, manifest }),
             Err(e) => eprintln!("manifest {url}: {e}"),
         }
     }
+    if let Err(e) = ctx.store.put(&ctx.profile.peek().id, "addons", "list", &addons) {
+        eprintln!("saving addons: {e}");
+    }
+    let mut list = ctx.addons;
+    list.set(addons);
+}
 
-    // Rows appear in addon order; each fills in as its catalog answers.
-    let addons = ctx.addons.read().clone();
+/// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
+pub async fn load_rows(mut ctx: Ctx) {
+    let addons = ctx.visible_addons();
+    let mut rows = vec![];
     let mut set = JoinSet::new();
     for addon in &addons {
         for c in addon.manifest.home_catalogs() {
             let name = c.name.clone().unwrap_or_else(|| c.id.clone());
-            let kind = if c.r#type == "movie" { "Movies" } else { "Series" };
-            let i = ctx.rows.read().len();
-            ctx.rows.write().push(Row { title: format!("{name} {kind}"), metas: vec![] });
+            let kind = match c.r#type.as_str() {
+                "movie" => "Movies".to_owned(),
+                "series" => "Series".to_owned(),
+                other => other.to_owned(),
+            };
+            let i = rows.len();
+            rows.push(Row { title: format!("{name} {kind}"), metas: vec![] });
             let url = ResourceRequest::new("catalog", &c.r#type, &c.id).url(addon);
             let http = ctx.http.clone();
             set.spawn(async move { (i, get::<CatalogResponse>(http, url).await) });
         }
     }
+    let titles: Vec<String> = rows.iter().map(|r| r.title.clone()).collect();
+    ctx.rows.set(rows);
     while let Some(Ok((i, res))) = set.join_next().await {
+        // A newer load may have replaced the rows meanwhile; only fill our own.
+        if ctx.rows.peek().get(i).map(|r| &r.title) != titles.get(i) {
+            return;
+        }
         match res {
             Ok(r) => ctx.rows.write()[i].metas = r.metas,
             Err(e) => eprintln!("catalog {i}: {e}"),
@@ -98,6 +169,8 @@ pub enum Route {
         Home,
         #[route("/title/:kind/:id")]
         Detail { kind: String, id: String },
+        #[route("/addons")]
+        Addons,
 }
 
 #[derive(PartialEq)]

@@ -82,6 +82,7 @@ pub fn nav() -> Rect {
                 .horizontal()
                 .cross_align(Alignment::Center)
                 .spacing(24.)
+                .child(Link::new(Route::Addons).child(link("Addons", false)))
                 .child(link("Search", false))
                 .child(rect().width(Size::px(32.)).height(Size::px(32.)).corner_radius(4.).background((0, 113, 235))),
         )

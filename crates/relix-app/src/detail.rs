@@ -30,7 +30,7 @@ impl Component for Detail {
         use_side_effect({
             let (kind, id, ctx) = (self.kind.clone(), self.id.clone(), ctx.clone());
             move || {
-                let addons = ctx.addons.read().clone();
+                let addons = ctx.visible_addons();
                 let req = ResourceRequest::new("meta", &kind, &id);
                 if meta.peek().is_some() || route(&addons, &req).next().is_none() {
                     return;
@@ -61,7 +61,7 @@ impl Component for Detail {
                 streams.set(vec![]);
                 let (kind, ctx) = (kind.clone(), ctx.clone());
                 spawn(async move {
-                    let addons = ctx.addons.peek().clone();
+                    let addons = ctx.visible_addons();
                     let req = ResourceRequest::new("stream", &kind, &id);
                     let mut set = JoinSet::new();
                     for (i, addon) in addons.iter().enumerate().filter(|(_, a)| a.serves(&req)) {
@@ -86,7 +86,7 @@ impl Component for Detail {
         let Some(meta) = meta.read().clone() else {
             return rect().expanded().center().child(label().text("Loading…").color(MUTED)).into_element();
         };
-        let addons = ctx.addons.read().clone();
+        let addons = ctx.visible_addons();
         let has_stream_addons = addons.iter().any(|a| a.serves(&ResourceRequest::new("stream", &self.kind, &self.id)));
         let groups: Vec<(String, Vec<Stream>)> = stream_groups(streams.read().clone())
             .into_iter()
