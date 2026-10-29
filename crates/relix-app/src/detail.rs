@@ -4,7 +4,7 @@ use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{
     Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, SubtitlesResponse, Video, route, seasons, stream_groups,
-    subtitle_requests,
+    subtitle_requests, without_torrents,
 };
 use tokio::task::JoinSet;
 
@@ -33,6 +33,8 @@ impl Component for Detail {
         // The movie itself, or the episode the user picked.
         let mut video = use_state(|| None::<String>);
         let mut streams = use_state(Vec::<(usize, Vec<Stream>)>::new);
+        // Until every addon has answered for the chosen video.
+        let mut searching = use_state(|| false);
         let (store, profile) = (ctx.store.clone(), ctx.profile.clone());
         let mut watch = use_state(|| store.get::<WatchState>(&profile, "progress", &self.id).ok().flatten());
         let mut watched = use_state(|| {
@@ -158,6 +160,7 @@ impl Component for Detail {
             move || {
                 let Some(id) = video.read().clone() else { return };
                 streams.set(vec![]);
+                searching.set(true);
                 let (kind, ctx) = (kind.clone(), ctx.clone());
                 spawn(async move {
                     let addons = ctx.all_addons();
@@ -172,12 +175,13 @@ impl Component for Detail {
                         if video.peek().as_deref() != Some(id.as_str()) {
                             return;
                         }
-                        match res {
-                            Ok(r) if !r.streams.is_empty() => streams.write().push((i, r.streams)),
+                        match res.map(|r| without_torrents(r.streams)) {
+                            Ok(found) if !found.is_empty() => streams.write().push((i, found)),
                             Ok(_) => {}
                             Err(e) => eprintln!("streams from addon {i}: {e}"),
                         }
                     }
+                    searching.set(false);
                 });
             }
         });
@@ -230,7 +234,7 @@ impl Component for Detail {
                                 .into_element()
                             }))
                     }))
-                    .child(stream_panel(picked.is_some(), has_stream_addons, groups, play)),
+                    .child(stream_panel(picked.is_some(), has_stream_addons, *searching.read(), groups, play)),
             ))
             .into_element()
     }
@@ -308,7 +312,7 @@ fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -
 /// What playing a stream needs: its URL, request headers and filename hint.
 type Play = (String, HashMap<String, String>, Option<String>);
 
-fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
+fn stream_panel(picked: bool, has_stream_addons: bool, searching: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
     let panel = rect().width(Size::px(460.)).spacing(10.).child(label().text("Streams").font_size(22.).font_weight(FontWeight::BOLD));
     let note = |text: &'static str| label().text(text).font_size(15.).color(MUTED);
     if !has_stream_addons {
@@ -318,7 +322,11 @@ fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<
         return panel.child(note("Pick an episode to see its streams."));
     }
     if groups.is_empty() {
-        return panel.child(note("Looking for streams…"));
+        return panel.child(note(if searching {
+            "Looking for streams…"
+        } else {
+            "No playable streams found. Torrent addons need a debrid service (e.g. Torrentio with Real-Debrid)."
+        }));
     }
     panel.children(groups.into_iter().map(|(addon, streams)| {
         rect()
@@ -342,11 +350,7 @@ fn stream_card(stream: Stream, play: EventHandler<Play>) -> Element {
         .background((32, 32, 32))
         .maybe(url.is_none(), |el| el.opacity(0.45))
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
-        .child(paragraph().font_size(13.).color(MUTED).span(title))
-        .maybe_child(
-            matches!(stream.source, relix_proto::addon::StreamSource::Torrent { .. })
-                .then(|| label().text("Torrent · coming soon").font_size(12.).color((229, 9, 20))),
-        );
+        .child(paragraph().font_size(13.).color(MUTED).span(title));
     match url {
         Some(url) => {
             let filename = stream.behavior_hints.filename.clone();

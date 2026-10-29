@@ -438,3 +438,9 @@ pub fn with_admin_addons(user: &[Addon], admin: &[Addon], enabled: bool) -> Vec<
     let extra = admin.iter().filter(|a| enabled && !user.iter().any(|u| u.manifest.id == a.manifest.id));
     user.iter().chain(extra).cloned().collect()
 }
+
+/// Relix doesn't play torrents (ADR 0008), so infoHash streams are dropped before display.
+/// Debrid-configured addons return URL streams instead, which are kept.
+pub fn without_torrents(streams: Vec<Stream>) -> Vec<Stream> {
+    streams.into_iter().filter(|s| !matches!(s.source, StreamSource::Torrent { .. })).collect()
+}

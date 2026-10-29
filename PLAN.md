@@ -12,7 +12,6 @@ Vocabulary is in [GLOSSARY.md](./GLOSSARY.md). Decisions that are hard to revers
 | Player | libmpv2, mpv owns its window, bundled uosc restyled |
 | Local data | SQLite via rusqlite (bundled), `records(profile, kind, key, value, seq, dirty)` |
 | Server | axum + SQLite (WAL), single binary, Server-Sent Events push |
-| Torrents | librqbit, later, behind `stream_url(info_hash, file_idx) -> Url` |
 
 Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `relix-proto` (shared addon + sync types).
 
@@ -23,7 +22,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Detail page:** streams grouped by addon, in addon order, filling in as each addon answers.
 - **Search:** queries every catalog that supports `search` in parallel, one row per catalog, debounced at 300ms.
 - **Addon install:** paste a manifest URL, or open a `stremio://` deep link (registered as a URL handler on all three OSes). "Configure" opens the addon's `/configure` page in the system browser.
-- **Torrents:** greyed out with "Coming soon" until phase 4. After that, P2P is off by default and turned on after a one-time notice.
+- **Torrents:** not supported ([ADR 0008](docs/adr/0008-no-built-in-torrent-playback.md)). Torrent streams are hidden; debrid-configured addons provide URL streams instead.
 - **Profiles:** deferred (removed 2026-10-29). The app runs as one implicit profile; records still carry a profile id so profiles (and kids mode) can return without a migration.
 - **Navigation:** spatial focus from phase 1. Arrow keys, Enter and Esc work on every screen.
 - **Look:** dark, Netflix-like. All colours, spacing and type live in one theme module so a designed theme can drop in later.
@@ -70,5 +69,4 @@ Targeted tests only: addon routing and extra encoding, sync merge rules, key der
 1. **MVP:** Home, detail page with seasons and episodes, stream list, URL playback, installing addons, spatial focus.
 2. **Library:** library, continue-watching, search, discover, subtitles.
 3. **Accounts:** server, sync, encryption, password login on every device.
-4. **Torrents:** librqbit.
-5. **Polish:** auto-play the next episode, more player features, design pass.
+4. **Polish:** auto-play the next episode, more player features, design pass.

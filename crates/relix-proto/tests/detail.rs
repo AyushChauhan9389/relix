@@ -56,3 +56,14 @@ fn only_url_streams_are_playable_in_the_mvp() {
     assert_eq!(playable(serde_json::json!({ "externalUrl": "https://x" })), None);
     assert!(matches!(stream(serde_json::json!({ "infoHash": "abc" })).source, StreamSource::Torrent { .. }));
 }
+
+#[test]
+fn torrent_streams_are_dropped_everything_else_kept() {
+    let streams = vec![
+        stream(serde_json::json!({ "infoHash": "abc", "fileIdx": 0 })),
+        stream(serde_json::json!({ "url": "https://debrid/a.mkv" })),
+        stream(serde_json::json!({ "externalUrl": "https://x" })),
+    ];
+    let kept: Vec<_> = relix_proto::addon::without_torrents(streams).into_iter().map(|s| s.source).collect();
+    assert!(matches!(kept.as_slice(), [StreamSource::Url { .. }, StreamSource::External { .. }]));
+}
