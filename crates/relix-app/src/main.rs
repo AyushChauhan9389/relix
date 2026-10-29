@@ -1,5 +1,6 @@
 mod addons;
 mod detail;
+mod focus;
 mod home;
 mod player;
 mod profiles;
@@ -14,6 +15,7 @@ use tokio::task::JoinSet;
 
 use addons::Addons;
 use detail::Detail;
+use focus::{Dir, Registry};
 use home::{Home, Row};
 use profiles::Profiles;
 use store::{Profile, Store};
@@ -205,8 +207,26 @@ impl Component for Shell {
     fn render(&self) -> impl IntoElement {
         let profile = use_consume::<Ctx>().profile.read().clone();
         let picking = RouterContext::get().current::<Route>() == Route::Profiles;
+        let registry = use_provide_context(Registry::default);
         rect()
             .expanded()
+            .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                let dir = match e.key {
+                    Key::Named(NamedKey::ArrowUp) => Dir::Up,
+                    Key::Named(NamedKey::ArrowDown) => Dir::Down,
+                    Key::Named(NamedKey::ArrowLeft) => Dir::Left,
+                    Key::Named(NamedKey::ArrowRight) => Dir::Right,
+                    Key::Named(NamedKey::Escape) => {
+                        let router = RouterContext::get();
+                        if router.can_go_back() {
+                            router.go_back();
+                        }
+                        return;
+                    }
+                    _ => return,
+                };
+                registry.navigate(dir);
+            })
             .background(home::BG)
             .color(Color::WHITE)
             .child(Outlet::<Route>::new())

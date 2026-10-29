@@ -3,6 +3,7 @@ use freya::router::*;
 use relix_proto::addon::{Meta, MetaResponse, ResourceRequest, Stream, StreamsResponse, Video, route, seasons, stream_groups};
 use tokio::task::JoinSet;
 
+use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::home::{backdrop, layer, title_art};
 use crate::{Ctx, get, player};
 
@@ -19,6 +20,8 @@ pub struct Detail {
 impl Component for Detail {
     fn render(&self) -> impl IntoElement {
         let ctx = use_consume::<Ctx>();
+        let page = use_scroller();
+        use_page_scroller(page);
         let mut meta = use_state(|| None::<Meta>);
         let mut season = use_state(|| None::<u32>);
         // The movie itself, or the episode the user picked.
@@ -98,7 +101,7 @@ impl Component for Detail {
         let episodes = all_seasons.iter().find(|(n, _)| Some(*n) == current_season).map(|(_, e)| e.clone()).unwrap_or_default();
         let picked = video.read().clone();
 
-        ScrollView::new()
+        page.wrap(ScrollView::new_controlled(page.controller).scroll_with_arrows(false)
             .child(header(&meta))
             .child(
                 rect()
@@ -114,20 +117,21 @@ impl Component for Detail {
                                 rect().horizontal().spacing(8.).children(all_seasons.iter().map(|(n, _)| {
                                     let n = *n;
                                     let active = Some(n) == current_season;
-                                    chip(if n == 0 { "Specials".into() } else { format!("Season {n}") }, active)
-                                        .on_press(move |_| season.set(Some(n)))
+                                    let text = if n == 0 { "Specials".into() } else { format!("Season {n}") };
+                                    Focusable { radius: 16., ..Focusable::new(chip(text, active), move |()| season.set(Some(n))) }
                                         .into_element()
                                 })),
                             )
                             .children(episodes.iter().map(|ep| {
                                 let id = ep.id.clone();
-                                episode_row(ep, picked.as_deref() == Some(&ep.id))
-                                    .on_press(move |_| video.set(Some(id.clone())))
-                                    .into_element()
+                                Focusable::new(episode_row(ep, picked.as_deref() == Some(&ep.id)), move |()| {
+                                    video.set(Some(id.clone()))
+                                })
+                                .into_element()
                             }))
                     }))
                     .child(stream_panel(picked.is_some(), has_stream_addons, groups)),
-            )
+            ))
             .into_element()
     }
 }
@@ -148,7 +152,7 @@ fn header(meta: &Meta) -> Rect {
                 .padding(Gaps::new(96., 48., 32., 48.))
                 .spacing(16.)
                 .main_align(Alignment::End)
-                .child(label().text("‹ Back").font_size(16.).color(MUTED).on_press(|_| RouterContext::get().go_back()))
+                .child(Focusable::new(label().text("‹ Back").font_size(16.).color(MUTED), |()| RouterContext::get().go_back()))
                 .child(title_art(meta.logo.as_deref(), &meta.name))
                 .child(label().text(info.join("   ")).font_size(16.).color((70, 211, 105)))
                 .maybe_child(meta.description.clone().map(|d| {
@@ -221,29 +225,30 @@ fn stream_card(stream: Stream) -> Element {
     let headers = stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default();
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
     let title = stream.title.clone().or(stream.description.clone()).unwrap_or_default();
-    rect()
+    let card = rect()
         .width(Size::fill())
         .padding(Gaps::new_all(12.))
         .spacing(4.)
         .corner_radius(6.)
         .background((32, 32, 32))
         .maybe(url.is_none(), |el| el.opacity(0.45))
-        .map(url, |el, url| {
-            el.on_press(move |_| {
-                let (url, headers) = (url.clone(), headers.clone());
-                // mpv blocks until its window closes, so it gets its own thread.
-                std::thread::spawn(move || {
-                    if let Err(e) = player::play(&url, &headers) {
-                        eprintln!("mpv: {e}");
-                    }
-                });
-            })
-        })
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
         .child(paragraph().font_size(13.).color(MUTED).span(title))
         .maybe_child(
             matches!(stream.source, relix_proto::addon::StreamSource::Torrent { .. })
                 .then(|| label().text("Torrent · coming soon").font_size(12.).color((229, 9, 20))),
-        )
-        .into()
+        );
+    match url {
+        Some(url) => Focusable::new(card, move |()| {
+            let (url, headers) = (url.clone(), headers.clone());
+            // mpv blocks until its window closes, so it gets its own thread.
+            std::thread::spawn(move || {
+                if let Err(e) = player::play(&url, &headers) {
+                    eprintln!("mpv: {e}");
+                }
+            });
+        })
+        .into(),
+        None => card.into(),
+    }
 }

@@ -5,6 +5,7 @@ use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::MetaPreview;
 
+use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
 use crate::profiles::avatar_color;
 use crate::store::Profile;
 use crate::{Ctx, Route};
@@ -30,6 +31,8 @@ pub struct Home;
 
 impl Component for Home {
     fn render(&self) -> impl IntoElement {
+        let page = use_scroller();
+        use_page_scroller(page);
         let rows = use_consume::<Ctx>().rows.read().clone();
         let featured: Vec<MetaPreview> = rows
             .first()
@@ -37,19 +40,22 @@ impl Component for Home {
             .unwrap_or_default();
         let len = rows.len() + 1;
 
-        rect()
-            .expanded()
-            .child(
-                VirtualScrollView::new_with_data((featured, rows), |item, (featured, rows)| {
+        page.wrap(
+            VirtualScrollView::new_with_data_controlled(
+                (featured, rows),
+                |item, (featured, rows)| {
                     if item.index == 0 {
                         Hero { items: featured.clone() }.into()
                     } else {
                         PosterRow { row: rows[item.index - 1].clone() }.into()
                     }
-                })
-                .length(len)
-                .item_size(ItemSize::Dynamic(Callback::new(|i| if i == 0 { HERO_H } else { ROW_H }))),
+                },
+                page.controller,
             )
+            .scroll_with_arrows(false)
+            .length(len)
+            .item_size(ItemSize::Dynamic(Callback::new(|i| if i == 0 { HERO_H } else { ROW_H }))),
+        )
     }
 }
 
@@ -196,17 +202,17 @@ fn details(meta: &MetaPreview) -> Rect {
             rect()
                 .horizontal()
                 .spacing(12.)
-                .child(button("Play", (255, 255, 255), (0, 0, 0)).on_press(open_title(meta)))
-                .child(button("More Info", (109, 109, 110, 0.7), (255, 255, 255)).on_press(open_title(meta))),
+                .child(Focusable::new(button("Play", (255, 255, 255), (0, 0, 0)), open_title(meta)))
+                .child(Focusable::new(button("More Info", (109, 109, 110, 0.7), (255, 255, 255)), open_title(meta))),
         )
 }
 
 /// Navigates to a title's detail page.
-pub fn open_title(meta: &MetaPreview) -> impl FnMut(Event<PressEventData>) + 'static {
+pub fn open_title(meta: &MetaPreview) -> EventHandler<()> {
     let route = Route::Detail { kind: meta.r#type.clone(), id: meta.id.clone() };
-    move |_| {
+    EventHandler::new(move |()| {
         let _ = RouterContext::get().push(route.clone());
-    }
+    })
 }
 
 /// The title's logo, or its name when the addon has no logo.
@@ -251,6 +257,7 @@ struct PosterRow {
 
 impl Component for PosterRow {
     fn render(&self) -> impl IntoElement {
+        let row = use_scroller();
         let metas = self.row.metas.clone();
         let len = metas.len();
         rect()
@@ -259,20 +266,26 @@ impl Component for PosterRow {
             .spacing(10.)
             .child(label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD))
             .child(
-                VirtualScrollView::new_with_data(metas, |item, metas: &Vec<MetaPreview>| {
-                    rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(poster(&metas[item.index])).into()
-                })
-                .direction(Direction::Horizontal)
-                .length(len)
-                .item_size(POSTER_W + 8.),
+                row.wrap(
+                    VirtualScrollView::new_with_data_controlled(
+                        (metas, row),
+                        |item, (metas, row): &(Vec<MetaPreview>, Scroller)| {
+                            rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(poster(&metas[item.index], *row)).into()
+                        },
+                        row.controller,
+                    )
+                    .direction(Direction::Horizontal)
+                    .scroll_with_arrows(false)
+                    .length(len)
+                    .item_size(POSTER_W + 8.),
+                ),
             )
     }
 }
 
-fn poster(meta: &MetaPreview) -> Element {
-    match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
+fn poster(meta: &MetaPreview, row: Scroller) -> Element {
+    let art: Element = match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
         Some(url) => rect()
-            .on_press(open_title(meta))
             .corner_radius(4.)
             .overflow(Overflow::Clip)
             .child(ImageViewer::new(url).width(Size::px(POSTER_W)).height(Size::px(POSTER_H)))
@@ -283,8 +296,8 @@ fn poster(meta: &MetaPreview) -> Element {
             .corner_radius(4.)
             .background((50, 50, 50))
             .center()
-            .on_press(open_title(meta))
             .child(meta.name.clone())
             .into(),
-    }
+    };
+    Focusable::new(art, open_title(meta)).row(row).into()
 }

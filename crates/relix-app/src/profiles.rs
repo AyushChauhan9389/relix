@@ -1,6 +1,7 @@
 use freya::prelude::*;
 use freya::router::*;
 
+use crate::focus::Focusable;
 use crate::home::button;
 use crate::store::Profile;
 use crate::{Ctx, Route};
@@ -65,14 +66,13 @@ impl Component for Profiles {
                     .spacing(28.)
                     .children(list.read().iter().map(|p| {
                         let (ctx, p2) = (ctx.clone(), p.clone());
-                        avatar(p)
-                            .on_press(move |_| {
-                                ctx.switch_profile(p2.clone());
-                                let _ = RouterContext::get().replace(Route::Home);
-                            })
-                            .into_element()
+                        Focusable::new(avatar(p), move |()| {
+                            ctx.switch_profile(p2.clone());
+                            let _ = RouterContext::get().replace(Route::Home);
+                        })
+                        .into_element()
                     }))
-                    .child(add_tile().on_press(move |_| adding.toggle())),
+                    .child(Focusable::new(add_tile(), move |()| adding.toggle())),
             )
             .maybe(*adding.read(), |el| {
                 el.child(
