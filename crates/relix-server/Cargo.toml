@@ -11,12 +11,14 @@ futures-util = "0.3.34"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "builder", "hostname", "ring", "rustls-platform-verifier"] }
 rand = "0.10.3"
 relix-proto = { version = "0.1.0", path = "../relix-proto" }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
+url = "2.5.8"
 
 [dev-dependencies]
 http-body-util = "0.1.5"

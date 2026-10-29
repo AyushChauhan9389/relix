@@ -36,3 +36,15 @@ Configure with environment variables: `RELIX_DB`, `RELIX_ADDR`, `RELIX_SMTP_URL`
 `RELIX_VERIFY_EMAIL=true|false`. In the app, open **Account** and point it at the server URL.
 The addon list is encrypted on the device before upload; the server never sees addon URLs or debrid keys.
 
+### Admin addons
+
+Set `RELIX_ADMIN_TOKEN` on the server to publish addons to every signed-in account. Users see them under
+**Addons → From your server** with one switch (on by default, synced); their own copy of the same addon wins.
+
+```sh
+export RELIX_ADMIN_TOKEN=...                 # same value the server runs with
+relix-server admin add https://anime-kitsu.strem.fun/manifest.json
+relix-server admin list
+relix-server admin remove 1                  # RELIX_SERVER_URL defaults to http://127.0.0.1:8787
+```
+

@@ -85,3 +85,16 @@ pub struct PullResponse {
 
 /// Record kinds whose values are encrypted with the data key before they leave the device.
 pub const ENCRYPTED_KINDS: [&str; 1] = ["addons"];
+
+/// An addon the server admin publishes to every signed-in account; users can switch them off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAddon {
+    pub id: u64,
+    #[serde(flatten)]
+    pub addon: crate::addon::Addon,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddedAdminAddon {
+    pub id: u64,
+}

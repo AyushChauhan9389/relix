@@ -27,7 +27,7 @@ impl Component for Browse {
         let mut more = use_state(|| false);
 
         let catalogs = move |ctx: &Ctx| -> Vec<(usize, Catalog)> {
-            let addons = ctx.addons.read().clone();
+            let addons = ctx.all_addons();
             discover_catalogs(&addons, &kind.read()).map(|(i, c)| (i, c.clone())).collect()
         };
 
@@ -38,7 +38,7 @@ impl Component for Browse {
                 let ctx = ctx.clone();
                 let Some((i, c)) = catalogs(&ctx).get(*picked.peek()).cloned() else { return };
                 let g = genre.peek().clone();
-                let addons = ctx.addons.peek().clone();
+                let addons = ctx.all_addons();
                 let url = c.discover_request(g.as_deref(), skip).url(&addons[i]);
                 spawn(async move {
                     match get::<CatalogResponse>(ctx.http.clone(), url).await {
@@ -60,7 +60,7 @@ impl Component for Browse {
             let (ctx, load) = (ctx.clone(), load.clone());
             move || {
                 let k = kind.read().clone();
-                let _ = (picked.read(), genre.read(), ctx.addons.read());
+                let _ = (picked.read(), genre.read(), ctx.all_addons());
                 if *last_kind.peek() != k {
                     // A new type starts from its first catalog, unfiltered; those writes rerun this.
                     last_kind.set(k);
@@ -75,7 +75,7 @@ impl Component for Browse {
 
         let list = catalogs(&ctx);
         let current = list.get(*picked.read()).map(|(_, c)| c.clone());
-        let addons = ctx.addons.read().clone();
+        let addons = ctx.all_addons();
         let several_addons = list.iter().any(|(i, _)| *i != list.first().map(|f| f.0).unwrap_or_default());
         let chosen_genre = genre.read().clone();
         let grid = items.read().clone();

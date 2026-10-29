@@ -38,6 +38,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Encryption:** Bitwarden-style ([ADR 0005](docs/adr/0005-client-side-encryption.md)). The addon list is always encrypted on the device. Library, progress and settings stay readable by the server.
 - **Login:** email and password on every device (it unlocks the data key too). QR/pairing deferred until a phone or TV app exists. No OAuth or passkeys in v1.
 - **Email:** the official server verifies the email address with a code over SMTP. Self-hosters can turn verification off.
+- **Admin addons:** the server admin publishes addons (`relix-server admin add|list|remove`, `RELIX_ADMIN_TOKEN`) that every signed-in account receives live. Users have one switch, on by default and synced; their own copy of an addon wins. Signed-out users get none.
 
 ## Shipping
 

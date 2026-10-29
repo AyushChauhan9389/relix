@@ -16,6 +16,8 @@ impl Component for Addons {
         let mut url = use_state(String::new);
         let mut status = use_state(|| None::<String>);
         let addons = ctx.addons.read().clone();
+        let admin = ctx.admin_addons.read().clone();
+        let admin_on = *ctx.admin_enabled.read();
 
         let install = {
             let ctx = ctx.clone();
@@ -73,7 +75,32 @@ impl Component for Addons {
                         .child(button("Install", (229, 9, 20), (255, 255, 255)).on_press(move |_| install(url.read().clone()))),
                 )
                 .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(MUTED)))
-                .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element())),
+                .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element()))
+                .maybe(!admin.is_empty(), |el| {
+                    let ctx = ctx.clone();
+                    el.child(
+                        rect()
+                            .width(Size::fill())
+                            .padding(Gaps::new(16., 0., 0., 0.))
+                            .spacing(12.)
+                            .child(
+                                rect()
+                                    .horizontal()
+                                    .spacing(12.)
+                                    .cross_align(Alignment::Center)
+                                    .child(label().text("From your server").font_size(22.).font_weight(FontWeight::BOLD))
+                                    .child(Switch::new(WritableSetter::new(ctx.admin_enabled.into_readable(), move |on| ctx.set_admin_enabled(on))))
+                                    .child(label().text(if admin_on { "On" } else { "Off" }).font_size(14.).color(MUTED)),
+                            )
+                            .child(
+                                label()
+                                    .text("Your server's admin provides these. Turn them off to use only your own addons.")
+                                    .font_size(14.)
+                                    .color(MUTED),
+                            )
+                            .children(admin.iter().map(|a| admin_card(a, admin_on).into_element())),
+                    )
+                }),
             )
             .into_element()
     }
@@ -114,6 +141,27 @@ fn card(ctx: &Ctx, addons: &[Addon], i: usize, addon: &Addon) -> Rect {
                     l.remove(i);
                 })),
         )
+}
+
+/// An admin-published addon: read-only here, dimmed while switched off.
+fn admin_card(addon: &Addon, on: bool) -> Rect {
+    let m = &addon.manifest;
+    rect()
+        .width(Size::fill())
+        .padding(Gaps::new_all(16.))
+        .spacing(6.)
+        .corner_radius(8.)
+        .background((32, 32, 32))
+        .maybe(!on, |el| el.opacity(0.45))
+        .child(
+            rect()
+                .horizontal()
+                .spacing(10.)
+                .cross_align(Alignment::End)
+                .child(label().text(m.name.clone()).font_size(19.).font_weight(FontWeight::BOLD))
+                .child(label().text(format!("v{}", m.version)).font_size(13.).color(MUTED)),
+        )
+        .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(MUTED).span(d)))
 }
 
 /// A text button that edits the addon list and saves it.

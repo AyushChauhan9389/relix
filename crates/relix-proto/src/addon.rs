@@ -30,7 +30,7 @@ pub fn base_url(manifest: &Url) -> &str {
     manifest.as_str().trim_end_matches("/manifest.json")
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub id: String,
@@ -54,7 +54,7 @@ pub struct Manifest {
 
 /// A resource is either a bare name (inherits the manifest's types and idPrefixes)
 /// or an object with its own.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum Resource {
     Short(String),
@@ -68,7 +68,7 @@ pub enum Resource {
     },
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub r#type: String,
@@ -84,7 +84,7 @@ pub struct Catalog {
     pub extra_supported: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtraProp {
     pub name: String,
@@ -94,7 +94,7 @@ pub struct ExtraProp {
     pub options: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestHints {
     #[serde(default)]
@@ -164,7 +164,7 @@ impl Manifest {
 }
 
 /// An installed addon: where it lives and what it declared.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Addon {
     pub manifest_url: Url,
     pub manifest: Manifest,
@@ -430,4 +430,11 @@ pub fn subtitle_requests(addons: &[Addon], kind: &str, video_id: &str, filename:
         req = req.extra("filename", f);
     }
     addons.iter().enumerate().filter(|(_, a)| a.serves(&req)).map(|(i, _)| (i, req.clone())).collect()
+}
+
+/// The addons a signed-in user actually uses: their own, then the server admin's (when switched on),
+/// skipping any admin addon the user installed themselves, since their copy carries their config.
+pub fn with_admin_addons(user: &[Addon], admin: &[Addon], enabled: bool) -> Vec<Addon> {
+    let extra = admin.iter().filter(|a| enabled && !user.iter().any(|u| u.manifest.id == a.manifest.id));
+    user.iter().chain(extra).cloned().collect()
 }

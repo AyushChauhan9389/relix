@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use freya::prelude::*;
 use freya::router::*;
-use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, manifest_url};
+use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, manifest_url, with_admin_addons};
 use tokio::task::JoinSet;
 
 use account::Account;
@@ -80,8 +80,12 @@ pub struct Ctx {
     pub store: Rc<Store>,
     /// Id of the profile every record belongs to (one implicit profile for now).
     pub profile: String,
-    /// The installed addons, in order.
+    /// The user's own installed addons, in order.
     pub addons: State<Vec<Addon>>,
+    /// Addons the sync server's admin publishes to signed-in accounts (cached locally).
+    pub admin_addons: State<Vec<Addon>>,
+    /// The user's switch for admin addons; on unless they turned it off (synced setting).
+    pub admin_enabled: State<bool>,
     pub rows: State<Vec<Row>>,
     /// Wakes the sync loop (sign-in, local changes).
     pub sync: Arc<tokio::sync::Notify>,
@@ -96,6 +100,22 @@ impl Ctx {
         let mut next = library::local_rows(&self.store, &self.profile);
         next.extend(rows.peek().iter().filter(|r| !r.id.starts_with("local/")).cloned());
         rows.set(next);
+    }
+
+    /// Every addon content comes from: the user's own, then the admin's when switched on.
+    pub fn all_addons(&self) -> Vec<Addon> {
+        with_admin_addons(&self.addons.read(), &self.admin_addons.read(), *self.admin_enabled.read())
+    }
+
+    /// Turns the server's admin addons on or off for this user, and syncs the choice.
+    pub fn set_admin_enabled(&self, on: bool) {
+        if let Err(e) = self.store.put(&self.profile, "settings", "admin_addons_enabled", &on) {
+            eprintln!("saving setting: {e}");
+        }
+        let mut enabled = self.admin_enabled;
+        enabled.set(on);
+        spawn(load_rows(self.clone()));
+        self.sync_soon();
     }
 
     /// Asks the sync loop to run soon (no-op when signed out).
@@ -130,11 +150,19 @@ fn app() -> impl IntoElement {
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
     let sync_status = use_state(String::new);
+    let admin_addons = use_state(|| {
+        let cached = store.meta("admin_addons").ok().flatten();
+        cached.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default()
+    });
+    let admin_enabled =
+        use_state(|| store.get::<bool>(&profile, "settings", "admin_addons_enabled").ok().flatten().unwrap_or(true));
     let ctx = use_provide_context(|| Ctx {
         http: reqwest::Client::new(),
         store: store.clone(),
         profile,
         addons,
+        admin_addons,
+        admin_enabled,
         rows,
         sync: Arc::default(),
         sync_status,
@@ -178,7 +206,7 @@ async fn install_defaults(ctx: &Ctx) {
 
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
 pub async fn load_rows(mut ctx: Ctx) {
-    let addons = ctx.addons.peek().clone();
+    let addons = ctx.all_addons();
     let mut rows = library::local_rows(&ctx.store, &ctx.profile);
     let mut set = JoinSet::new();
     for addon in &addons {

@@ -11,14 +11,20 @@ use tower::ServiceExt;
 
 type Outbox = Arc<Mutex<Vec<(String, String)>>>;
 
+const ADMIN: &str = "admin-secret";
+
 fn server(verify_email: bool) -> (Router, Outbox) {
     let outbox = Outbox::default();
-    let config = Config { verify_email, mailer: Mailer::Outbox(outbox.clone()) };
+    let config = Config { verify_email, mailer: Mailer::Outbox(outbox.clone()), admin_token: Some(ADMIN.into()) };
     (app(rusqlite::Connection::open_in_memory().unwrap(), config).unwrap(), outbox)
 }
 
 async fn call(app: &Router, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
-    let mut req = Request::builder().uri(path).method(if body.is_some() { "POST" } else { "GET" });
+    send(app, if body.is_some() { "POST" } else { "GET" }, path, token, body).await
+}
+
+async fn send(app: &Router, method: &str, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+    let mut req = Request::builder().uri(path).method(method);
     if let Some(t) = token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -158,4 +164,55 @@ async fn repeated_wrong_logins_are_throttled() {
     assert_eq!(call(&app, "/login", None, Some(bad)).await.0, StatusCode::TOO_MANY_REQUESTS);
     let good = json!({ "email": "a@x.com", "login_hash": "right-hash" });
     assert_eq!(call(&app, "/login", None, Some(good)).await.0, StatusCode::TOO_MANY_REQUESTS, "even the right password waits");
+}
+
+fn torrentio() -> Value {
+    let path = format!("{}/../relix-proto/tests/fixtures/torrentio.json", env!("CARGO_MANIFEST_DIR"));
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    json!({ "manifest_url": "https://torrentio.strem.fun/manifest.json", "manifest": manifest })
+}
+
+#[tokio::test]
+async fn admin_endpoints_need_the_admin_token() {
+    let (app, _) = server(false);
+    let user = account(&app, "a@x.com").await;
+    assert_eq!(call(&app, "/admin/addons", None, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "/admin/addons", Some(&user), None).await.0, StatusCode::UNAUTHORIZED, "a user session isn't admin");
+    assert_eq!(call(&app, "/admin/addons", Some("admin-secreT"), None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "/admin/addons", Some(ADMIN), Some(torrentio())).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_addons_reach_signed_in_users_until_removed() {
+    let (app, _) = server(false);
+    let user = account(&app, "a@x.com").await;
+    let (_, added) = call(&app, "/admin/addons", Some(ADMIN), Some(torrentio())).await;
+    let id = added["id"].as_u64().unwrap();
+
+    let (status, list) = call(&app, "/addons/admin", Some(&user), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["manifest"]["id"], "com.stremio.torrentio.addon");
+    assert_eq!(call(&app, "/addons/admin", None, None).await.0, StatusCode::UNAUTHORIZED, "signed-out users get nothing");
+    let (_, admin_view) = call(&app, "/admin/addons", Some(ADMIN), None).await;
+    assert_eq!(admin_view[0]["id"].as_u64(), Some(id));
+
+    assert_eq!(send(&app, "DELETE", &format!("/admin/addons/{id}"), Some(ADMIN), None).await.0, StatusCode::OK);
+    assert_eq!(call(&app, "/addons/admin", Some(&user), None).await.1, json!([]));
+    assert_eq!(send(&app, "DELETE", &format!("/admin/addons/{id}"), Some(ADMIN), None).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn adding_an_admin_addon_notifies_every_account() {
+    let (app, _) = server(false);
+    let mut streams = vec![];
+    for email in ["a@x.com", "b@x.com"] {
+        let t = account(&app, email).await;
+        let req = Request::builder().uri("/sync/events").header("authorization", format!("Bearer {t}")).body(Body::empty()).unwrap();
+        streams.push(app.clone().oneshot(req).await.unwrap().into_body());
+    }
+    call(&app, "/admin/addons", Some(ADMIN), Some(torrentio())).await;
+    for mut body in streams {
+        let frame = tokio::time::timeout(Duration::from_secs(2), body.frame()).await.expect("an event within 2s").unwrap().unwrap();
+        assert!(String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap().contains("data: admin"));
+    }
 }

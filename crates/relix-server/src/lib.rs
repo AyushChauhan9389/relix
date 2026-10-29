@@ -1,23 +1,26 @@
 //! Relix sync and account server (ADR 0003, 0004, 0005). Stores only login hashes,
 //! wrapped keys and opaque record values; hands out sequence numbers; notifies devices over SSE.
 
+pub mod cli;
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use futures_util::Stream;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox};
+use relix_proto::addon::Addon;
 use relix_proto::sync::{
-    Login, Prelogin, PreloginResponse, PullResponse, Push, PushResponse, Session, Signup, SignupResponse, SyncedRecord,
+    AddedAdminAddon, AdminAddon, Login, Prelogin, PreloginResponse, PullResponse, Push, PushResponse, Session, Signup, SignupResponse, SyncedRecord,
     Verify,
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -34,6 +37,8 @@ pub struct Config {
     /// Require an emailed code before an account can sign in (the official server does; self-hosters may not).
     pub verify_email: bool,
     pub mailer: Mailer,
+    /// Bearer token for the `/admin` endpoints; `None` turns them off.
+    pub admin_token: Option<String>,
 }
 
 pub enum Mailer {
@@ -71,8 +76,8 @@ impl Mailer {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     config: Arc<Config>,
-    /// (account, newest seq) after every push.
-    events: broadcast::Sender<(i64, u64)>,
+    /// (account, event data) after every change; `None` addresses every account.
+    events: broadcast::Sender<(Option<i64>, String)>,
     /// Seeds fake salts for unknown emails.
     secret: Arc<Vec<u8>>,
     // ponytail: in-memory throttle, resets on restart and isn't shared between instances; fine for one box.
@@ -129,7 +134,8 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
              PRIMARY KEY (account, kind, key)
          );
          CREATE INDEX IF NOT EXISTS records_by_seq ON records (account, seq);
-         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
+         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+         CREATE TABLE IF NOT EXISTS admin_addons (id INTEGER PRIMARY KEY, addon TEXT NOT NULL);",
     )?;
     let secret: Option<Vec<u8>> = db.query_row("SELECT value FROM meta WHERE key = 'secret'", [], |r| r.get(0)).optional()?;
     let secret = match secret {
@@ -157,6 +163,9 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/sync/push", post(push))
         .route("/sync/pull", get(pull))
         .route("/sync/events", get(events))
+        .route("/addons/admin", get(admin_addons_for_users))
+        .route("/admin/addons", get(admin_list).post(admin_add))
+        .route("/admin/addons/{id}", delete(admin_remove))
         .with_state(state))
 }
 
@@ -310,7 +319,7 @@ async fn push(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<Pus
     };
     if let Some(last) = seqs.last() {
         // No listeners is fine.
-        let _ = s.events.send((account, *last));
+        let _ = s.events.send((Some(account), last.to_string()));
     }
     Ok(Json(PushResponse { seqs }))
 }
@@ -332,7 +341,8 @@ async fn pull(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<Sin
     Ok(Json(PullResponse { records }))
 }
 
-/// One `data: <seq>` event whenever this account's records change; devices then pull.
+/// One `data: <seq>` event whenever this account's records change, and `data: admin` when the
+/// admin's addons change; devices then pull.
 async fn events(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -340,9 +350,64 @@ async fn events(
     let account = account_of(&s, &headers)?;
     let stream = BroadcastStream::new(s.events.subscribe())
         .filter_map(move |e| match e {
-            Ok((a, seq)) if a == account => Some(Ok(Event::default().data(seq.to_string()))),
+            Ok((to, data)) if to.is_none_or(|a| a == account) => Some(Ok(Event::default().data(data))),
             // Lagged receivers just miss a notice; the next one (or a reconnect) pulls everything anyway.
             _ => None,
         });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn require_admin(s: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let given = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    // Comparing digests keeps the check's timing independent of how much of the token matched.
+    match (&s.config.admin_token, given) {
+        (Some(want), Some(got)) if sha256_hex(want.as_bytes()) == sha256_hex(got.as_bytes()) => Ok(()),
+        _ => Err(ApiError(StatusCode::UNAUTHORIZED, "admin token required")),
+    }
+}
+
+fn load_admin_addons(db: &Connection) -> Result<Vec<AdminAddon>, ApiError> {
+    let mut stmt = db.prepare("SELECT id, addon FROM admin_addons ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = vec![];
+    for row in rows {
+        let (id, json) = row?;
+        match serde_json::from_str::<Addon>(&json) {
+            Ok(addon) => out.push(AdminAddon { id: id as u64, addon }),
+            Err(e) => eprintln!("admin addon {id} unreadable: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+async fn admin_list(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Vec<AdminAddon>> {
+    require_admin(&s, &headers)?;
+    Ok(Json(load_admin_addons(&s.db.lock().unwrap())?))
+}
+
+async fn admin_add(State(s): State<AppState>, headers: HeaderMap, Json(addon): Json<Addon>) -> ApiResult<AddedAdminAddon> {
+    require_admin(&s, &headers)?;
+    let id = {
+        let db = s.db.lock().unwrap();
+        db.execute("INSERT INTO admin_addons (addon) VALUES (?1)", params![serde_json::to_string(&addon).unwrap()])?;
+        db.last_insert_rowid() as u64
+    };
+    let _ = s.events.send((None, "admin".into()));
+    Ok(Json(AddedAdminAddon { id }))
+}
+
+async fn admin_remove(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+    require_admin(&s, &headers)?;
+    let removed = s.db.lock().unwrap().execute("DELETE FROM admin_addons WHERE id = ?1", params![id])?;
+    if removed == 0 {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no admin addon with that id"));
+    }
+    let _ = s.events.send((None, "admin".into()));
+    Ok(StatusCode::OK)
+}
+
+/// What signed-in users receive: the admin's addons in the order they were added.
+async fn admin_addons_for_users(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Vec<Addon>> {
+    account_of(&s, &headers)?;
+    Ok(Json(load_admin_addons(&s.db.lock().unwrap())?.into_iter().map(|a| a.addon).collect()))
 }

@@ -34,7 +34,7 @@ impl Component for Search {
                     if *query.peek() != q {
                         return;
                     }
-                    let addons = ctx.addons.peek().clone();
+                    let addons = ctx.all_addons();
                     let mut next = vec![];
                     let mut set = JoinSet::new();
                     for (i, c, req) in search_requests(&addons, &q) {

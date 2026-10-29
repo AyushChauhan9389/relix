@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use freya::prelude::*;
+use relix_proto::addon::Addon;
 use relix_proto::crypto::{DataKey, MasterKey, Recovery, new_salt};
 use relix_proto::sync::{
     ENCRYPTED_KINDS, Login, Prelogin, PreloginResponse, PullResponse, Push, PushRecord, PushResponse, Session, Signup,
@@ -120,13 +121,17 @@ pub async fn sign_in(ctx: &Ctx, server: &str, email: &str, password: &str) -> Re
 
 /// Forgets the account on this device; local data stays.
 pub fn sign_out(ctx: &Ctx) {
-    for key in ["account", "data_key", "last_seq", "first_sync"] {
+    for key in ["account", "data_key", "last_seq", "first_sync", "admin_addons"] {
         if let Err(e) = ctx.store.set_meta(key, None) {
             eprintln!("sign out: {e}");
         }
     }
     let mut status = ctx.sync_status;
     status.set(String::new());
+    // Admin addons come with the account, so they go with it.
+    let mut admin = ctx.admin_addons;
+    admin.set(vec![]);
+    spawn(load_rows(ctx.clone()));
 }
 
 /// Pulls (decrypting encrypted kinds), applies, then pushes local changes (encrypting them).
@@ -151,12 +156,25 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
         records.push(r);
     }
     let changed = ctx.store.apply_pulled(&ctx.profile, &records, first).map_err(|e| e.to_string())?;
+    if changed.iter().any(|k| k == "settings") {
+        let mut enabled = ctx.admin_enabled;
+        enabled.set(ctx.store.get(&ctx.profile, "settings", "admin_addons_enabled").ok().flatten().unwrap_or(true));
+    }
+    let admin: Vec<Addon> = call::<(), _>(&ctx.http, server_url(&acc.server, "/addons/admin"), Some(&acc.token), None).await?;
+    let admin_changed = *ctx.admin_addons.peek() != admin;
+    if admin_changed {
+        ctx.store.set_meta("admin_addons", Some(&serde_json::to_string(&admin).unwrap())).map_err(|e| e.to_string())?;
+        let mut cached = ctx.admin_addons;
+        cached.set(admin);
+    }
     if first {
         ctx.store.set_meta("first_sync", None).map_err(|e| e.to_string())?;
     }
     if changed.iter().any(|k| k == "addons") {
         let mut addons = ctx.addons;
         addons.set(ctx.store.get(&ctx.profile, "addons", "list").ok().flatten().unwrap_or_default());
+        spawn(load_rows(ctx.clone()));
+    } else if admin_changed || changed.iter().any(|k| k == "settings") {
         spawn(load_rows(ctx.clone()));
     } else if changed.iter().any(|k| ["progress", "library", "watched"].contains(&k.as_str())) {
         ctx.refresh_local_rows();

@@ -4171,6 +4171,7 @@ dependencies = [
  "lettre",
  "rand 0.10.3",
  "relix-proto",
+ "reqwest 0.13.5",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4178,6 +4179,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "url",
 ]
 
 [[package]]
