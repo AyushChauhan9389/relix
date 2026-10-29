@@ -23,3 +23,16 @@ cargo test                                  # addon protocol tests
 cargo run -p relix-app                      # Home screen
 cargo run -p relix-app -- --play <url>      # playback spike
 ```
+
+## Sync server
+
+`relix-server` is one binary with one SQLite file; accounts are optional and the app works without one.
+
+```sh
+cargo run -p relix-server        # listens on 0.0.0.0:8787, prints verification codes to stdout
+```
+
+Configure with environment variables: `RELIX_DB`, `RELIX_ADDR`, `RELIX_SMTP_URL` + `RELIX_SMTP_FROM` (emailed codes),
+`RELIX_VERIFY_EMAIL=true|false`. In the app, open **Account** and point it at the server URL.
+The addon list is encrypted on the device before upload; the server never sees addon URLs or debrid keys.
+

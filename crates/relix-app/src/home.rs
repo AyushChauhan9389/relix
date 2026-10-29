@@ -95,7 +95,8 @@ pub fn nav() -> Rect {
                 .cross_align(Alignment::Center)
                 .spacing(24.)
                 .child(Link::new(Route::Addons).child(link("Addons", false)))
-                .child(Link::new(Route::Search).child(link("Search", false))),
+                .child(Link::new(Route::Search).child(link("Search", false)))
+                .child(Link::new(Route::Account).child(link("Account", false))),
         )
 }
 

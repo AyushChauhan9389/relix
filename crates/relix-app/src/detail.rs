@@ -93,6 +93,7 @@ impl Component for Detail {
                     }
                     watch.set(Some(state));
                     ctx.refresh_local_rows();
+                    ctx.sync_soon();
                 });
             }
         });
@@ -108,6 +109,7 @@ impl Component for Detail {
                     Ok(()) => {
                         in_list.set(add);
                         ctx.refresh_local_rows();
+                        ctx.sync_soon();
                     }
                     Err(e) => eprintln!("saving My List: {e}"),
                 }

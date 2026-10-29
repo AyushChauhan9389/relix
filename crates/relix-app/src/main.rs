@@ -1,3 +1,4 @@
+mod account;
 mod addons;
 mod browse;
 mod detail;
@@ -7,14 +8,17 @@ mod library;
 mod player;
 mod search;
 mod store;
+mod sync;
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, manifest_url};
 use tokio::task::JoinSet;
 
+use account::Account;
 use addons::Addons;
 use browse::Browse;
 use detail::Detail;
@@ -79,6 +83,10 @@ pub struct Ctx {
     /// The installed addons, in order.
     pub addons: State<Vec<Addon>>,
     pub rows: State<Vec<Row>>,
+    /// Wakes the sync loop (sign-in, local changes).
+    pub sync: Arc<tokio::sync::Notify>,
+    /// Last sync outcome, for the Account screen.
+    pub sync_status: State<String>,
 }
 
 impl Ctx {
@@ -90,12 +98,18 @@ impl Ctx {
         rows.set(next);
     }
 
+    /// Asks the sync loop to run soon (no-op when signed out).
+    pub fn sync_soon(&self) {
+        self.sync.notify_one();
+    }
+
     /// Persists the addon list and rebuilds Home's rows from it.
     pub fn save_addons(&self, addons: Vec<Addon>) {
         let mut this = self.clone();
         if let Err(e) = self.store.put(&self.profile, "addons", "list", &addons) {
             eprintln!("saving addons: {e}");
         }
+        self.sync_soon();
         this.addons.set(addons);
         spawn(load_rows(this));
     }
@@ -115,8 +129,23 @@ fn app() -> impl IntoElement {
     let saved = store.get::<Vec<Addon>>(&profile, "addons", "list").ok().flatten();
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
-    let ctx = use_provide_context(|| Ctx { http: reqwest::Client::new(), store: store.clone(), profile, addons, rows });
+    let sync_status = use_state(String::new);
+    let ctx = use_provide_context(|| Ctx {
+        http: reqwest::Client::new(),
+        store: store.clone(),
+        profile,
+        addons,
+        rows,
+        sync: Arc::default(),
+        sync_status,
+    });
 
+    use_hook({
+        let ctx = ctx.clone();
+        move || {
+            spawn(sync::run(ctx));
+        }
+    });
     use_hook(move || {
         spawn(async move {
             match saved {
@@ -192,6 +221,8 @@ pub enum Route {
         Search,
         #[route("/browse/:kind")]
         Browse { kind: String },
+        #[route("/account")]
+        Account,
 }
 
 #[derive(PartialEq)]
