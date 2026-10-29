@@ -67,3 +67,25 @@ fn torrent_streams_are_dropped_everything_else_kept() {
     let kept: Vec<_> = relix_proto::addon::without_torrents(streams).into_iter().map(|s| s.source).collect();
     assert!(matches!(kept.as_slice(), [StreamSource::Url { .. }, StreamSource::External { .. }]));
 }
+
+fn binge(url: &str, group: Option<&str>) -> Stream {
+    stream(serde_json::json!({ "url": url, "behaviorHints": { "bingeGroup": group } }))
+}
+
+#[test]
+fn next_episode_plays_the_same_release_preferring_the_same_addon() {
+    let groups = vec![
+        (0, vec![binge("https://a/720", Some("rd-720p")), binge("https://a/1080", Some("rd-1080p"))]),
+        (2, vec![binge("https://c/1080", Some("rd-1080p"))]),
+    ];
+    let pick = |prev_addon, group| relix_proto::addon::pick_binge_stream(&groups, prev_addon, group).map(|(a, s)| (a, s.playable_url().unwrap().to_owned()));
+    assert_eq!(pick(2, "rd-1080p"), Some((2, "https://c/1080".into())), "same addon first");
+    assert_eq!(pick(1, "rd-1080p"), Some((0, "https://a/1080".into())), "else first in addon order");
+    assert_eq!(pick(0, "rd-4k"), None, "no matching release, no auto-play");
+}
+
+#[test]
+fn torrents_and_ungrouped_streams_never_auto_play() {
+    let groups = vec![(0, vec![stream(serde_json::json!({ "infoHash": "x", "behaviorHints": { "bingeGroup": "g" } })), binge("https://a", None)])];
+    assert_eq!(relix_proto::addon::pick_binge_stream(&groups, 0, "g").map(|(a, _)| a), None);
+}

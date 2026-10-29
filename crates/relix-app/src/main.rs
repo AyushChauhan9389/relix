@@ -34,7 +34,8 @@ const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
 fn main() {
-    // ponytail: playback check without the UI: `--play <url> [--subs movie/<imdb id>]`.
+    // ponytail: playback check without the UI:
+    // `--play <url> [--subs movie/<imdb id>] [--title T] [--episode E] [--has-next] [--start secs]`.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
         let (tx, rx) = std::sync::mpsc::channel();
         if let Some(target) = std::env::args().skip_while(|a| a != "--subs").nth(1) {
@@ -50,8 +51,14 @@ fn main() {
                 }
             });
         }
-        match player::play(&url, &Default::default(), 0., rx) {
-            Ok(p) => println!("stopped at {:.1}s of {:.1}s", p.position, p.duration),
+        let overlay = player::Overlay {
+            title: std::env::args().skip_while(|a| a != "--title").nth(1).unwrap_or_default(),
+            episode: std::env::args().skip_while(|a| a != "--episode").nth(1).unwrap_or_default(),
+            has_next: std::env::args().any(|a| a == "--has-next"),
+        };
+        let start = std::env::args().skip_while(|a| a != "--start").nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.);
+        match player::play(&url, &Default::default(), start, rx, &overlay) {
+            Ok((p, ended)) => println!("stopped at {:.1}s of {:.1}s ({ended:?})", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }
         return;

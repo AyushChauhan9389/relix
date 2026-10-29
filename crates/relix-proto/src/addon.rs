@@ -444,3 +444,12 @@ pub fn with_admin_addons(user: &[Addon], admin: &[Addon], enabled: bool) -> Vec<
 pub fn without_torrents(streams: Vec<Stream>) -> Vec<Stream> {
     streams.into_iter().filter(|s| !matches!(s.source, StreamSource::Torrent { .. })).collect()
 }
+
+/// The stream to auto-play for the next episode: a playable stream from the same release
+/// (`bingeGroup`) as the one just watched, from the same addon if it has one, else the first
+/// addon in order. `None` means don't auto-play.
+pub fn pick_binge_stream<'a>(groups: &'a [(usize, Vec<Stream>)], prev_addon: usize, binge_group: &str) -> Option<(usize, &'a Stream)> {
+    let matches = |s: &&Stream| s.playable_url().is_some() && s.behavior_hints.binge_group.as_deref() == Some(binge_group);
+    let in_addon = |(a, streams): &'a (usize, Vec<Stream>)| streams.iter().find(matches).map(|s| (*a, s));
+    groups.iter().filter(|(a, _)| *a == prev_addon).find_map(in_addon).or_else(|| groups.iter().find_map(in_addon))
+}

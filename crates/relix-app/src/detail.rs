@@ -4,13 +4,14 @@ use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{
     Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, SubtitlesResponse, Video, route, seasons, stream_groups,
-    subtitle_requests, without_torrents,
+    pick_binge_stream, subtitle_requests, without_torrents,
 };
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::home::{backdrop, button, chip, layer, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
+use crate::player::Ended;
 use crate::{Ctx, get, player};
 
 const HEADER_H: f32 = 520.;
@@ -48,54 +49,66 @@ impl Component for Detail {
             store.get::<Option<MetaPreview>>(&profile, "library", &self.id).ok().flatten().flatten().is_some()
         });
 
-        // Plays a stream of the chosen video, resuming where it stopped, and records where it stops now.
+        // Plays a stream of the chosen video, resuming where it stopped, and records where it stops.
+        // When an episode ends (or "Next episode" is pressed) it moves on, auto-playing the next
+        // episode's stream from the same release when an addon has one.
         let play = EventHandler::new({
             let ctx = ctx.clone();
-            move |(url, headers, filename): Play| {
-                let (Some(m), Some(vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
-                let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
-                let (subs_tx, subs_rx) = std::sync::mpsc::channel();
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                // mpv blocks until its window closes, so it gets its own thread.
-                std::thread::spawn(move || {
-                    let _ = tx.send(player::play(&url, &headers, start, subs_rx));
-                });
-
-                // Subtitles load alongside playback; each addon's arrive in mpv as they answer.
-                let addons = ctx.all_addons();
-                for (i, req) in subtitle_requests(&addons, &m.r#type, &vid, filename.as_deref()) {
-                    let (http, url, addon, subs_tx) = (ctx.http.clone(), req.url(&addons[i]), addons[i].manifest.name.clone(), subs_tx.clone());
-                    spawn(async move {
-                        match get::<SubtitlesResponse>(http, url).await {
-                            Ok(r) => {
-                                let _ = subs_tx.send(player::sub_add_args(&r.subtitles, &addon));
-                            }
-                            Err(e) => eprintln!("subtitles from {addon}: {e}"),
-                        }
-                    });
-                }
-
+            move |first: Play| {
+                let (Some(m), Some(first_vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
                 let ctx = ctx.clone();
                 spawn(async move {
-                    let p = match rx.await {
-                        Ok(Ok(p)) => p,
-                        Ok(Err(e)) => return eprintln!("mpv: {e}"),
-                        Err(_) => return,
-                    };
-                    let state = record_playback(preview(&m), &vid, p, next_video(&m.videos, &vid), now());
-                    let saved = ctx.store.put(&ctx.profile, "progress", &m.id, &state).and_then(|()| {
-                        if is_finished(p) {
-                            watched.write().insert(vid.clone());
-                            ctx.store.put(&ctx.profile, "watched", &vid, &true)?;
+                    let (mut req, mut vid) = (first, first_vid);
+                    loop {
+                        let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
+                        let next = next_video(&m.videos, &vid);
+                        let (subs_tx, subs_rx) = std::sync::mpsc::channel();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let overlay = player::Overlay {
+                            title: m.name.clone(),
+                            episode: m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default(),
+                            has_next: next.is_some(),
+                        };
+                        let (url, headers) = (req.url.clone(), req.headers.clone());
+                        // mpv blocks until its window closes, so it gets its own thread.
+                        std::thread::spawn(move || {
+                            let _ = tx.send(player::play(&url, &headers, start, subs_rx, &overlay));
+                        });
+                        fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), subs_tx);
+
+                        let (mut p, ended) = match rx.await {
+                            Ok(Ok(played)) => played,
+                            Ok(Err(e)) => return eprintln!("mpv: {e}"),
+                            Err(_) => return,
+                        };
+                        // Skipping to the next episode counts as having finished this one.
+                        if ended == Some(Ended::NextRequested) {
+                            p.position = p.duration;
                         }
-                        Ok(())
-                    });
-                    if let Err(e) = saved {
-                        eprintln!("saving progress: {e}");
+                        let state = record_playback(preview(&m), &vid, p, next.clone(), now());
+                        let saved = ctx.store.put(&ctx.profile, "progress", &m.id, &state).and_then(|()| {
+                            if is_finished(p) {
+                                watched.write().insert(vid.clone());
+                                ctx.store.put(&ctx.profile, "watched", &vid, &true)?;
+                            }
+                            Ok(())
+                        });
+                        if let Err(e) = saved {
+                            eprintln!("saving progress: {e}");
+                        }
+                        watch.set(Some(state));
+                        ctx.refresh_local_rows();
+                        ctx.sync_soon();
+
+                        let Some(next_id) = next.filter(|_| is_finished(p)) else { return };
+                        if let Some(v) = m.videos.iter().find(|v| v.id == next_id) {
+                            season.set(v.season);
+                        }
+                        video.set(Some(next_id.clone()));
+                        let Some(group) = req.binge_group.clone() else { return };
+                        let Some(next_req) = binge_stream(&ctx, &m.r#type, &next_id, req.addon, &group).await else { return };
+                        (req, vid) = (next_req, next_id);
                     }
-                    watch.set(Some(state));
-                    ctx.refresh_local_rows();
-                    ctx.sync_soon();
                 });
             }
         });
@@ -191,9 +204,9 @@ impl Component for Detail {
         };
         let addons = ctx.all_addons();
         let has_stream_addons = addons.iter().any(|a| a.serves(&ResourceRequest::new("stream", &self.kind, &self.id)));
-        let groups: Vec<(String, Vec<Stream>)> = stream_groups(streams.read().clone())
+        let groups: Vec<(usize, String, Vec<Stream>)> = stream_groups(streams.read().clone())
             .into_iter()
-            .map(|(i, s)| (addons[i].manifest.name.clone(), s))
+            .map(|(i, s)| (i, addons[i].manifest.name.clone(), s))
             .collect();
         let all_seasons: Vec<(u32, Vec<Video>)> =
             seasons(&meta.videos).into_iter().map(|(n, eps)| (n, eps.into_iter().cloned().collect())).collect();
@@ -309,10 +322,74 @@ fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -
         )
 }
 
-/// What playing a stream needs: its URL, request headers and filename hint.
-type Play = (String, HashMap<String, String>, Option<String>);
+/// What playing a stream needs, and what auto-playing the next episode matches on.
+#[derive(Clone, PartialEq)]
+struct Play {
+    url: String,
+    headers: HashMap<String, String>,
+    filename: Option<String>,
+    binge_group: Option<String>,
+    /// Index of the addon the stream came from.
+    addon: usize,
+}
 
-fn stream_panel(picked: bool, has_stream_addons: bool, searching: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
+impl Play {
+    fn of(stream: &Stream, addon: usize) -> Option<Self> {
+        Some(Self {
+            url: stream.playable_url()?.to_owned(),
+            headers: stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default(),
+            filename: stream.behavior_hints.filename.clone(),
+            binge_group: stream.behavior_hints.binge_group.clone(),
+            addon,
+        })
+    }
+}
+
+/// "S1:E2 Cat's in the Bag...", as the player shows it.
+fn episode_label(v: &Video) -> String {
+    match (v.season, v.episode) {
+        (Some(s), Some(e)) => format!("S{s}:E{e} {}", v.title()),
+        _ => v.title().to_owned(),
+    }
+}
+
+/// Asks every subtitle addon for `video_id`; each addon's tracks reach mpv as they arrive.
+fn fetch_subtitles(ctx: &Ctx, kind: &str, video_id: &str, filename: Option<&str>, to_mpv: std::sync::mpsc::Sender<Vec<[String; 4]>>) {
+    let addons = ctx.all_addons();
+    for (i, req) in subtitle_requests(&addons, kind, video_id, filename) {
+        let (http, url, addon, to_mpv) = (ctx.http.clone(), req.url(&addons[i]), addons[i].manifest.name.clone(), to_mpv.clone());
+        spawn(async move {
+            match get::<SubtitlesResponse>(http, url).await {
+                Ok(r) => {
+                    let _ = to_mpv.send(player::sub_add_args(&r.subtitles, &addon));
+                }
+                Err(e) => eprintln!("subtitles from {addon}: {e}"),
+            }
+        });
+    }
+}
+
+/// The next episode's stream from the same release as the one just watched, if any addon has it.
+async fn binge_stream(ctx: &Ctx, kind: &str, video_id: &str, prev_addon: usize, group: &str) -> Option<Play> {
+    let addons = ctx.all_addons();
+    let req = ResourceRequest::new("stream", kind, video_id);
+    let mut set = JoinSet::new();
+    for (i, addon) in addons.iter().enumerate().filter(|(_, a)| a.serves(&req)) {
+        let (http, url) = (ctx.http.clone(), req.url(addon));
+        set.spawn(async move { (i, get::<StreamsResponse>(http, url).await) });
+    }
+    let mut groups = vec![];
+    while let Some(Ok((i, res))) = set.join_next().await {
+        if let Ok(r) = res {
+            groups.push((i, without_torrents(r.streams)));
+        }
+    }
+    let groups = stream_groups(groups);
+    let (addon, stream) = pick_binge_stream(&groups, prev_addon, group)?;
+    Play::of(stream, addon)
+}
+
+fn stream_panel(picked: bool, has_stream_addons: bool, searching: bool, groups: Vec<(usize, String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
     let panel = rect().width(Size::px(460.)).spacing(10.).child(label().text("Streams").font_size(22.).font_weight(FontWeight::BOLD));
     let note = |text: &'static str| label().text(text).font_size(15.).color(MUTED);
     if !has_stream_addons {
@@ -328,18 +405,17 @@ fn stream_panel(picked: bool, has_stream_addons: bool, searching: bool, groups: 
             "No playable streams found. Torrent addons need a debrid service (e.g. Torrentio with Real-Debrid)."
         }));
     }
-    panel.children(groups.into_iter().map(|(addon, streams)| {
+    panel.children(groups.into_iter().map(|(i, addon, streams)| {
         rect()
             .spacing(6.)
             .child(label().text(addon).font_size(14.).color(MUTED))
-            .children(streams.into_iter().map(|s| stream_card(s, play.clone())))
+            .children(streams.into_iter().map(|s| stream_card(s, i, play.clone())))
             .into_element()
     }))
 }
 
-fn stream_card(stream: Stream, play: EventHandler<Play>) -> Element {
-    let url = stream.playable_url().map(str::to_owned);
-    let headers = stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default();
+fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>) -> Element {
+    let request = Play::of(&stream, addon);
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
     let title = stream.title.clone().or(stream.description.clone()).unwrap_or_default();
     let card = rect()
@@ -348,14 +424,11 @@ fn stream_card(stream: Stream, play: EventHandler<Play>) -> Element {
         .spacing(4.)
         .corner_radius(6.)
         .background((32, 32, 32))
-        .maybe(url.is_none(), |el| el.opacity(0.45))
+        .maybe(request.is_none(), |el| el.opacity(0.45))
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
         .child(paragraph().font_size(13.).color(MUTED).span(title));
-    match url {
-        Some(url) => {
-            let filename = stream.behavior_hints.filename.clone();
-            Focusable::new(card, move |()| play.call((url.clone(), headers.clone(), filename.clone()))).into()
-        }
+    match request {
+        Some(request) => Focusable::new(card, move |()| play.call(request.clone())).into(),
         None => card.into(),
     }
 }
