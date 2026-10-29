@@ -24,6 +24,16 @@ cargo run -p relix-app                      # Home screen
 cargo run -p relix-app -- --play <url>      # playback spike
 ```
 
+## Portable Windows build
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\portable.ps1
+```
+
+Produces `dist\Relix-<version>-windows-x64-portable.zip`: `relix-app.exe`, `libmpv-2.dll`, `relix-server.exe` and a
+`portable` marker. With the marker next to the exe, Relix keeps its data in a `data` folder beside it instead of
+`%APPDATA%elix`, so the folder can be carried around. Release builds open without a console window.
+
 ## Sync server
 
 `relix-server` is one binary with one SQLite file; accounts are optional and the app works without one.

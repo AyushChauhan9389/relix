@@ -1,3 +1,6 @@
+// Release builds are a GUI app on Windows: no console window next to Relix.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod account;
 mod addons;
 mod browse;
@@ -70,8 +73,13 @@ fn main() {
     launch(LaunchConfig::new().with_window(WindowConfig::new(app).with_title("Relix").with_size(1440., 900.)))
 }
 
-/// Where Relix keeps its database: the usual per-user app data folder of each OS.
+/// Where Relix keeps its database: `data` next to the executable for a portable copy (a file
+/// named `portable` sits beside it), otherwise the usual per-user app data folder of each OS.
 fn data_dir() -> std::path::PathBuf {
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    if let Some(dir) = exe_dir.filter(|d| d.join("portable").exists()) {
+        return dir.join("data");
+    }
     let env = |k| std::env::var_os(k).map(std::path::PathBuf::from);
     let base = if cfg!(windows) {
         env("APPDATA")
