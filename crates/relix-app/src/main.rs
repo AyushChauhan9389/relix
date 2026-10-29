@@ -2,6 +2,7 @@ mod addons;
 mod detail;
 mod home;
 mod player;
+mod profiles;
 mod store;
 
 use std::rc::Rc;
@@ -14,6 +15,7 @@ use tokio::task::JoinSet;
 use addons::Addons;
 use detail::Detail;
 use home::{Home, Row};
+use profiles::Profiles;
 use store::{Profile, Store};
 
 /// Preinstalled addons (PLAN.md: defaults).
@@ -66,13 +68,37 @@ impl Ctx {
     }
 
     /// Persists the addon list and rebuilds Home's rows from it.
+    /// For a kids profile, whatever the parent saves here is what the kid is allowed.
     pub fn save_addons(&self, addons: Vec<Addon>) {
         let mut this = self.clone();
-        if let Err(e) = self.store.put(&self.profile.peek().id, "addons", "list", &addons) {
+        let mut profile = self.profile.peek().clone();
+        if profile.kids {
+            profile.allowed_addons = addons.iter().map(|a| a.manifest_url.to_string()).collect();
+            if let Err(e) = self.store.save_profile(&profile) {
+                eprintln!("saving profile: {e}");
+            }
+            this.profile.set(profile.clone());
+        }
+        if let Err(e) = self.store.put(&profile.id, "addons", "list", &addons) {
             eprintln!("saving addons: {e}");
         }
         this.addons.set(addons);
         spawn(load_rows(this));
+    }
+
+    /// Makes `profile` current: its addons, then its Home rows.
+    pub fn switch_profile(&self, profile: Profile) {
+        let mut this = self.clone();
+        let saved = self.store.get::<Vec<Addon>>(&profile.id, "addons", "list").ok().flatten();
+        this.profile.set(profile);
+        this.rows.set(vec![]);
+        this.addons.set(saved.clone().unwrap_or_default());
+        spawn(async move {
+            match saved {
+                Some(_) => load_rows(this).await,
+                None => install_defaults(&this).await,
+            }
+        });
     }
 }
 
@@ -83,9 +109,9 @@ pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: Str
 fn app() -> impl IntoElement {
     use_init_theme(dark_theme);
     let store = use_hook(|| Rc::new(Store::open(&data_dir().join("relix.db")).expect("open database")));
-    // ponytail: first profile until the profile picker (phase 1, slice 4) lands.
+    let profiles = use_hook(|| store.profiles().unwrap_or_default());
     let profile = use_state(|| {
-        let first = store.profiles().ok().and_then(|p| p.into_iter().next());
+        let first = profiles.first().cloned();
         first.unwrap_or_else(|| store.create_profile("Me", false).expect("create profile"))
     });
     let saved = store.get::<Vec<Addon>>(&profile.peek().id, "addons", "list").ok().flatten();
@@ -95,10 +121,10 @@ fn app() -> impl IntoElement {
 
     use_hook(move || {
         spawn(async move {
-            if saved.is_none() {
-                install_defaults(&ctx).await;
+            match saved {
+                Some(_) => load_rows(ctx).await,
+                None => install_defaults(&ctx).await,
             }
-            load_rows(ctx).await;
         });
     });
 
@@ -107,7 +133,8 @@ fn app() -> impl IntoElement {
         .skip_while(|a| a != "--route")
         .nth(1)
         .and_then(|r| r.parse::<Route>().ok())
-        .unwrap_or(Route::Home);
+        // With several people on this device, ask who's watching first.
+        .unwrap_or(if profiles.len() > 1 { Route::Profiles } else { Route::Home });
     Router::<Route>::new(move || RouterConfig::default().with_initial_path(initial.clone()))
 }
 
@@ -120,11 +147,7 @@ async fn install_defaults(ctx: &Ctx) {
             Err(e) => eprintln!("manifest {url}: {e}"),
         }
     }
-    if let Err(e) = ctx.store.put(&ctx.profile.peek().id, "addons", "list", &addons) {
-        eprintln!("saving addons: {e}");
-    }
-    let mut list = ctx.addons;
-    list.set(addons);
+    ctx.save_addons(addons);
 }
 
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
@@ -171,6 +194,8 @@ pub enum Route {
         Detail { kind: String, id: String },
         #[route("/addons")]
         Addons,
+        #[route("/profiles")]
+        Profiles,
 }
 
 #[derive(PartialEq)]
@@ -178,11 +203,13 @@ struct Shell;
 
 impl Component for Shell {
     fn render(&self) -> impl IntoElement {
+        let profile = use_consume::<Ctx>().profile.read().clone();
+        let picking = RouterContext::get().current::<Route>() == Route::Profiles;
         rect()
             .expanded()
             .background(home::BG)
             .color(Color::WHITE)
             .child(Outlet::<Route>::new())
-            .child(home::nav().layer(Layer::Overlay))
+            .maybe(!picking, |el| el.child(home::nav(&profile).layer(Layer::Overlay)))
     }
 }

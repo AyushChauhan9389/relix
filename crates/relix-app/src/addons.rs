@@ -15,7 +15,30 @@ impl Component for Addons {
         let ctx = use_consume::<Ctx>();
         let mut url = use_state(String::new);
         let mut status = use_state(|| None::<String>);
+        let mut unlocked = use_state(|| false);
+        let pin_input = use_state(String::new);
         let addons = ctx.addons.read().clone();
+        let profile = ctx.profile.read().clone();
+
+        // A kids profile's addons are the parent's call.
+        if let Some(pin) = profile.pin.clone().filter(|_| profile.kids && !*unlocked.read()) {
+            return rect()
+                .expanded()
+                .center()
+                .spacing(16.)
+                .child(label().text("Enter the PIN to manage this profile's addons").font_size(22.))
+                .child(Input::new(pin_input).width(Size::px(200.)).placeholder("PIN").auto_focus(true).on_submit(
+                    move |text: String| {
+                        if text.trim() == pin {
+                            unlocked.set(true);
+                        } else {
+                            status.set(Some("Wrong PIN.".into()));
+                        }
+                    },
+                ))
+                .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(MUTED)))
+                .into_element();
+        }
 
         let install = {
             let ctx = ctx.clone();
@@ -47,7 +70,8 @@ impl Component for Addons {
             }
         };
 
-        ScrollView::new().child(
+        ScrollView::new()
+            .child(
             rect()
                 .width(Size::fill())
                 .padding(Gaps::new(100., 48., 48., 48.))
@@ -73,7 +97,8 @@ impl Component for Addons {
                 )
                 .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(MUTED)))
                 .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element())),
-        )
+            )
+            .into_element()
     }
 }
 
