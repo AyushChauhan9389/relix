@@ -26,7 +26,7 @@ const DEFAULT_ADDONS: [&str; 2] =
 fn main() {
     // ponytail: phase 0 playback spike, kept for quick manual checks.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
-        match player::play(&url, &Default::default()) {
+        match player::play(&url, &Default::default(), 0.) {
             Ok(p) => println!("stopped at {:.1}s of {:.1}s", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }
@@ -64,6 +64,14 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// Re-reads Continue Watching and My List into Home, leaving catalog rows as they are.
+    pub fn refresh_local_rows(&self) {
+        let mut rows = self.rows;
+        let mut next = library::local_rows(&self.store, &self.profile);
+        next.extend(rows.peek().iter().filter(|r| !r.id.starts_with("local/")).cloned());
+        rows.set(next);
+    }
+
     /// Persists the addon list and rebuilds Home's rows from it.
     pub fn save_addons(&self, addons: Vec<Addon>) {
         let mut this = self.clone();
@@ -124,7 +132,7 @@ async fn install_defaults(ctx: &Ctx) {
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
 pub async fn load_rows(mut ctx: Ctx) {
     let addons = ctx.addons.peek().clone();
-    let mut rows = vec![];
+    let mut rows = library::local_rows(&ctx.store, &ctx.profile);
     let mut set = JoinSet::new();
     for addon in &addons {
         for c in addon.manifest.home_catalogs() {
@@ -134,23 +142,20 @@ pub async fn load_rows(mut ctx: Ctx) {
                 "series" => "Series".to_owned(),
                 other => other.to_owned(),
             };
-            let i = rows.len();
-            rows.push(Row { title: format!("{name} {kind}"), metas: vec![] });
+            let id = format!("{}/{}/{}", addon.manifest.id, c.r#type, c.id);
+            rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![] });
             let url = ResourceRequest::new("catalog", &c.r#type, &c.id).url(addon);
             let http = ctx.http.clone();
-            set.spawn(async move { (i, get::<CatalogResponse>(http, url).await) });
+            set.spawn(async move { (id, get::<CatalogResponse>(http, url).await) });
         }
     }
-    let titles: Vec<String> = rows.iter().map(|r| r.title.clone()).collect();
     ctx.rows.set(rows);
-    while let Some(Ok((i, res))) = set.join_next().await {
-        // A newer load may have replaced the rows meanwhile; only fill our own.
-        if ctx.rows.peek().get(i).map(|r| &r.title) != titles.get(i) {
-            return;
-        }
+    while let Some(Ok((id, res))) = set.join_next().await {
+        // Rows may have been rebuilt meanwhile, so find ours by id.
+        let Some(i) = ctx.rows.peek().iter().position(|r| r.id == id) else { continue };
         match res {
             Ok(r) => ctx.rows.write()[i].metas = r.metas,
-            Err(e) => eprintln!("catalog {i}: {e}"),
+            Err(e) => eprintln!("catalog {id}: {e}"),
         }
     }
 }

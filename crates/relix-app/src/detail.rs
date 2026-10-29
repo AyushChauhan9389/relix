@@ -1,10 +1,13 @@
+use std::collections::{HashMap, HashSet};
+
 use freya::prelude::*;
 use freya::router::*;
-use relix_proto::addon::{Meta, MetaResponse, ResourceRequest, Stream, StreamsResponse, Video, route, seasons, stream_groups};
+use relix_proto::addon::{Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, Video, route, seasons, stream_groups};
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
-use crate::home::{backdrop, layer, title_art};
+use crate::home::{backdrop, button, layer, title_art};
+use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::{Ctx, get, player};
 
 const HEADER_H: f32 = 520.;
@@ -27,6 +30,70 @@ impl Component for Detail {
         // The movie itself, or the episode the user picked.
         let mut video = use_state(|| None::<String>);
         let mut streams = use_state(Vec::<(usize, Vec<Stream>)>::new);
+        let (store, profile) = (ctx.store.clone(), ctx.profile.clone());
+        let mut watch = use_state(|| store.get::<WatchState>(&profile, "progress", &self.id).ok().flatten());
+        let mut watched = use_state(|| {
+            let prefix = format!("{}:", self.id);
+            store.list::<bool>(&profile, "watched").unwrap_or_default().into_iter()
+                .filter(|(k, v)| *v && (*k == self.id || k.starts_with(&prefix)))
+                .map(|(k, _)| k)
+                .collect::<HashSet<String>>()
+        });
+        let mut in_list = use_state(|| {
+            store.get::<Option<MetaPreview>>(&profile, "library", &self.id).ok().flatten().flatten().is_some()
+        });
+
+        // Plays a stream of the chosen video, resuming where it stopped, and records where it stops now.
+        let play = EventHandler::new({
+            let ctx = ctx.clone();
+            move |(url, headers): (String, HashMap<String, String>)| {
+                let (Some(m), Some(vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
+                let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                // mpv blocks until its window closes, so it gets its own thread.
+                std::thread::spawn(move || {
+                    let _ = tx.send(player::play(&url, &headers, start));
+                });
+                let ctx = ctx.clone();
+                spawn(async move {
+                    let p = match rx.await {
+                        Ok(Ok(p)) => p,
+                        Ok(Err(e)) => return eprintln!("mpv: {e}"),
+                        Err(_) => return,
+                    };
+                    let state = record_playback(preview(&m), &vid, p, next_video(&m.videos, &vid), now());
+                    let saved = ctx.store.put(&ctx.profile, "progress", &m.id, &state).and_then(|()| {
+                        if is_finished(p) {
+                            watched.write().insert(vid.clone());
+                            ctx.store.put(&ctx.profile, "watched", &vid, &true)?;
+                        }
+                        Ok(())
+                    });
+                    if let Err(e) = saved {
+                        eprintln!("saving progress: {e}");
+                    }
+                    watch.set(Some(state));
+                    ctx.refresh_local_rows();
+                });
+            }
+        });
+
+        let toggle_list = {
+            let ctx = ctx.clone();
+            move |()| {
+                let Some(m) = meta.peek().clone() else { return };
+                let add = !*in_list.peek();
+                // Removal writes `null` rather than deleting, so it can sync.
+                let value = add.then(|| preview(&m));
+                match ctx.store.put(&ctx.profile, "library", &m.id, &value) {
+                    Ok(()) => {
+                        in_list.set(add);
+                        ctx.refresh_local_rows();
+                    }
+                    Err(e) => eprintln!("saving My List: {e}"),
+                }
+            }
+        };
 
         // Reruns when the addon list changes, so it waits out startup instead of finding no addons.
         // ponytail: loads once per mount; navigating detail -> detail would need a keyed reload.
@@ -44,7 +111,15 @@ impl Component for Detail {
                     // The first addon in list order that answers wins, like Stremio.
                     for (_, url) in route(&addons, &req) {
                         if let Ok(r) = get::<MetaResponse>(ctx.http.clone(), url).await {
-                            season.set(seasons(&r.meta.videos).first().map(|(s, _)| *s));
+                            // Reopen where the user left off, else the first season.
+                            let resume = watch.peek().as_ref().and_then(|w| r.meta.videos.iter().find(|v| v.id == w.video_id).cloned());
+                            match resume {
+                                Some(v) => {
+                                    season.set(v.season);
+                                    video.set(Some(v.id));
+                                }
+                                None => season.set(seasons(&r.meta.videos).first().map(|(s, _)| *s)),
+                            }
                             if seasons(&r.meta.videos).is_empty() {
                                 video.set(Some(id.clone()));
                             }
@@ -100,9 +175,11 @@ impl Component for Detail {
         let current_season = *season.read();
         let episodes = all_seasons.iter().find(|(n, _)| Some(*n) == current_season).map(|(_, e)| e.clone()).unwrap_or_default();
         let picked = video.read().clone();
+        let watched_now = watched.read().clone();
+        let current = watch.read().clone();
 
         page.wrap(ScrollView::new_controlled(page.controller).scroll_with_arrows(false)
-            .child(header(&meta))
+            .child(header(&meta, *in_list.read(), toggle_list))
             .child(
                 rect()
                     .horizontal()
@@ -124,19 +201,21 @@ impl Component for Detail {
                             )
                             .children(episodes.iter().map(|ep| {
                                 let id = ep.id.clone();
-                                Focusable::new(episode_row(ep, picked.as_deref() == Some(&ep.id)), move |()| {
+                                let progress = current.as_ref().filter(|w| w.video_id == ep.id && !w.up_next).map(WatchState::fraction);
+                                let row = episode_row(ep, picked.as_deref() == Some(&ep.id), watched_now.contains(&ep.id), progress);
+                                Focusable::new(row, move |()| {
                                     video.set(Some(id.clone()))
                                 })
                                 .into_element()
                             }))
                     }))
-                    .child(stream_panel(picked.is_some(), has_stream_addons, groups)),
+                    .child(stream_panel(picked.is_some(), has_stream_addons, groups, play)),
             ))
             .into_element()
     }
 }
 
-fn header(meta: &Meta) -> Rect {
+fn header(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static) -> Rect {
     let info: Vec<String> = [meta.release_info.clone(), meta.runtime.clone(), (!meta.genres.is_empty()).then(|| meta.genres.join(" · "))]
         .into_iter()
         .flatten()
@@ -157,7 +236,11 @@ fn header(meta: &Meta) -> Rect {
                 .child(label().text(info.join("   ")).font_size(16.).color((70, 211, 105)))
                 .maybe_child(meta.description.clone().map(|d| {
                     paragraph().width(Size::px(640.)).max_lines(4).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
-                })),
+                }))
+                .child(Focusable::new(
+                    button(if in_list { "✓ My List" } else { "+ My List" }, (109, 109, 110, 0.7), (255, 255, 255)),
+                    toggle_list,
+                )),
         )
 }
 
@@ -169,7 +252,7 @@ fn chip(text: String, active: bool) -> Rect {
         .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))
 }
 
-fn episode_row(ep: &Video, picked: bool) -> Rect {
+fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -> Rect {
     let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
         Some(url) => ImageViewer::new(url).width(Size::px(176.)).height(Size::px(99.)).into(),
         None => rect().width(Size::px(176.)).height(Size::px(99.)).background((50, 50, 50)).into(),
@@ -189,17 +272,27 @@ fn episode_row(ep: &Video, picked: bool) -> Rect {
                 .spacing(6.)
                 .child(
                     label()
-                        .text(format!("{}. {}", ep.episode.unwrap_or_default(), ep.title()))
+                        .text(format!("{}. {}{}", ep.episode.unwrap_or_default(), ep.title(), if watched { "  ✓" } else { "" }))
                         .font_size(17.)
                         .font_weight(FontWeight::BOLD),
                 )
+                .map(progress, |el, p| {
+                    el.child(
+                        rect()
+                            .width(Size::px(240.))
+                            .height(Size::px(4.))
+                            .corner_radius(2.)
+                            .background((90, 90, 90))
+                            .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
+                    )
+                })
                 .maybe_child(ep.overview.clone().map(|o| {
                     paragraph().max_lines(3).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(MUTED).span(o)
                 })),
         )
 }
 
-fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<Stream>)>) -> Rect {
+fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<(String, HashMap<String, String>)>) -> Rect {
     let panel = rect().width(Size::px(460.)).spacing(10.).child(label().text("Streams").font_size(22.).font_weight(FontWeight::BOLD));
     let note = |text: &'static str| label().text(text).font_size(15.).color(MUTED);
     if !has_stream_addons {
@@ -215,12 +308,12 @@ fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<
         rect()
             .spacing(6.)
             .child(label().text(addon).font_size(14.).color(MUTED))
-            .children(streams.into_iter().map(stream_card))
+            .children(streams.into_iter().map(|s| stream_card(s, play.clone())))
             .into_element()
     }))
 }
 
-fn stream_card(stream: Stream) -> Element {
+fn stream_card(stream: Stream, play: EventHandler<(String, HashMap<String, String>)>) -> Element {
     let url = stream.playable_url().map(str::to_owned);
     let headers = stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default();
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
@@ -239,16 +332,7 @@ fn stream_card(stream: Stream) -> Element {
                 .then(|| label().text("Torrent · coming soon").font_size(12.).color((229, 9, 20))),
         );
     match url {
-        Some(url) => Focusable::new(card, move |()| {
-            let (url, headers) = (url.clone(), headers.clone());
-            // mpv blocks until its window closes, so it gets its own thread.
-            std::thread::spawn(move || {
-                if let Err(e) = player::play(&url, &headers) {
-                    eprintln!("mpv: {e}");
-                }
-            });
-        })
-        .into(),
+        Some(url) => Focusable::new(card, move |()| play.call((url.clone(), headers.clone()))).into(),
         None => card.into(),
     }
 }

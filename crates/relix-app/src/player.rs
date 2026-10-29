@@ -11,9 +11,9 @@ pub struct Progress {
     pub duration: f64,
 }
 
-/// Plays `url` in a new mpv window and blocks until it closes or the file ends.
+/// Plays `url` from `start` seconds in a new mpv window and blocks until it closes or the file ends.
 /// `headers` are an addon stream's `proxyHeaders.request`.
-pub fn play(url: &str, headers: &HashMap<String, String>) -> libmpv2::Result<Progress> {
+pub fn play(url: &str, headers: &HashMap<String, String>, start: f64) -> libmpv2::Result<Progress> {
     let mpv = Mpv::with_initializer(|init| {
         init.set_option("vo", "gpu-next")?;
         init.set_option("hwdec", "auto-safe")?;
@@ -23,6 +23,9 @@ pub fn play(url: &str, headers: &HashMap<String, String>) -> libmpv2::Result<Pro
         init.set_option("input-default-bindings", "yes")?;
         init.set_option("input-vo-keyboard", "yes")?;
         init.set_option("title", "Relix")?;
+        if start > 0. {
+            init.set_option("start", start.to_string().as_str())?;
+        }
         if !headers.is_empty() {
             // ponytail: mpv splits this list on ',', so header values containing commas break; escape when an addon needs it.
             let fields: Vec<String> = headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();

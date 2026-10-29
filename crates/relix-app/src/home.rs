@@ -19,8 +19,12 @@ const ROTATE_EVERY: Duration = Duration::from_secs(8);
 
 #[derive(Clone, PartialEq)]
 pub struct Row {
+    /// Stable identity, so late catalog answers land in the right row.
+    pub id: String,
     pub title: String,
     pub metas: Vec<MetaPreview>,
+    /// Watched fraction per poster (Continue Watching only).
+    pub progress: Vec<f32>,
 }
 
 /// A vertically virtualized page: item 0 is the hero, the rest are rows.
@@ -32,8 +36,10 @@ impl Component for Home {
         let page = use_scroller();
         use_page_scroller(page);
         let rows = use_consume::<Ctx>().rows.read().clone();
+        // Featured titles come from the first catalog, not Continue Watching or My List.
         let featured: Vec<MetaPreview> = rows
-            .first()
+            .iter()
+            .find(|r| !r.id.starts_with("local/"))
             .map(|r| r.metas.iter().filter(|m| m.background.is_some()).take(FEATURED).cloned().collect())
             .unwrap_or_default();
         let len = rows.len() + 1;
@@ -246,6 +252,7 @@ impl Component for PosterRow {
     fn render(&self) -> impl IntoElement {
         let row = use_scroller();
         let metas = self.row.metas.clone();
+        let progress = self.row.progress.clone();
         let len = metas.len();
         rect()
             .height(Size::px(ROW_H))
@@ -255,9 +262,13 @@ impl Component for PosterRow {
             .child(
                 row.wrap(
                     VirtualScrollView::new_with_data_controlled(
-                        (metas, row),
-                        |item, (metas, row): &(Vec<MetaPreview>, Scroller)| {
-                            rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(poster(&metas[item.index], *row)).into()
+                        (metas, progress, row),
+                        |item, (metas, progress, row): &(Vec<MetaPreview>, Vec<f32>, Scroller)| {
+                            rect()
+                                .key(item.index)
+                                .padding(Gaps::new(0., 8., 0., 0.))
+                                .child(poster(&metas[item.index], progress.get(item.index).copied(), *row))
+                                .into()
                         },
                         row.controller,
                     )
@@ -270,7 +281,7 @@ impl Component for PosterRow {
     }
 }
 
-fn poster(meta: &MetaPreview, row: Scroller) -> Element {
+fn poster(meta: &MetaPreview, progress: Option<f32>, row: Scroller) -> Element {
     let art: Element = match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
         Some(url) => rect()
             .corner_radius(4.)
@@ -286,5 +297,17 @@ fn poster(meta: &MetaPreview, row: Scroller) -> Element {
             .child(meta.name.clone())
             .into(),
     };
+    let art = rect().child(art).map(progress, |el, p| {
+        el.child(
+            rect()
+                .position(Position::new_absolute().left(8.).bottom(8.))
+                .layer(1)
+                .width(Size::px(POSTER_W - 16.))
+                .height(Size::px(4.))
+                .corner_radius(2.)
+                .background((90, 90, 90))
+                .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
+        )
+    });
     Focusable::new(art, open_title(meta)).row(row).into()
 }

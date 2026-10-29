@@ -1,9 +1,11 @@
 //! My List and Continue Watching (PLAN.md phase 2).
 
-use relix_proto::addon::MetaPreview;
+use relix_proto::addon::{Meta, MetaPreview, Video, seasons};
 use serde::{Deserialize, Serialize};
 
 pub use crate::player::Progress;
+use crate::home::Row;
+use crate::store::Store;
 
 /// Watched this far and you're "started"; Netflix-style, a peek doesn't count.
 const STARTED_SECS: f64 = 30.;
@@ -25,9 +27,14 @@ pub struct WatchState {
     pub updated: u64,
 }
 
+/// Whether playback stopped in the credits or later.
+pub fn is_finished(p: Progress) -> bool {
+    p.duration > 0. && p.position >= p.duration * FINISHED
+}
+
 impl WatchState {
     pub fn finished(&self) -> bool {
-        self.duration > 0. && self.position >= self.duration * FINISHED
+        is_finished(Progress { position: self.position, duration: self.duration })
     }
 
     /// Where to start `video_id`: the saved position if it's the video we stopped in.
@@ -57,9 +64,74 @@ pub fn continue_watching(mut states: Vec<WatchState>) -> Vec<WatchState> {
     states
 }
 
+/// The episode after `current` in airing order, skipping specials.
+pub fn next_video(videos: &[Video], current: &str) -> Option<String> {
+    let order: Vec<&Video> =
+        seasons(videos).into_iter().filter(|(s, _)| *s > 0).flat_map(|(_, eps)| eps).collect();
+    let i = order.iter().position(|v| v.id == current)?;
+    order.get(i + 1).map(|v| v.id.clone())
+}
+
+pub fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
+}
+
+/// The poster-sized part of a title, as stored in progress and My List records.
+pub fn preview(m: &Meta) -> MetaPreview {
+    MetaPreview {
+        id: m.id.clone(),
+        r#type: m.r#type.clone(),
+        name: m.name.clone(),
+        poster: m.poster.clone(),
+        background: m.background.clone(),
+        logo: m.logo.clone(),
+        description: m.description.clone(),
+        release_info: m.release_info.clone(),
+    }
+}
+
+/// Home's Continue Watching and My List rows, straight from the local store.
+pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
+    let states: Vec<WatchState> =
+        store.list::<WatchState>(profile, "progress").unwrap_or_default().into_iter().map(|(_, s)| s).collect();
+    let watching = continue_watching(states);
+    // Removing from My List writes `null`, so the removal can sync.
+    let list: Vec<MetaPreview> = store
+        .list::<Option<MetaPreview>>(profile, "library")
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, m)| m)
+        .collect();
+
+    let mut rows = vec![];
+    if !watching.is_empty() {
+        rows.push(Row {
+            id: "local/continue".into(),
+            title: "Continue Watching".into(),
+            progress: watching.iter().map(WatchState::fraction).collect(),
+            metas: watching.into_iter().map(|s| s.title).collect(),
+        });
+    }
+    if !list.is_empty() {
+        rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![] });
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_episode_crosses_seasons_and_skips_specials() {
+        let v = |id: &str, s: u32, e: u32| -> Video {
+            serde_json::from_value(serde_json::json!({ "id": id, "season": s, "episode": e })).unwrap()
+        };
+        let videos = [v("s1e2", 1, 2), v("s0e1", 0, 1), v("s2e1", 2, 1), v("s1e1", 1, 1)];
+        assert_eq!(next_video(&videos, "s1e1").as_deref(), Some("s1e2"));
+        assert_eq!(next_video(&videos, "s1e2").as_deref(), Some("s2e1"));
+        assert_eq!(next_video(&videos, "s2e1"), None);
+    }
 
     fn title(id: &str) -> MetaPreview {
         serde_json::from_value(serde_json::json!({ "id": id, "type": "series", "name": id })).unwrap()
