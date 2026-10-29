@@ -63,13 +63,41 @@ impl Component for Home {
     }
 }
 
-pub fn nav() -> Rect {
-    let link = |text: &'static str, active: bool| {
-        label()
-            .text(text)
-            .font_size(15.)
-            .maybe(!active, |el| el.color((200, 200, 200)))
-            .maybe(active, |el| el.font_weight(FontWeight::BOLD))
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NavLink {
+    Home,
+    Series,
+    Movies,
+    MyList,
+    Addons,
+    Search,
+    Account,
+}
+
+/// The nav link to highlight on `route`, if it has one.
+pub fn active_link(route: &Route) -> Option<NavLink> {
+    match route {
+        Route::Home => Some(NavLink::Home),
+        Route::Browse { kind } if kind == "series" => Some(NavLink::Series),
+        Route::Browse { kind } if kind == "movie" => Some(NavLink::Movies),
+        Route::MyList => Some(NavLink::MyList),
+        Route::Addons => Some(NavLink::Addons),
+        Route::Search => Some(NavLink::Search),
+        Route::Account => Some(NavLink::Account),
+        Route::Browse { .. } | Route::Detail { .. } => None,
+    }
+}
+
+pub fn nav(active: Option<NavLink>) -> Rect {
+    let link = move |which: NavLink, text: &'static str, to: Route| {
+        let on = active == Some(which);
+        Link::new(to).child(
+            label()
+                .text(text)
+                .font_size(15.)
+                .maybe(!on, |el| el.color((200, 200, 200)))
+                .maybe(on, |el| el.font_weight(FontWeight::BOLD)),
+        )
     };
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
@@ -84,19 +112,19 @@ pub fn nav() -> Rect {
             Link::new(Route::Home)
                 .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20))),
         )
-        .child(Link::new(Route::Home).child(link("Home", true)))
-        .child(Link::new(Route::Browse { kind: "series".into() }).child(link("Series", false)))
-        .child(Link::new(Route::Browse { kind: "movie".into() }).child(link("Movies", false)))
-        .child(link("My List", false))
+        .child(link(NavLink::Home, "Home", Route::Home))
+        .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
+        .child(link(NavLink::Movies, "Movies", Route::Browse { kind: "movie".into() }))
+        .child(link(NavLink::MyList, "My List", Route::MyList))
         .child(
             rect()
                 .position(Position::new_absolute().right(48.).top(18.))
                 .horizontal()
                 .cross_align(Alignment::Center)
                 .spacing(24.)
-                .child(Link::new(Route::Addons).child(link("Addons", false)))
-                .child(Link::new(Route::Search).child(link("Search", false)))
-                .child(Link::new(Route::Account).child(link("Account", false))),
+                .child(link(NavLink::Addons, "Addons", Route::Addons))
+                .child(link(NavLink::Search, "Search", Route::Search))
+                .child(link(NavLink::Account, "Account", Route::Account)),
         )
 }
 
@@ -335,4 +363,22 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
         )
     });
     Focusable { row, ..Focusable::new(art, open_title(meta)) }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_page_highlights_its_nav_link() {
+        assert_eq!(active_link(&Route::Home), Some(NavLink::Home));
+        assert_eq!(active_link(&Route::Browse { kind: "series".into() }), Some(NavLink::Series));
+        assert_eq!(active_link(&Route::Browse { kind: "movie".into() }), Some(NavLink::Movies));
+        assert_eq!(active_link(&Route::MyList), Some(NavLink::MyList));
+        assert_eq!(active_link(&Route::Addons), Some(NavLink::Addons));
+        assert_eq!(active_link(&Route::Search), Some(NavLink::Search));
+        assert_eq!(active_link(&Route::Account), Some(NavLink::Account));
+        assert_eq!(active_link(&Route::Browse { kind: "anime".into() }), None, "no nav link for other types");
+        assert_eq!(active_link(&Route::Detail { kind: "movie".into(), id: "tt1".into() }), None);
+    }
 }

@@ -5,6 +5,7 @@ mod detail;
 mod focus;
 mod home;
 mod library;
+mod my_list;
 mod player;
 mod search;
 mod store;
@@ -24,6 +25,7 @@ use browse::Browse;
 use detail::Detail;
 use focus::{Dir, Registry};
 use home::{Home, Row};
+use my_list::MyList;
 use search::Search;
 use store::Store;
 
@@ -187,7 +189,7 @@ fn app() -> impl IntoElement {
     let initial = std::env::args()
         .skip_while(|a| a != "--route")
         .nth(1)
-        .and_then(|r| r.parse::<Route>().ok())
+        .and_then(|r| r.parse::<Route>().inspect_err(|e| eprintln!("--route {r}: {e}")).ok())
         .unwrap_or(Route::Home);
     Router::<Route>::new(move || RouterConfig::default().with_initial_path(initial.clone()))
 }
@@ -235,7 +237,7 @@ pub async fn load_rows(mut ctx: Ctx) {
     }
 }
 
-#[derive(Routable, Clone, PartialEq)]
+#[derive(Routable, Clone, PartialEq, Debug)]
 #[rustfmt::skip]
 pub enum Route {
     #[layout(Shell)]
@@ -251,6 +253,8 @@ pub enum Route {
         Browse { kind: String },
         #[route("/account")]
         Account,
+        #[route("/my-list")]
+        MyList,
 }
 
 #[derive(PartialEq)]
@@ -281,6 +285,6 @@ impl Component for Shell {
             .background(home::BG)
             .color(Color::WHITE)
             .child(Outlet::<Route>::new())
-            .child(home::nav().layer(Layer::Overlay))
+            .child(home::nav(home::active_link(&RouterContext::get().current::<Route>())).layer(Layer::Overlay))
     }
 }
