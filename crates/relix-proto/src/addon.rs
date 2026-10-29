@@ -1,0 +1,341 @@
+//! Stremio addon protocol: install URLs, manifests, request routing, responses.
+
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use url::Url;
+
+/// JavaScript's encodeURIComponent, which is what Stremio uses for path segments.
+const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-').remove(b'_').remove(b'.').remove(b'!').remove(b'~')
+    .remove(b'*').remove(b'\'').remove(b'(').remove(b')');
+/// Ids keep ':' readable, e.g. `tt0903747:1:2`.
+const ID: &AsciiSet = &COMPONENT.remove(b':');
+
+#[derive(Debug, PartialEq)]
+pub struct InvalidManifestUrl;
+
+/// Normalizes user input or a `stremio://` deep link into an https manifest URL.
+pub fn manifest_url(input: &str) -> Result<Url, InvalidManifestUrl> {
+    let input = input.trim();
+    let input = match input.strip_prefix("stremio://") {
+        Some(rest) => format!("https://{rest}"),
+        None => input.to_owned(),
+    };
+    let url = Url::parse(&input).map_err(|_| InvalidManifestUrl)?;
+    let ok = matches!(url.scheme(), "https" | "http") && url.path().ends_with("/manifest.json");
+    ok.then_some(url).ok_or(InvalidManifestUrl)
+}
+
+/// The addon's base URL: the manifest URL without `/manifest.json`.
+pub fn base_url(manifest: &Url) -> &str {
+    manifest.as_str().trim_end_matches("/manifest.json")
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Manifest {
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub types: Vec<String>,
+    #[serde(default)]
+    pub id_prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    pub resources: Vec<Resource>,
+    #[serde(default)]
+    pub catalogs: Vec<Catalog>,
+    #[serde(default)]
+    pub behavior_hints: ManifestHints,
+}
+
+/// A resource is either a bare name (inherits the manifest's types and idPrefixes)
+/// or an object with its own.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum Resource {
+    Short(String),
+    #[serde(rename_all = "camelCase")]
+    Full {
+        name: String,
+        #[serde(default)]
+        types: Option<Vec<String>>,
+        #[serde(default)]
+        id_prefixes: Option<Vec<String>>,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Catalog {
+    pub r#type: String,
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub extra: Vec<ExtraProp>,
+    /// Legacy form, still sent by some addons alongside or instead of `extra`.
+    #[serde(default)]
+    pub extra_required: Vec<String>,
+    #[serde(default)]
+    pub extra_supported: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtraProp {
+    pub name: String,
+    #[serde(default)]
+    pub is_required: bool,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestHints {
+    #[serde(default)]
+    pub adult: bool,
+    #[serde(default)]
+    pub p2p: bool,
+    #[serde(default)]
+    pub configurable: bool,
+    #[serde(default)]
+    pub configuration_required: bool,
+}
+
+impl Catalog {
+    pub fn supports(&self, extra: &str) -> bool {
+        self.extra.iter().any(|e| e.name == extra) || self.extra_supported.iter().any(|e| e == extra)
+    }
+
+    pub fn has_required_extra(&self) -> bool {
+        !self.extra_required.is_empty() || self.extra.iter().any(|e| e.is_required)
+    }
+}
+
+impl Manifest {
+    /// Catalogs that can show as a Home row: no input needed.
+    pub fn home_catalogs(&self) -> impl Iterator<Item = &Catalog> {
+        self.catalogs.iter().filter(|c| !c.has_required_extra())
+    }
+
+    pub fn search_catalogs(&self) -> impl Iterator<Item = &Catalog> {
+        self.catalogs.iter().filter(|c| c.supports("search"))
+    }
+}
+
+/// An installed addon: where it lives and what it declared.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Addon {
+    pub manifest_url: Url,
+    pub manifest: Manifest,
+}
+
+/// `{base}/{resource}/{type}/{id}[/{extra}].json`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceRequest {
+    pub resource: String,
+    pub r#type: String,
+    pub id: String,
+    pub extra: Vec<(String, String)>,
+}
+
+impl ResourceRequest {
+    pub fn new(resource: &str, r#type: &str, id: &str) -> Self {
+        Self { resource: resource.into(), r#type: r#type.into(), id: id.into(), extra: vec![] }
+    }
+
+    pub fn extra(mut self, name: &str, value: &str) -> Self {
+        self.extra.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn url(&self, addon: &Addon) -> String {
+        let mut path = format!(
+            "{}/{}/{}/{}",
+            base_url(&addon.manifest_url),
+            self.resource,
+            utf8_percent_encode(&self.r#type, ID),
+            utf8_percent_encode(&self.id, ID),
+        );
+        for (i, (name, value)) in self.extra.iter().enumerate() {
+            path.push(if i == 0 { '/' } else { '&' });
+            path.push_str(&format!("{}={}", utf8_percent_encode(name, COMPONENT), utf8_percent_encode(value, COMPONENT)));
+        }
+        path + ".json"
+    }
+}
+
+impl Addon {
+    /// Whether this addon should be asked for `req`, following Stremio's rules:
+    /// catalogs must be declared; other resources match on name, type and id prefix.
+    pub fn serves(&self, req: &ResourceRequest) -> bool {
+        let m = &self.manifest;
+        if req.resource == "catalog" {
+            return m.catalogs.iter().any(|c| c.r#type == req.r#type && c.id == req.id);
+        }
+        m.resources.iter().any(|r| {
+            let (name, types, prefixes) = match r {
+                Resource::Short(name) => (name, &m.types, m.id_prefixes.as_ref()),
+                Resource::Full { name, types, id_prefixes } => (
+                    name,
+                    types.as_ref().unwrap_or(&m.types),
+                    id_prefixes.as_ref().or(m.id_prefixes.as_ref()),
+                ),
+            };
+            *name == req.resource
+                && types.contains(&req.r#type)
+                && prefixes.is_none_or(|p| p.iter().any(|p| req.id.starts_with(p.as_str())))
+        })
+    }
+}
+
+/// Every addon that serves `req`, in addon-list order, with the URL to fetch.
+pub fn route<'a>(addons: &'a [Addon], req: &'a ResourceRequest) -> impl Iterator<Item = (&'a Addon, String)> {
+    addons.iter().filter(|a| a.serves(req)).map(|a| (a, req.url(a)))
+}
+
+/// Cache hints any addon response may carry, in seconds.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheHints {
+    pub cache_max_age: Option<u64>,
+    pub stale_revalidate: Option<u64>,
+    pub stale_error: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CatalogResponse {
+    pub metas: Vec<MetaPreview>,
+    #[serde(flatten)]
+    pub cache: CacheHints,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MetaResponse {
+    pub meta: Meta,
+    #[serde(flatten)]
+    pub cache: CacheHints,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StreamsResponse {
+    pub streams: Vec<Stream>,
+    #[serde(flatten)]
+    pub cache: CacheHints,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SubtitlesResponse {
+    pub subtitles: Vec<Subtitle>,
+    #[serde(flatten)]
+    pub cache: CacheHints,
+}
+
+/// A title as it appears in a catalog row.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaPreview {
+    pub id: String,
+    pub r#type: String,
+    pub name: String,
+    pub poster: Option<String>,
+    pub background: Option<String>,
+    pub logo: Option<String>,
+    pub description: Option<String>,
+    pub release_info: Option<String>,
+}
+
+/// A title's full details.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Meta {
+    pub id: String,
+    pub r#type: String,
+    pub name: String,
+    pub poster: Option<String>,
+    pub background: Option<String>,
+    pub logo: Option<String>,
+    pub description: Option<String>,
+    pub release_info: Option<String>,
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    #[serde(default)]
+    pub videos: Vec<Video>,
+}
+
+/// An episode (or other video) of a title.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Video {
+    pub id: String,
+    pub title: Option<String>,
+    /// Cinemeta sends `name` instead of `title`.
+    pub name: Option<String>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
+    pub released: Option<String>,
+    pub thumbnail: Option<String>,
+    pub overview: Option<String>,
+}
+
+impl Video {
+    pub fn title(&self) -> &str {
+        self.title.as_deref().or(self.name.as_deref()).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stream {
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub source: StreamSource,
+    #[serde(default)]
+    pub behavior_hints: StreamHints,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum StreamSource {
+    Url { url: String },
+    YouTube { yt_id: String },
+    Torrent {
+        info_hash: String,
+        file_idx: Option<u32>,
+        #[serde(default)]
+        sources: Vec<String>,
+    },
+    External { external_url: String },
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamHints {
+    #[serde(default)]
+    pub not_web_ready: bool,
+    pub binge_group: Option<String>,
+    pub filename: Option<String>,
+    pub proxy_headers: Option<ProxyHeaders>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct ProxyHeaders {
+    #[serde(default)]
+    pub request: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub response: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Subtitle {
+    pub id: String,
+    pub url: String,
+    pub lang: String,
+}

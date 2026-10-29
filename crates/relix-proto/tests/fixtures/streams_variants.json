@@ -1,0 +1,17 @@
+{
+ "streams": [
+  {
+   "name": "Debrid\n1080p",
+   "title": "Movie.2010.1080p.mkv",
+   "url": "https://cdn.example.com/movie.mkv",
+   "behaviorHints": {
+    "notWebReady": true,
+    "bingeGroup": "debrid-1080p",
+    "proxyHeaders": { "request": { "User-Agent": "Relix", "Referer": "https://example.com/" } }
+   }
+  },
+  { "title": "Trailer", "ytId": "YoHD9XEInc0" },
+  { "name": "Watch on site", "externalUrl": "https://example.com/watch/1" },
+  { "infoHash": "a584351126afcf50d32be068f3c9a62550d41ecc", "sources": ["tracker:udp://tracker.example.com:1337", "dht:a584351126afcf50d32be068f3c9a62550d41ecc"] }
+ ]
+}

@@ -1,0 +1,378 @@
+{
+ "metas": [
+  {
+   "imdb_id": "tt14173636",
+   "name": "The Invite",
+   "type": "movie",
+   "cast": [
+    "Seth Rogen",
+    "Olivia Wilde",
+    "Pen\u00c3\u00a9lope Cruz"
+   ],
+   "country": "United States",
+   "description": "Joe and Angela's marriage is on thin ice. When they invite their enigmatic upstairs neighbors for a dinner party, the night spirals into unexpected places.",
+   "director": [
+    "Olivia Wilde"
+   ],
+   "genre": [
+    "Comedy",
+    "Drama",
+    "Romance"
+   ],
+   "imdbRating": "7.5",
+   "released": "2026-07-10T00:00:00.000Z",
+   "slug": "movie/the-invite-14173636",
+   "writer": [
+    "Cesc Gay",
+    "Will McCormack",
+    "Rashida Jones"
+   ],
+   "year": "2026",
+   "moviedb_id": 950028,
+   "popularities": {
+    "moviedb": 34.5149,
+    "stremio": 1.1504966666666665,
+    "stremio_lib": 0,
+    "trakt": 222
+   },
+   "poster": "https://images.metahub.space/poster/small/tt14173636/img",
+   "runtime": "107 min",
+   "trailers": [
+    {
+     "source": "nelkiuezJxg",
+     "type": "Trailer"
+    },
+    {
+     "source": "OJ19I9q_hOQ",
+     "type": "Trailer"
+    }
+   ],
+   "background": "https://images.metahub.space/background/medium/tt14173636/img",
+   "logo": "https://images.metahub.space/logo/medium/tt14173636/img",
+   "awards": "2 wins & 8 nominations total",
+   "popularity": 1.1504966666666665,
+   "id": "tt14173636",
+   "genres": [
+    "Comedy",
+    "Drama",
+    "Romance"
+   ],
+   "releaseInfo": "2026",
+   "trailerStreams": [
+    {
+     "title": "The Invite",
+     "ytId": "nelkiuezJxg"
+    },
+    {
+     "title": "The Invite",
+     "ytId": "OJ19I9q_hOQ"
+    }
+   ],
+   "links": [
+    {
+     "name": "7.5",
+     "category": "imdb",
+     "url": "https://imdb.com/title/tt14173636"
+    },
+    {
+     "name": "The Invite",
+     "category": "share",
+     "url": "https://www.strem.io/s/movie/the-invite-14173636"
+    },
+    {
+     "name": "Comedy",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Comedy"
+    },
+    {
+     "name": "Drama",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Drama"
+    },
+    {
+     "name": "Romance",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Romance"
+    },
+    {
+     "name": "Seth Rogen",
+     "category": "Cast",
+     "url": "stremio:///search?search=Seth%20Rogen"
+    },
+    {
+     "name": "Olivia Wilde",
+     "category": "Cast",
+     "url": "stremio:///search?search=Olivia%20Wilde"
+    },
+    {
+     "name": "Pen\u00c3\u00a9lope Cruz",
+     "category": "Cast",
+     "url": "stremio:///search?search=Pen%C3%A9lope%20Cruz"
+    },
+    {
+     "name": "Cesc Gay",
+     "category": "Writers",
+     "url": "stremio:///search?search=Cesc%20Gay"
+    },
+    {
+     "name": "Will McCormack",
+     "category": "Writers",
+     "url": "stremio:///search?search=Will%20McCormack"
+    },
+    {
+     "name": "Rashida Jones",
+     "category": "Writers",
+     "url": "stremio:///search?search=Rashida%20Jones"
+    },
+    {
+     "name": "Olivia Wilde",
+     "category": "Directors",
+     "url": "stremio:///search?search=Olivia%20Wilde"
+    }
+   ],
+   "behaviorHints": {
+    "defaultVideoId": "tt14173636",
+    "hasScheduledVideos": false
+   }
+  },
+  {
+   "imdb_id": "tt6262770",
+   "name": "Tenzing",
+   "popularities": {
+    "trakt": 376,
+    "moviedb": 76.4355,
+    "stremio": 2.54785,
+    "stremio_lib": 0
+   },
+   "type": "movie",
+   "awards": "1 win & 1 nomination total",
+   "cast": [
+    "Genden Phuntsok",
+    "Tom Hiddleston",
+    "Willem Dafoe"
+   ],
+   "country": "United Kingdom, Australia, United States",
+   "description": "The untold and inspiring tale of one of the most important mountain climbers in history who, with Edmund Hillary, became the first person to reach the summit of Mount Everest.",
+   "director": [
+    "Jennifer Peedom"
+   ],
+   "genre": [
+    "Adventure",
+    "Biography",
+    "Drama"
+   ],
+   "imdbRating": "7.5",
+   "released": "2026-10-16T00:00:00.000Z",
+   "slug": "movie/tenzing-6262770",
+   "writer": [
+    "Luke Davies",
+    "Jennifer Peedom",
+    "Ed Douglas"
+   ],
+   "year": "2026",
+   "moviedb_id": 1288069,
+   "poster": "https://images.metahub.space/poster/small/tt6262770/img",
+   "runtime": "126 min",
+   "trailers": [
+    {
+     "source": "KkYCY5YR12U",
+     "type": "Trailer"
+    }
+   ],
+   "background": "https://images.metahub.space/background/medium/tt6262770/img",
+   "logo": "https://images.metahub.space/logo/medium/tt6262770/img",
+   "popularity": 2.54785,
+   "id": "tt6262770",
+   "genres": [
+    "Adventure",
+    "Biography",
+    "Drama"
+   ],
+   "releaseInfo": "2026",
+   "trailerStreams": [
+    {
+     "title": "Tenzing",
+     "ytId": "KkYCY5YR12U"
+    }
+   ],
+   "links": [
+    {
+     "name": "7.5",
+     "category": "imdb",
+     "url": "https://imdb.com/title/tt6262770"
+    },
+    {
+     "name": "Tenzing",
+     "category": "share",
+     "url": "https://www.strem.io/s/movie/tenzing-6262770"
+    },
+    {
+     "name": "Adventure",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Adventure"
+    },
+    {
+     "name": "Biography",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Biography"
+    },
+    {
+     "name": "Drama",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Drama"
+    },
+    {
+     "name": "Genden Phuntsok",
+     "category": "Cast",
+     "url": "stremio:///search?search=Genden%20Phuntsok"
+    },
+    {
+     "name": "Tom Hiddleston",
+     "category": "Cast",
+     "url": "stremio:///search?search=Tom%20Hiddleston"
+    },
+    {
+     "name": "Willem Dafoe",
+     "category": "Cast",
+     "url": "stremio:///search?search=Willem%20Dafoe"
+    },
+    {
+     "name": "Luke Davies",
+     "category": "Writers",
+     "url": "stremio:///search?search=Luke%20Davies"
+    },
+    {
+     "name": "Jennifer Peedom",
+     "category": "Writers",
+     "url": "stremio:///search?search=Jennifer%20Peedom"
+    },
+    {
+     "name": "Ed Douglas",
+     "category": "Writers",
+     "url": "stremio:///search?search=Ed%20Douglas"
+    },
+    {
+     "name": "Jennifer Peedom",
+     "category": "Directors",
+     "url": "stremio:///search?search=Jennifer%20Peedom"
+    }
+   ],
+   "behaviorHints": {
+    "defaultVideoId": "tt6262770",
+    "hasScheduledVideos": false
+   }
+  },
+  {
+   "imdb_id": "tt37287335",
+   "name": "Obsession",
+   "type": "movie",
+   "awards": "10 wins & 13 nominations total",
+   "cast": [
+    "Michael Johnston",
+    "Inde Navarrette",
+    "Cooper Tomlinson"
+   ],
+   "country": "United States",
+   "description": "After breaking the mysterious \"One Wish Willow\" to win his crush's heart, a hopeless romantic finds himself getting exactly what he asked for but soon discovers that some desires come at a dark, sinister price.",
+   "director": [
+    "Curry Barker"
+   ],
+   "genre": [
+    "Horror",
+    "Thriller"
+   ],
+   "imdbRating": "7.8",
+   "released": "2026-05-15T00:00:00.000Z",
+   "slug": "movie/obsession-37287335",
+   "writer": [
+    "Curry Barker"
+   ],
+   "year": "2026",
+   "moviedb_id": 1339713,
+   "popularities": {
+    "moviedb": 109.4978,
+    "stremio": 3.6499266666666665,
+    "stremio_lib": 0,
+    "trakt": 233
+   },
+   "poster": "https://images.metahub.space/poster/small/tt37287335/img",
+   "runtime": "109 min",
+   "trailers": [
+    {
+     "source": "gMC8kkwbIQQ",
+     "type": "Trailer"
+    }
+   ],
+   "background": "https://images.metahub.space/background/medium/tt37287335/img",
+   "logo": "https://images.metahub.space/logo/medium/tt37287335/img",
+   "popularity": 3.6499266666666665,
+   "id": "tt37287335",
+   "genres": [
+    "Horror",
+    "Thriller"
+   ],
+   "releaseInfo": "2026",
+   "trailerStreams": [
+    {
+     "title": "Obsession",
+     "ytId": "gMC8kkwbIQQ"
+    }
+   ],
+   "links": [
+    {
+     "name": "7.8",
+     "category": "imdb",
+     "url": "https://imdb.com/title/tt37287335"
+    },
+    {
+     "name": "Obsession",
+     "category": "share",
+     "url": "https://www.strem.io/s/movie/obsession-37287335"
+    },
+    {
+     "name": "Horror",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Horror"
+    },
+    {
+     "name": "Thriller",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=Thriller"
+    },
+    {
+     "name": "Michael Johnston",
+     "category": "Cast",
+     "url": "stremio:///search?search=Michael%20Johnston"
+    },
+    {
+     "name": "Inde Navarrette",
+     "category": "Cast",
+     "url": "stremio:///search?search=Inde%20Navarrette"
+    },
+    {
+     "name": "Cooper Tomlinson",
+     "category": "Cast",
+     "url": "stremio:///search?search=Cooper%20Tomlinson"
+    },
+    {
+     "name": "Curry Barker",
+     "category": "Writers",
+     "url": "stremio:///search?search=Curry%20Barker"
+    },
+    {
+     "name": "Curry Barker",
+     "category": "Directors",
+     "url": "stremio:///search?search=Curry%20Barker"
+    }
+   ],
+   "behaviorHints": {
+    "defaultVideoId": "tt37287335",
+    "hasScheduledVideos": false
+   }
+  }
+ ],
+ "hasMore": true,
+ "cacheMaxAge": 14400,
+ "staleRevalidate": 3600,
+ "staleError": 3600
+}

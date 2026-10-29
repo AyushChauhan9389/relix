@@ -1,0 +1,51 @@
+{
+ "subtitles": [
+  {
+   "id": "3728010",
+   "url": "https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1952382875",
+   "SubEncoding": "UTF-8",
+   "lang": "eng",
+   "m": "i",
+   "g": "8",
+   "subtitleFileName": "Inception.2010.CAM.Xvid-LKRG.srt",
+   "movieReleaseName": "Inception.2010.CAM.Xvid-LKRG",
+   "releaseGroup": "LKRG",
+   "releaseFormat": "Cam",
+   "fpsMilli": 25000,
+   "season": 0,
+   "episode": 0
+  },
+  {
+   "id": "3740120",
+   "url": "https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1952395958",
+   "SubEncoding": "ASCII",
+   "lang": "eng",
+   "m": "i",
+   "g": "6",
+   "subtitleFileName": "Inception.2010.TS.V2.XVID.FEEL-FREE.srt",
+   "movieReleaseName": "Inception.2010.TS.V2.XVID.FEEL-FREE",
+   "releaseGroup": "FEEL-FREE",
+   "releaseFormat": "Telesync",
+   "fpsMilli": 25000,
+   "season": 0,
+   "episode": 0
+  },
+  {
+   "id": "3777727",
+   "url": "https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1952436985",
+   "SubEncoding": "ASCII",
+   "lang": "eng",
+   "m": "i",
+   "g": "26",
+   "subtitleFileName": "Inception.TS.XviD-KiK-CD1.srt",
+   "movieReleaseName": "Inception.TS.XviD-KiK",
+   "releaseFormat": "Telesync",
+   "fpsMilli": 23976,
+   "season": 0,
+   "episode": 0
+  }
+ ],
+ "cacheMaxAge": 172800,
+ "staleRevalidate": 518400,
+ "staleError": 1036800
+}
