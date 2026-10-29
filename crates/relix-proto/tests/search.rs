@@ -30,3 +30,31 @@ fn blank_queries_search_nothing() {
     let addons = [addon("cinemeta", "https://v3-cinemeta.strem.io/manifest.json")];
     assert!(search_requests(&addons, "   ").is_empty());
 }
+
+fn cinemeta() -> Addon {
+    addon("cinemeta", "https://v3-cinemeta.strem.io/manifest.json")
+}
+
+#[test]
+fn discover_with_genre_and_paging() {
+    let a = cinemeta();
+    let top = a.manifest.catalogs.iter().find(|c| c.r#type == "movie" && c.id == "top").unwrap();
+    assert!(top.genres().contains(&"Action".to_owned()));
+    assert_eq!(top.discover_request(Some("Action"), 100).url(&a), "https://v3-cinemeta.strem.io/catalog/movie/top/genre=Action&skip=100.json");
+    assert_eq!(top.discover_request(None, 0).url(&a), "https://v3-cinemeta.strem.io/catalog/movie/top.json");
+}
+
+#[test]
+fn required_genre_defaults_to_the_first_option() {
+    let a = cinemeta();
+    let new = a.manifest.catalogs.iter().find(|c| c.r#type == "movie" && c.id == "year").unwrap();
+    let first = new.genres()[0].clone();
+    assert_eq!(new.discover_request(None, 0).url(&a), format!("https://v3-cinemeta.strem.io/catalog/movie/year/genre={first}.json"));
+}
+
+#[test]
+fn discover_lists_catalogs_of_a_type_that_need_no_other_input() {
+    let addons = [cinemeta()];
+    let ids: Vec<&str> = relix_proto::addon::discover_catalogs(&addons, "series").map(|(_, c)| c.id.as_str()).collect();
+    assert_eq!(ids, ["top", "year", "imdbRating"], "last-videos/calendar-videos need ids, not browsable");
+}

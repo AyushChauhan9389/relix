@@ -85,8 +85,8 @@ pub fn nav() -> Rect {
                 .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20))),
         )
         .child(Link::new(Route::Home).child(link("Home", true)))
-        .child(link("Series", false))
-        .child(link("Movies", false))
+        .child(Link::new(Route::Browse { kind: "series".into() }).child(link("Series", false)))
+        .child(Link::new(Route::Browse { kind: "movie".into() }).child(link("Movies", false)))
         .child(link("My List", false))
         .child(
             rect()
@@ -234,6 +234,14 @@ pub fn button(text: &'static str, bg: impl Into<Color>, fg: impl Into<Color>) ->
         .child(label().text(text).font_size(18.).font_weight(FontWeight::BOLD).color(fg.into()))
 }
 
+pub fn chip(text: String, active: bool) -> Rect {
+    rect()
+        .padding(Gaps::new(6., 14., 6., 14.))
+        .corner_radius(16.)
+        .background(if active { (255, 255, 255, 1.) } else { (60, 60, 60, 1.) })
+        .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))
+}
+
 fn dots(len: usize, current: usize) -> Rect {
     rect()
         .position(Position::new_absolute().right(48.).bottom(110.))
@@ -273,7 +281,7 @@ impl Component for PosterRow {
                             rect()
                                 .key(item.index)
                                 .padding(Gaps::new(0., 8., 0., 0.))
-                                .child(poster(&metas[item.index], progress.get(item.index).copied(), *row))
+                                .child(poster(&metas[item.index], progress.get(item.index).copied(), Some(*row)))
                                 .into()
                         },
                         row.controller,
@@ -287,7 +295,8 @@ impl Component for PosterRow {
     }
 }
 
-fn poster(meta: &MetaPreview, progress: Option<f32>, row: Scroller) -> Element {
+/// A poster that opens its title; `row` is the horizontal row it scrolls within, if any.
+pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) -> Element {
     // Shown when there's no poster or it fails to load.
     let blank = |name: String| -> Element {
         rect()
@@ -324,5 +333,5 @@ fn poster(meta: &MetaPreview, progress: Option<f32>, row: Scroller) -> Element {
                 .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
         )
     });
-    Focusable::new(art, open_title(meta)).row(row).into()
+    Focusable { row, ..Focusable::new(art, open_title(meta)) }.into()
 }

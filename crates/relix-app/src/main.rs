@@ -1,4 +1,5 @@
 mod addons;
+mod browse;
 mod detail;
 mod focus;
 mod home;
@@ -15,6 +16,7 @@ use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, mani
 use tokio::task::JoinSet;
 
 use addons::Addons;
+use browse::Browse;
 use detail::Detail;
 use focus::{Dir, Registry};
 use home::{Home, Row};
@@ -174,6 +176,8 @@ pub enum Route {
         Addons,
         #[route("/search")]
         Search,
+        #[route("/browse/:kind")]
+        Browse { kind: String },
 }
 
 #[derive(PartialEq)]

@@ -115,6 +115,41 @@ impl Catalog {
     pub fn has_required_extra(&self) -> bool {
         !self.extra_required.is_empty() || self.extra.iter().any(|e| e.is_required)
     }
+
+    pub fn genres(&self) -> &[String] {
+        self.extra.iter().find(|e| e.name == "genre").map(|e| e.options.as_slice()).unwrap_or_default()
+    }
+
+    fn genre_required(&self) -> bool {
+        self.extra_required.iter().any(|e| e == "genre") || self.extra.iter().any(|e| e.name == "genre" && e.is_required)
+    }
+
+    /// Browsable without user input: any required extra is a genre we can pick a default for.
+    pub fn browsable(&self) -> bool {
+        let required = self.extra.iter().filter(|e| e.is_required).map(|e| e.name.as_str()).chain(self.extra_required.iter().map(String::as_str));
+        required.into_iter().all(|name| name == "genre" && !self.genres().is_empty())
+    }
+
+    /// A page of this catalog, filtered by `genre`; a required genre defaults to the first option.
+    pub fn discover_request(&self, genre: Option<&str>, skip: usize) -> ResourceRequest {
+        let genre = genre.or_else(|| self.genre_required().then(|| self.genres().first().map(String::as_str)).flatten());
+        let mut req = ResourceRequest::new("catalog", &self.r#type, &self.id);
+        if let Some(g) = genre {
+            req = req.extra("genre", g);
+        }
+        if skip > 0 {
+            req = req.extra("skip", &skip.to_string());
+        }
+        req
+    }
+}
+
+/// Catalogs of `kind` a user can browse, in addon order: `(addon index, catalog)`.
+pub fn discover_catalogs<'a>(addons: &'a [Addon], kind: &'a str) -> impl Iterator<Item = (usize, &'a Catalog)> {
+    addons
+        .iter()
+        .enumerate()
+        .flat_map(move |(i, a)| a.manifest.catalogs.iter().filter(move |c| c.r#type == kind && c.browsable()).map(move |c| (i, c)))
 }
 
 impl Manifest {

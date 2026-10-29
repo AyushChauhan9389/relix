@@ -152,11 +152,6 @@ impl Focusable {
     pub fn new(child: impl Into<Element>, on_press: impl Into<EventHandler<()>>) -> Self {
         Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6. }
     }
-
-    pub fn row(mut self, row: Scroller) -> Self {
-        self.row = Some(row);
-        self
-    }
 }
 
 impl Component for Focusable {

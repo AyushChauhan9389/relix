@@ -6,7 +6,7 @@ use relix_proto::addon::{Meta, MetaPreview, MetaResponse, ResourceRequest, Strea
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
-use crate::home::{backdrop, button, layer, title_art};
+use crate::home::{backdrop, button, chip, layer, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::{Ctx, get, player};
 
@@ -242,14 +242,6 @@ fn header(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static) -> 
                     toggle_list,
                 )),
         )
-}
-
-fn chip(text: String, active: bool) -> Rect {
-    rect()
-        .padding(Gaps::new(6., 14., 6., 14.))
-        .corner_radius(16.)
-        .background(if active { (255, 255, 255, 1.) } else { (60, 60, 60, 1.) })
-        .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))
 }
 
 fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -> Rect {
