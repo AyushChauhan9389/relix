@@ -372,3 +372,17 @@ impl Stream {
         }
     }
 }
+
+/// One request per catalog that supports `search`, in addon order: `(addon index, catalog, request)`.
+pub fn search_requests<'a>(addons: &'a [Addon], query: &str) -> Vec<(usize, &'a Catalog, ResourceRequest)> {
+    let query = query.trim();
+    if query.is_empty() {
+        return vec![];
+    }
+    addons
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| a.manifest.search_catalogs().map(move |c| (i, c)))
+        .map(|(i, c)| (i, c, ResourceRequest::new("catalog", &c.r#type, &c.id).extra("search", query)))
+        .collect()
+}

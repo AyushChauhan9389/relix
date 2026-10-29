@@ -4,6 +4,7 @@ mod focus;
 mod home;
 mod library;
 mod player;
+mod search;
 mod store;
 
 use std::rc::Rc;
@@ -17,6 +18,7 @@ use addons::Addons;
 use detail::Detail;
 use focus::{Dir, Registry};
 use home::{Home, Row};
+use search::Search;
 use store::Store;
 
 /// Preinstalled addons (PLAN.md: defaults).
@@ -170,6 +172,8 @@ pub enum Route {
         Detail { kind: String, id: String },
         #[route("/addons")]
         Addons,
+        #[route("/search")]
+        Search,
 }
 
 #[derive(PartialEq)]

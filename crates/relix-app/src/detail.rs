@@ -254,7 +254,7 @@ fn chip(text: String, active: bool) -> Rect {
 
 fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -> Rect {
     let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
-        Some(url) => ImageViewer::new(url).width(Size::px(176.)).height(Size::px(99.)).into(),
+        Some(url) => ImageViewer::new(url).width(Size::px(176.)).height(Size::px(99.)).error_renderer(|_| rect().into()).into(),
         None => rect().width(Size::px(176.)).height(Size::px(99.)).background((50, 50, 50)).into(),
     };
     rect()

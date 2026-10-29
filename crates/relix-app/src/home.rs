@@ -95,7 +95,7 @@ pub fn nav() -> Rect {
                 .cross_align(Alignment::Center)
                 .spacing(24.)
                 .child(Link::new(Route::Addons).child(link("Addons", false)))
-                .child(link("Search", false)),
+                .child(Link::new(Route::Search).child(link("Search", false))),
         )
 }
 
@@ -164,7 +164,8 @@ pub fn backdrop(background: Option<&str>) -> Rect {
                     .width(Size::fill())
                     .height(Size::fill())
                     .aspect_ratio(AspectRatio::Max)
-                    .image_cover(ImageCover::Center),
+                    .image_cover(ImageCover::Center)
+                    .error_renderer(|_| rect().into()),
             )
             .child(shade()),
         None => layer().background((40, 40, 40)).child(shade()),
@@ -210,13 +211,18 @@ pub fn open_title(meta: &MetaPreview) -> EventHandler<()> {
 
 /// The title's logo, or its name when the addon has no logo.
 pub fn title_art(logo: Option<&str>, name: &str) -> Element {
+    let text = |name: String| label().text(name).font_size(56.).font_weight(FontWeight::BOLD).into();
     match logo.and_then(|u| Url::parse(u).ok()) {
-        Some(url) => ImageViewer::new(url)
-            .width(Size::px(420.))
-            .height(Size::px(150.))
-            .aspect_ratio(AspectRatio::Min)
-            .into(),
-        None => label().text(name.to_owned()).font_size(56.).font_weight(FontWeight::BOLD).into(),
+        Some(url) => {
+            let name = name.to_owned();
+            ImageViewer::new(url)
+                .width(Size::px(420.))
+                .height(Size::px(150.))
+                .aspect_ratio(AspectRatio::Min)
+                .error_renderer(move |_| text(name.clone()))
+                .into()
+        }
+        None => text(name.to_owned()),
     }
 }
 
@@ -244,8 +250,8 @@ fn dots(len: usize, current: usize) -> Rect {
 }
 
 #[derive(PartialEq)]
-struct PosterRow {
-    row: Row,
+pub struct PosterRow {
+    pub row: Row,
 }
 
 impl Component for PosterRow {
@@ -282,21 +288,30 @@ impl Component for PosterRow {
 }
 
 fn poster(meta: &MetaPreview, progress: Option<f32>, row: Scroller) -> Element {
-    let art: Element = match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
-        Some(url) => rect()
-            .corner_radius(4.)
-            .overflow(Overflow::Clip)
-            .child(ImageViewer::new(url).width(Size::px(POSTER_W)).height(Size::px(POSTER_H)))
-            .into(),
-        None => rect()
+    // Shown when there's no poster or it fails to load.
+    let blank = |name: String| -> Element {
+        rect()
             .width(Size::px(POSTER_W))
             .height(Size::px(POSTER_H))
-            .corner_radius(4.)
+            .padding(Gaps::new_all(8.))
             .background((50, 50, 50))
             .center()
-            .child(meta.name.clone())
-            .into(),
+            .child(paragraph().text_align(TextAlign::Center).font_size(15.).span(name))
+            .into()
     };
+    let name = meta.name.clone();
+    let art: Element = rect()
+        .corner_radius(4.)
+        .overflow(Overflow::Clip)
+        .child(match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
+            Some(url) => ImageViewer::new(url)
+                .width(Size::px(POSTER_W))
+                .height(Size::px(POSTER_H))
+                .error_renderer(move |_| blank(name.clone()))
+                .into(),
+            None => blank(name),
+        })
+        .into();
     let art = rect().child(art).map(progress, |el, p| {
         el.child(
             rect()
