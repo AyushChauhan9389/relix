@@ -28,9 +28,23 @@ const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
 fn main() {
-    // ponytail: phase 0 playback spike, kept for quick manual checks.
+    // ponytail: playback check without the UI: `--play <url> [--subs movie/<imdb id>]`.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
-        match player::play(&url, &Default::default(), 0.) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(target) = std::env::args().skip_while(|a| a != "--subs").nth(1) {
+            std::thread::spawn(move || {
+                let url = format!("https://opensubtitles-v3.strem.io/subtitles/{target}.json");
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(get::<relix_proto::addon::SubtitlesResponse>(reqwest::Client::new(), url)) {
+                    Ok(r) => {
+                        println!("{} subtitles", r.subtitles.len());
+                        let _ = tx.send(player::sub_add_args(&r.subtitles, "OpenSubtitles"));
+                    }
+                    Err(e) => eprintln!("subtitles: {e}"),
+                }
+            });
+        }
+        match player::play(&url, &Default::default(), 0., rx) {
             Ok(p) => println!("stopped at {:.1}s of {:.1}s", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }

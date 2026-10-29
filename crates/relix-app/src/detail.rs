@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use freya::prelude::*;
 use freya::router::*;
-use relix_proto::addon::{Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, Video, route, seasons, stream_groups};
+use relix_proto::addon::{
+    Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, SubtitlesResponse, Video, route, seasons, stream_groups,
+    subtitle_requests,
+};
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
@@ -46,14 +49,30 @@ impl Component for Detail {
         // Plays a stream of the chosen video, resuming where it stopped, and records where it stops now.
         let play = EventHandler::new({
             let ctx = ctx.clone();
-            move |(url, headers): (String, HashMap<String, String>)| {
+            move |(url, headers, filename): Play| {
                 let (Some(m), Some(vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
                 let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
+                let (subs_tx, subs_rx) = std::sync::mpsc::channel();
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 // mpv blocks until its window closes, so it gets its own thread.
                 std::thread::spawn(move || {
-                    let _ = tx.send(player::play(&url, &headers, start));
+                    let _ = tx.send(player::play(&url, &headers, start, subs_rx));
                 });
+
+                // Subtitles load alongside playback; each addon's arrive in mpv as they answer.
+                let addons = ctx.addons.peek().clone();
+                for (i, req) in subtitle_requests(&addons, &m.r#type, &vid, filename.as_deref()) {
+                    let (http, url, addon, subs_tx) = (ctx.http.clone(), req.url(&addons[i]), addons[i].manifest.name.clone(), subs_tx.clone());
+                    spawn(async move {
+                        match get::<SubtitlesResponse>(http, url).await {
+                            Ok(r) => {
+                                let _ = subs_tx.send(player::sub_add_args(&r.subtitles, &addon));
+                            }
+                            Err(e) => eprintln!("subtitles from {addon}: {e}"),
+                        }
+                    });
+                }
+
                 let ctx = ctx.clone();
                 spawn(async move {
                     let p = match rx.await {
@@ -284,7 +303,10 @@ fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -
         )
 }
 
-fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<(String, HashMap<String, String>)>) -> Rect {
+/// What playing a stream needs: its URL, request headers and filename hint.
+type Play = (String, HashMap<String, String>, Option<String>);
+
+fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
     let panel = rect().width(Size::px(460.)).spacing(10.).child(label().text("Streams").font_size(22.).font_weight(FontWeight::BOLD));
     let note = |text: &'static str| label().text(text).font_size(15.).color(MUTED);
     if !has_stream_addons {
@@ -305,7 +327,7 @@ fn stream_panel(picked: bool, has_stream_addons: bool, groups: Vec<(String, Vec<
     }))
 }
 
-fn stream_card(stream: Stream, play: EventHandler<(String, HashMap<String, String>)>) -> Element {
+fn stream_card(stream: Stream, play: EventHandler<Play>) -> Element {
     let url = stream.playable_url().map(str::to_owned);
     let headers = stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default();
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
@@ -324,7 +346,10 @@ fn stream_card(stream: Stream, play: EventHandler<(String, HashMap<String, Strin
                 .then(|| label().text("Torrent · coming soon").font_size(12.).color((229, 9, 20))),
         );
     match url {
-        Some(url) => Focusable::new(card, move |()| play.call((url.clone(), headers.clone()))).into(),
+        Some(url) => {
+            let filename = stream.behavior_hints.filename.clone();
+            Focusable::new(card, move |()| play.call((url.clone(), headers.clone(), filename.clone()))).into()
+        }
         None => card.into(),
     }
 }

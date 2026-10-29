@@ -76,3 +76,23 @@ fn catalog_must_be_declared_by_the_addon() {
     assert!(urls(&ResourceRequest::new("catalog", "movie", "nope")).is_empty());
     assert!(urls(&ResourceRequest::new("catalog", "tv", "top")).is_empty());
 }
+
+#[test]
+fn subtitles_route_with_the_stream_filename() {
+    let addons = addons();
+    let urls: Vec<String> = relix_proto::addon::subtitle_requests(&addons, "movie", "tt1375666", Some("Inception 2010.mkv"))
+        .into_iter()
+        .map(|(i, req)| req.url(&addons[i]))
+        .collect();
+    assert_eq!(urls, ["https://opensubtitles-v3.strem.io/subtitles/movie/tt1375666/filename=Inception%202010.mkv.json"]);
+}
+
+#[test]
+fn subtitles_without_a_filename_have_no_extra() {
+    let addons = addons();
+    let urls: Vec<String> = relix_proto::addon::subtitle_requests(&addons, "series", "tt0903747:1:2", None)
+        .into_iter()
+        .map(|(i, req)| req.url(&addons[i]))
+        .collect();
+    assert_eq!(urls, ["https://opensubtitles-v3.strem.io/subtitles/series/tt0903747:1:2.json"]);
+}

@@ -421,3 +421,13 @@ pub fn search_requests<'a>(addons: &'a [Addon], query: &str) -> Vec<(usize, &'a 
         .map(|(i, c)| (i, c, ResourceRequest::new("catalog", &c.r#type, &c.id).extra("search", query)))
         .collect()
 }
+
+/// Subtitle requests for a video, one per addon that serves them: `(addon index, request)`.
+/// `filename` is the stream's `behaviorHints.filename`, which helps addons match the release.
+pub fn subtitle_requests(addons: &[Addon], kind: &str, video_id: &str, filename: Option<&str>) -> Vec<(usize, ResourceRequest)> {
+    let mut req = ResourceRequest::new("subtitles", kind, video_id);
+    if let Some(f) = filename {
+        req = req.extra("filename", f);
+    }
+    addons.iter().enumerate().filter(|(_, a)| a.serves(&req)).map(|(i, _)| (i, req.clone())).collect()
+}
