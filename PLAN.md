@@ -11,7 +11,7 @@ Vocabulary is in [GLOSSARY.md](./GLOSSARY.md). Decisions that are hard to revers
 | Addons | own client in `relix-proto` + `relix-app`, reqwest (rustls) + serde_json |
 | Player | libmpv2, mpv owns its window, bundled uosc restyled |
 | Local data | SQLite via rusqlite (bundled), `records(profile, kind, key, value, seq, dirty)` |
-| Server | axum + SQLite (WAL), single binary, WebSocket push |
+| Server | axum + SQLite (WAL), single binary, Server-Sent Events push |
 | Torrents | librqbit, later, behind `stream_url(info_hash, file_idx) -> Url` |
 
 Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `relix-proto` (shared addon + sync types).
@@ -36,7 +36,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **What syncs, per profile:** the addon list (one record), library items, progress, watched flags and settings.
 - **Conflicts:** the latest write wins per record, ordered by server sequence numbers. Watched flags only grow, and unwatching is an explicit entry ([ADR 0004](docs/adr/0004-sync-conflict-rules.md)).
 - **Encryption:** Bitwarden-style ([ADR 0005](docs/adr/0005-client-side-encryption.md)). The addon list is always encrypted on the device. Library, progress and settings stay readable by the server.
-- **Login:** email and password once, then QR login for new devices. No OAuth or passkeys in v1.
+- **Login:** email and password on every device (it unlocks the data key too). QR/pairing deferred until a phone or TV app exists. No OAuth or passkeys in v1.
 - **Email:** the official server verifies the email address with a code over SMTP. Self-hosters can turn verification off.
 
 ## Shipping
@@ -68,6 +68,6 @@ Targeted tests only: addon routing and extra encoding, sync merge rules, key der
 0. **Spikes:** the workspace builds; the addon client fetches Cinemeta's home rows and a stream list, with the routing tests passing; a Freya window shows Cinemeta rows; the app launches mpv on a URL stream.
 1. **MVP:** Home, detail page with seasons and episodes, stream list, URL playback, installing addons, spatial focus.
 2. **Library:** library, continue-watching, search, discover, subtitles.
-3. **Accounts:** server, sync, encryption, QR login.
+3. **Accounts:** server, sync, encryption, password login on every device.
 4. **Torrents:** librqbit.
 5. **Polish:** auto-play the next episode, more player features, design pass.
