@@ -1,3 +1,6 @@
 /target
 /vendor
 chat.txt
+*.db
+*.db-shm
+*.db-wal
