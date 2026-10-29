@@ -1,8 +1,9 @@
 use freya::prelude::*;
 use relix_proto::addon::{Addon, Manifest, base_url, manifest_url};
 
+use crate::focus::Focusable;
 use crate::home::button;
-use crate::{Ctx, get};
+use crate::{Ctx, get, stremio};
 
 const MUTED: (u8, u8, u8) = (170, 170, 170);
 
@@ -100,7 +101,8 @@ impl Component for Addons {
                             )
                             .children(admin.iter().map(|a| admin_card(a, admin_on).into_element())),
                     )
-                }),
+                })
+                .child(StremioPanel),
             )
             .into_element()
     }
@@ -188,5 +190,89 @@ fn open_in_browser(url: &str) {
     };
     if let Err(e) = cmd.arg(url).spawn() {
         eprintln!("opening {url}: {e}");
+    }
+}
+
+/// Move addons between Relix and a Stremio account.
+#[derive(PartialEq)]
+struct StremioPanel;
+
+impl Component for StremioPanel {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        let email = use_state(String::new);
+        let password = use_state(String::new);
+        let mut busy = use_state(|| false);
+        let mut message = use_state(|| None::<String>);
+        let mut connected = use_state(|| stremio::connected(&ctx));
+
+        // Runs one Stremio action, showing progress and its outcome.
+        let run = {
+            let ctx = ctx.clone();
+            move |action: &'static str| {
+                if *busy.peek() {
+                    return;
+                }
+                let ctx = ctx.clone();
+                let (mail, pass) = (email.read().trim().to_owned(), password.read().clone());
+                busy.set(true);
+                message.set(None);
+                spawn(async move {
+                    let outcome = match action {
+                        "connect" if mail.is_empty() || pass.is_empty() => Err("Enter your Stremio email and password.".to_owned()),
+                        "connect" => stremio::connect(&ctx, &mail, &pass).await.map(|()| "Connected.".to_owned()),
+                        "import" => stremio::import_from_stremio(&ctx).await.map(|s| format!("Imported from Stremio: {s}.")),
+                        "export" => stremio::export_to_stremio(&ctx).await.map(|s| format!("Exported to Stremio: {s}.")),
+                        _ => {
+                            stremio::disconnect(&ctx).await;
+                            Ok("Disconnected.".to_owned())
+                        }
+                    };
+                    busy.set(false);
+                    connected.set(stremio::connected(&ctx));
+                    message.set(Some(outcome.unwrap_or_else(|e| e)));
+                });
+            }
+        };
+        let action = |text: &'static str, name: &'static str, primary: bool| {
+            let mut run = run.clone();
+            let bg = if primary { (229, 9, 20) } else { (60, 60, 60) };
+            Focusable::new(button(text, bg, (255, 255, 255)), move |()| run(name))
+        };
+
+        let body = match connected.read().clone() {
+            Some(account) => rect()
+                .spacing(12.)
+                .child(label().text(format!("Connected as {account}")).font_size(15.).color(MUTED))
+                .child(
+                    rect()
+                        .horizontal()
+                        .spacing(12.)
+                        .child(action("Import from Stremio", "import", true))
+                        .child(action("Export to Stremio", "export", false))
+                        .child(action("Disconnect", "disconnect", false)),
+                ),
+            None => rect()
+                .width(Size::px(560.))
+                .spacing(10.)
+                .child(Input::new(email).width(Size::fill()).placeholder("Stremio email"))
+                .child(Input::new(password).width(Size::fill()).placeholder("Stremio password").mode(InputMode::new_password()))
+                .child(action("Connect Stremio account", "connect", true)),
+        };
+
+        rect()
+            .width(Size::fill())
+            .padding(Gaps::new(24., 0., 0., 0.))
+            .spacing(12.)
+            .child(label().text("Stremio").font_size(22.).font_weight(FontWeight::BOLD))
+            .child(
+                paragraph()
+                    .font_size(14.)
+                    .color(MUTED)
+                    .span("Bring the addons from your Stremio account into Relix, or send Relix's addons to Stremio. Both merge: nothing is removed, and Stremio's built-in addons are left alone. Your password goes only to Stremio and isn't stored."),
+            )
+            .child(body)
+            .maybe(*busy.read(), |el| el.child(label().text("Working…").font_size(14.).color(MUTED)))
+            .maybe_child(message.read().clone().map(|m| label().text(m).font_size(15.)))
     }
 }

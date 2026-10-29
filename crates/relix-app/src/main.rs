@@ -9,6 +9,7 @@ mod my_list;
 mod player;
 mod search;
 mod store;
+mod stremio;
 mod sync;
 
 use std::rc::Rc;

@@ -22,6 +22,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Detail page:** streams grouped by addon, in addon order, filling in as each addon answers.
 - **Search:** queries every catalog that supports `search` in parallel, one row per catalog, debounced at 300ms.
 - **Addon install:** paste a manifest URL, or open a `stremio://` deep link (registered as a URL handler on all three OSes). "Configure" opens the addon's `/configure` page in the system browser.
+- **Stremio import/export:** connect a Stremio account on the Addons screen (password sent only to Stremio; its session key is kept on the device). Import merges Stremio's addons into Relix (same addon takes Stremio's config, nothing removed, Stremio's Local Files addon skipped). Export merges the user's own addons into Stremio with their original manifests, leaving Stremio's protected built-ins and Stremio-only addons alone.
 - **Torrents:** not supported ([ADR 0008](docs/adr/0008-no-built-in-torrent-playback.md)). Torrent streams are hidden; debrid-configured addons provide URL streams instead.
 - **Profiles:** deferred (removed 2026-10-29). The app runs as one implicit profile; records still carry a profile id so profiles (and kids mode) can return without a migration.
 - **Navigation:** spatial focus from phase 1. Arrow keys, Enter and Esc work on every screen.
