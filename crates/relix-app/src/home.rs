@@ -143,14 +143,7 @@ pub fn nav(active: Option<NavLink>) -> Rect {
         .background(theme().bg)
         .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
         .child(
-            Link::new(Route::Home).child(
-                rect()
-                    .horizontal()
-                    .cross_align(Alignment::Center)
-                    .spacing(10.)
-                    .child(logo(40.))
-                    .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color(theme().accent)),
-            ),
+            Link::new(Route::Home).child(logo(52.)),
         )
         .child(link(NavLink::Home, "Home", Route::Home))
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
