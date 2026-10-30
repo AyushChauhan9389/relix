@@ -13,8 +13,6 @@ use crate::theme::theme;
 const POSTER_W: f32 = 150.;
 const POSTER_H: f32 = 225.;
 const HERO_H: f32 = 600.;
-/// Stremio's Home starts with a search bar instead of the hero.
-const SEARCH_H: f32 = 96.;
 const NAV_H: f32 = 68.;
 const FEATURED: usize = 5;
 const ROTATE_EVERY: Duration = Duration::from_secs(8);
@@ -51,7 +49,8 @@ impl Component for Home {
                 (featured, rows),
                 |item, (featured, rows)| {
                     if item.index == 0 && theme().sidebar {
-                        search_bar().into()
+                        // The Stremio look has no hero: just room under its top bar.
+                        rect().height(Size::px(theme().top - 24.)).into()
                     } else if item.index == 0 {
                         Hero { items: featured.clone() }.into()
                     } else {
@@ -62,7 +61,7 @@ impl Component for Home {
             )
             .scroll_with_arrows(false)
             .length(len)
-            .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { SEARCH_H } else { HERO_H }))),
+            .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { theme().top - 24. } else { HERO_H }))),
         )
     }
 }
@@ -300,8 +299,8 @@ pub fn chip(text: String, active: bool) -> Rect {
     rect()
         .padding(Gaps::new(6., 14., 6., 14.))
         .corner_radius(16.)
-        .background(if active { theme().cta.0 } else { theme().raised })
-        .child(label().text(text).font_size(14.).color(if active { theme().cta.1 } else { (230, 230, 230) }))
+        .background(if active { (255, 255, 255) } else { theme().raised })
+        .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))
 }
 
 fn dots(len: usize, current: usize) -> Rect {
@@ -436,27 +435,33 @@ fn row_h() -> f32 {
     POSTER_H + if theme().sidebar { 88. } else { 60. }
 }
 
-/// Stremio Home's top bar: a search field that opens Search.
-fn search_bar() -> Rect {
-    rect().width(Size::fill()).padding(Gaps::new(theme().top, 48., 0., 48.)).child(Focusable {
-        radius: 24.,
-        ..Focusable::new(
-            rect()
-                .width(Size::px(560.))
-                .height(Size::px(46.))
-                .padding(Gaps::new(0., 20., 0., 20.))
-                .corner_radius(24.)
-                .background(theme().surface)
-                .main_align(Alignment::Center)
-                .child(label().text("Search movies & series").font_size(15.).color(theme().muted)),
-            |()| {
-                let _ = RouterContext::get().push(Route::Search);
-            },
+/// The Stremio look's top bar: a search field (opening Search) above every page.
+pub fn top_bar() -> Rect {
+    rect()
+        .position(Position::new_absolute().top(0.).left(0.))
+        .width(Size::percent(100.))
+        .height(Size::px(64.))
+        .padding(Gaps::new(0., 48., 0., 48.))
+        .main_align(Alignment::Center)
+        .background(theme().bg)
+        .child(
+            Link::new(Route::Search).child(
+                rect()
+                    .width(Size::px(440.))
+                    .height(Size::px(40.))
+                    .padding(Gaps::new(0., 14., 0., 14.))
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(10.)
+                    .corner_radius(8.)
+                    .background(theme().surface)
+                    .child(SvgViewer::new(ICON_SEARCH.as_bytes()).width(Size::px(18.)).height(Size::px(18.)).stroke(theme().muted))
+                    .child(label().text("Search movies & series").font_size(14.).color(theme().muted)),
+            ),
         )
-    })
 }
 
-pub const SIDEBAR_W: f32 = 96.;
+pub const SIDEBAR_W: f32 = 80.;
 
 /// 24px stroke icons for the Stremio sidebar; SvgViewer tints the root stroke.
 const ICON_HOME: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg>"#;
@@ -468,7 +473,7 @@ const ICON_ADDONS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white"
 const ICON_SETTINGS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>"#;
 const ICON_ACCOUNT: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>"#;
 
-/// Stremio's left rail: logo, then icon + label links.
+/// Stremio's left rail: wordmark, then icon links; the current one sits on a grey pill.
 pub fn sidebar(active: Option<NavLink>) -> Rect {
     let item = move |which: NavLink, icon: &'static str, text: &'static str, to: Route| {
         SideItem { icon, text, to, active: active == Some(which) }
@@ -477,34 +482,24 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .position(Position::new_absolute().top(0.).left(0.))
         .width(Size::px(SIDEBAR_W))
         .height(Size::percent(100.))
-        .padding(Gaps::new(20., 0., 20., 0.))
         .spacing(4.)
         .cross_align(Alignment::Center)
         .background(theme().bg)
-        .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 1., bottom: 0., left: 0. }))
         .child(
-            Link::new(Route::Home).child(
-                rect()
-                    .width(Size::px(44.))
-                    .height(Size::px(44.))
-                    .margin(Gaps::new(0., 0., 18., 0.))
-                    .corner_radius(12.)
-                    .background(theme().accent)
-                    .center()
-                    .child(label().text("R").font_size(24.).font_weight(FontWeight::BLACK)),
+            rect().height(Size::px(64.)).main_align(Alignment::Center).child(
+                Link::new(Route::Home).child(label().text("RELIX").font_size(15.).font_weight(FontWeight::BLACK)),
             ),
         )
         .child(item(NavLink::Home, ICON_HOME, "Board", Route::Home))
         .child(item(NavLink::Movies, ICON_MOVIES, "Movies", Route::Browse { kind: "movie".into() }))
         .child(item(NavLink::Series, ICON_SERIES, "Series", Route::Browse { kind: "series".into() }))
         .child(item(NavLink::MyList, ICON_LIBRARY, "Library", Route::MyList))
-        .child(item(NavLink::Search, ICON_SEARCH, "Search", Route::Search))
         .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
         .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
         .child(item(NavLink::Account, ICON_ACCOUNT, "Account", Route::Account))
 }
 
-/// A sidebar link: accent when current, brightening on hover, eased.
+/// A sidebar link: grey pill and white when current, lighter on hover.
 #[derive(PartialEq)]
 struct SideItem {
     icon: &'static str,
@@ -516,21 +511,23 @@ struct SideItem {
 impl Component for SideItem {
     fn render(&self) -> impl IntoElement {
         let mut hovered = use_state(|| false);
-        let color = use_animation_transition((self.active, *hovered.read()), |from, to| {
-            let c = |(active, hovered): (bool, bool)| if active { theme().accent } else if hovered { (255, 255, 255) } else { theme().muted };
+        let color = use_animation_transition(self.active || *hovered.read(), |from, to| {
+            let c = |bright: bool| if bright { (255, 255, 255) } else { theme().muted };
             AnimColor::new(c(from), c(to)).time(HOVER_MS)
         });
         let c: Color = (&*color.read()).into();
         Link::new(self.to.clone()).child(
             rect()
-                .width(Size::px(SIDEBAR_W))
-                .padding(Gaps::new(10., 0., 10., 0.))
-                .spacing(6.)
+                .width(Size::px(64.))
+                .padding(Gaps::new(9., 0., 7., 0.))
+                .spacing(5.)
+                .corner_radius(12.)
                 .cross_align(Alignment::Center)
+                .maybe(self.active, |el| el.background(theme().raised))
                 .on_pointer_enter(move |_| hovered.set(true))
                 .on_pointer_leave(move |_| hovered.set(false))
-                .child(SvgViewer::new(self.icon.as_bytes()).width(Size::px(26.)).height(Size::px(26.)).stroke(c))
-                .child(label().text(self.text).font_size(12.).color(c)),
+                .child(SvgViewer::new(self.icon.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke(c))
+                .child(label().text(self.text).font_size(11.).color(c)),
         )
     }
 }

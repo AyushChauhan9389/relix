@@ -79,10 +79,10 @@ impl Component for Account {
                 .map(needs_code.then_some(()), |el, ()| {
                     let mut act = act.clone();
                     el.child(field("Code from your email", Input::new(code).width(Size::fill()).placeholder("123456")))
-                        .child(Focusable::new(button("Verify", theme().accent, (255, 255, 255)), move |()| act("verify")))
+                        .child(Focusable::new(button("Verify", theme().primary.0, theme().primary.1), move |()| act("verify")))
                 })
                 .map((!needs_code).then_some(()), |el, ()| {
-                    el.child(Focusable::new(button("I've saved it", theme().accent, (255, 255, 255)), move |()| recovery.set(None)))
+                    el.child(Focusable::new(button("I've saved it", theme().primary.0, theme().primary.1), move |()| recovery.set(None)))
                 }),
             (Some(acc), None) => {
                 let ctx2 = ctx.clone();
@@ -119,7 +119,7 @@ impl Component for Account {
                         rect()
                             .horizontal()
                             .spacing(12.)
-                            .child(Focusable::new(button("Sign in", theme().accent, (255, 255, 255)), move |()| a1("sign_in")))
+                            .child(Focusable::new(button("Sign in", theme().primary.0, theme().primary.1), move |()| a1("sign_in")))
                             .child(Focusable::new(button("Create account", theme().raised, (255, 255, 255)), move |()| a2("sign_up"))),
                     )
             }
@@ -135,7 +135,7 @@ impl Component for Account {
                     .child(label().text("Account").font_size(32.).font_weight(FontWeight::BOLD))
                     .child(body)
                     .maybe(*busy.read(), |el| el.child(label().text("Working…").color(theme().muted)))
-                    .maybe_child(error.read().clone().map(|e| label().text(e).font_size(15.).color(theme().accent))),
+                    .maybe_child(error.read().clone().map(|e| label().text(e).font_size(15.).color(crate::theme::ERROR))),
             )
     }
 }

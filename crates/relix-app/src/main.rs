@@ -435,9 +435,14 @@ impl Component for Shell {
             // Every screen fades and rises in; the key replays it on each navigation and remounts
             // pages when the look changes, so they redraw in the new colours.
             .child(
-                rect().expanded().padding(Gaps::new(0., 0., 0., if sidebar { home::SIDEBAR_W } else { 0. })).child(
-                    motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}")),
-                ),
+                rect()
+                    .expanded()
+                    .padding(Gaps::new(0., 0., 0., if sidebar { home::SIDEBAR_W } else { 0. }))
+                    .child(motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}")))
+                    // Stremio's search bar tops every page but Search, which has its own field.
+                    .maybe(sidebar && !playing && route != Route::Search.to_string(), |el| {
+                        el.child(home::top_bar().layer(Layer::OverlayLevel(2)))
+                    }),
             )
             .maybe(!playing, |el| {
                 let active = home::active_link(&RouterContext::get().current::<Route>());

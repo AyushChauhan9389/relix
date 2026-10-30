@@ -27,7 +27,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Profiles:** deferred (removed 2026-10-29). The app runs as one implicit profile; records still carry a profile id so profiles (and kids mode) can return without a migration.
 - **Navigation:** spatial focus from phase 1. Arrow keys, Enter and Esc work on every screen.
 - **Look:** dark, Netflix-like. All colours, spacing and type live in one theme module so a designed theme can drop in later.
-- **Looks:** Settings → Appearance switches between Netflix (top bar, hero, red) and Stremio (icon sidebar, search bar, titled posters, purple). The choice is a synced setting; every colour comes from `theme.rs`.
+- **Looks:** Settings → Appearance switches between Netflix (top bar, hero, red) and Stremio (black, icon sidebar, search bar on every page, titled posters; purple only on Play and progress). The choice is a synced setting; every colour comes from `theme.rs`.
 - **Player:** plays inside Relix's window (separate window only on Wayland), not forced fullscreen, with Relix's own Netflix-style controls (`player.lua`, embedded in the app): back + title, centre play/pause and ±10s, red timeline, subtitles & audio panel, speed, next episode and a countdown card near the end. Finishing an episode (or pressing Next) auto-plays the next one from the same release (`bingeGroup`). Progress comes back from libmpv events.
 - **Defaults:** Cinemeta and OpenSubtitles v3 come preinstalled.
 

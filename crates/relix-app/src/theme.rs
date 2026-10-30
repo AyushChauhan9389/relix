@@ -32,11 +32,13 @@ pub struct Palette {
     pub panel: (u8, u8, u8, f32),
     /// The main call to action (Play): background and text.
     pub cta: (Rgb, Rgb),
+    /// Other main buttons (Sign in, Install): background and text.
+    pub primary: (Rgb, Rgb),
     /// Poster and card corners.
     pub radius: f32,
-    /// Space above page content (Netflix's top bar floats over it).
+    /// Space above page content (the top bar floats over it).
     pub top: f32,
-    /// Stremio layout: icon sidebar instead of the top bar, no hero, titles under posters.
+    /// Stremio layout: icon sidebar plus a search bar on top, no hero, titles under posters.
     pub sidebar: bool,
 }
 
@@ -51,26 +53,32 @@ const NETFLIX: Palette = Palette {
     accent: (229, 9, 20),
     panel: (12, 12, 12, 0.82),
     cta: ((255, 255, 255), (0, 0, 0)),
+    primary: ((229, 9, 20), (255, 255, 255)),
     radius: 4.,
     top: 100.,
     sidebar: false,
 };
 
+/// Black and greys; Stremio's purple only on Play and progress.
 const STREMIO: Palette = Palette {
-    bg: (17, 15, 30),
-    surface: (30, 27, 54),
-    raised: (48, 44, 84),
-    border: (40, 36, 70),
-    placeholder: (34, 31, 60),
-    track: (70, 64, 110),
-    muted: (165, 160, 195),
+    bg: (0, 0, 0),
+    surface: (22, 22, 22),
+    raised: (40, 40, 40),
+    border: (28, 28, 28),
+    placeholder: (26, 26, 26),
+    track: (64, 64, 64),
+    muted: (150, 150, 150),
     accent: (123, 91, 245),
-    panel: (24, 21, 44, 0.86),
+    panel: (16, 16, 16, 0.88),
     cta: ((123, 91, 245), (255, 255, 255)),
-    radius: 12.,
-    top: 36.,
+    primary: ((255, 255, 255), (0, 0, 0)),
+    radius: 10.,
+    top: 88.,
     sidebar: true,
 };
+
+/// Errors and the 18+ badge, in every look.
+pub const ERROR: Rgb = (229, 9, 20);
 
 thread_local! {
     static LOOK: Cell<Look> = const { Cell::new(Look::Netflix) };

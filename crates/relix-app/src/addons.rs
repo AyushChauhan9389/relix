@@ -73,7 +73,7 @@ impl Component for Addons {
                                     move |text: String| install(text)
                                 }),
                         )
-                        .child(button("Install", theme().accent, (255, 255, 255)).on_press(move |_| install(url.read().clone()))),
+                        .child(button("Install", theme().primary.0, theme().primary.1).on_press(move |_| install(url.read().clone()))),
                 )
                 .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(theme().muted)))
                 .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element()))
@@ -126,7 +126,7 @@ fn card(ctx: &Ctx, addons: &[Addon], i: usize, addon: &Addon) -> Rect {
                 .cross_align(Alignment::End)
                 .child(label().text(m.name.clone()).font_size(19.).font_weight(FontWeight::BOLD))
                 .child(label().text(format!("v{}", m.version)).font_size(13.).color(theme().muted))
-                .maybe(m.behavior_hints.adult, |el| el.child(label().text("18+").font_size(13.).color(theme().accent))),
+                .maybe(m.behavior_hints.adult, |el| el.child(label().text("18+").font_size(13.).color(crate::theme::ERROR))),
         )
         .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(theme().muted).span(d)))
         .child(label().text(m.types.join(" · ")).font_size(13.).color(theme().muted))
@@ -236,8 +236,8 @@ impl Component for StremioPanel {
         };
         let action = |text: &'static str, name: &'static str, primary: bool| {
             let mut run = run.clone();
-            let bg = if primary { theme().accent } else { theme().raised };
-            Focusable::new(button(text, bg, (255, 255, 255)), move |()| run(name))
+            let (bg, fg) = if primary { theme().primary } else { (theme().raised, (255, 255, 255)) };
+            Focusable::new(button(text, bg, fg), move |()| run(name))
         };
 
         let body = match connected.read().clone() {
