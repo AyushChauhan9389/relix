@@ -176,6 +176,7 @@ struct Hero {
 
 impl Component for Hero {
     fn render(&self) -> impl IntoElement {
+        let autoplay = use_consume::<Ctx>().autoplay_title;
         let mut index = use_state(|| 0usize);
         let mut prev = use_state(|| 0usize);
         let len = self.items.len();
@@ -226,7 +227,7 @@ impl Component for Hero {
             // Freya doesn't order siblings on the same layer, so every stacked piece gets its own.
             .maybe_child(behind.map(|m| backdrop(m.background.as_deref()).layer(1)))
             .child(backdrop(meta.background.as_deref()).layer(2).opacity(fade.get().value()))
-            .child(details(meta, use_consume::<Ctx>().autoplay_title).layer(5))
+            .child(details(meta, autoplay).layer(5))
             .child(dots(len, current).layer(5))
             .into_element()
     }
