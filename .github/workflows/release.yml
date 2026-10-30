@@ -1,5 +1,6 @@
 # Run by hand (Actions → Release → Run workflow) after bumping version in crates/relix-app/Cargo.toml.
-# Builds Windows and Linux, signs both, makes the GitHub release and publishes them for auto-update.
+# Builds Windows (setup .exe, .msi, portable .exe, portable .zip) and Linux (.deb, portable .tar.gz),
+# makes the GitHub release, and publishes the portable builds for auto-update.
 name: Release
 
 on: workflow_dispatch
@@ -37,46 +38,88 @@ jobs:
   windows:
     needs: check
     runs-on: windows-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - name: Build and package
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+      # NSIS and WiX, which cargo-packager downloads on first use.
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\.cargo-packager
+          key: packager-tools-windows-v1
+      - name: Build
         shell: pwsh
         run: |
           $env:RELIX_UPDATE_PUBKEY = (Get-Content packaging/update-key.pub -Raw).Trim()
           cargo build --release -p relix-app
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
-          $name = "Relix-${{ needs.check.outputs.version }}-windows-x64-portable"
-          New-Item -ItemType Directory $name | Out-Null
+      - name: Portable zip (also the auto-update payload)
+        shell: pwsh
+        run: |
+          $name = "Relix-$env:V-windows-x64-portable"
+          New-Item -ItemType Directory -Force $name, dist | Out-Null
           Copy-Item target/release/relix-app.exe, target/release/libmpv-2.dll $name
           Copy-Item packaging/portable-readme.txt "$name/README.txt"
           New-Item -ItemType File "$name/portable" | Out-Null
-          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
+      - name: Portable exe (one file)
+        shell: pwsh
+        run: |
+          $out = "dist/Relix-$env:V-windows-x64-portable.exe"
+          $p = Start-Process target/release/relix-app.exe -ArgumentList "--bundle", $out -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $out)) { throw "bundling failed" }
+      - name: Setup .exe and .msi
+        shell: pwsh
+        run: |
+          cargo packager -p relix-app --release -f nsis,wix
+          if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
+          Move-Item "dist/relix-app_${env:V}_x64-setup.exe" "dist/Relix-$env:V-windows-x64-setup.exe"
+          Move-Item "dist/relix-app_${env:V}_x64_en-US.msi" "dist/Relix-$env:V-windows-x64.msi"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: Relix-*.zip
+          path: |
+            dist/Relix-*.zip
+            dist/Relix-*.exe
+            dist/Relix-*.msi
 
   linux:
     needs: check
     runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - name: Build and package
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+      - name: Build
         run: |
           export RELIX_UPDATE_PUBKEY=$(tr -d '\r\n' < packaging/update-key.pub)
           cargo build --release -p relix-app -p relix-server
-          name="Relix-${{ needs.check.outputs.version }}-linux-x64"
-          mkdir "$name"
+      - name: Portable tar.gz (also the auto-update payload)
+        run: |
+          name="Relix-$V-linux-x64"
+          mkdir -p "$name" dist
           cp target/release/relix-app "$name/"
           cp packaging/linux-readme.txt "$name/README.txt"
           touch "$name/portable"
-          tar -czf "$name.tar.gz" "$name"
+          tar -czf "dist/$name.tar.gz" "$name"
+      - name: Debian package
+        run: |
+          cargo packager -p relix-app --release -f deb
+          mv dist/relix-app_${V}_amd64.deb "dist/Relix-$V-linux-amd64.deb"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: Relix-*.tar.gz
+          path: |
+            dist/Relix-*.tar.gz
+            dist/Relix-*.deb
       # The publish job signs with relix-server's `update sign`.
       - uses: actions/upload-artifact@v4
         with:
@@ -89,11 +132,12 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Sign
+      - name: Sign the auto-update payloads
         env:
           KEY: ${{ secrets.RELIX_UPDATE_SIGNING_KEY }}
         run: |
@@ -109,7 +153,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v$VERSION" dist/Relix-* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Relix $VERSION" --generate-notes
+            --title "Relix $VERSION" --notes-file packaging/release-notes.md
       - name: Publish for auto-update
         env:
           TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
