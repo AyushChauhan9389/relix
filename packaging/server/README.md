@@ -14,8 +14,10 @@ serves it on HTTPS with an automatic Let's Encrypt certificate.
 
 **Redeploy** after committing: `bash packaging/server/deploy.sh` (builds on the server from `git archive HEAD`).
 
-**Publish an app update:** after `packaging/portable.ps1`,
-`scp dist/Relix-*.zip dist/latest.json root@relix.carbonkit.tech:/var/lib/relix/updates/`.
+**Publish an app update:** run the Release workflow on GitHub; it uploads the builds and `latest-<os>.json` with
+`PUT /admin/update/<name>` (admin token).
+
+**Redeploy also** uploads `website/` to `/var/www/relix` and the Caddyfile.
 
 **Settings change:** edit `/etc/relix/relix.env`, then `systemctl restart relix-server`. Adding `RELIX_SMTP_URL` and
 `RELIX_SMTP_FROM` turns on emailed verification codes.

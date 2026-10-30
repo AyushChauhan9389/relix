@@ -8,11 +8,12 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::{Json, Router};
@@ -152,6 +153,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/addons/admin", get(admin_addons_for_users))
         .route("/admin/addons", get(admin_list).post(admin_add))
         .route("/admin/addons/{id}", delete(admin_remove))
+        .route("/admin/update/{name}", put(admin_upload).layer(DefaultBodyLimit::max(512 * 1024 * 1024)))
         .route("/update/latest", get(update_latest))
         .route("/update/files/{name}", get(update_file))
         .with_state(state))
@@ -282,8 +284,19 @@ async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<S
     }
 }
 
-async fn update_latest(State(s): State<AppState>) -> Response {
-    match tokio::fs::read(s.config.update_dir.join("latest.json")).await {
+#[derive(serde::Deserialize)]
+struct LatestQuery {
+    os: Option<String>,
+}
+
+/// `latest-<os>.json`; without `os` (builds before per-OS manifests) it's `latest.json`, the Windows one.
+async fn update_latest(State(s): State<AppState>, Query(q): Query<LatestQuery>) -> Response {
+    let name = match q.os.as_deref() {
+        None => "latest.json".to_owned(),
+        Some(os) if !os.is_empty() && os.chars().all(|c| c.is_ascii_lowercase()) => format!("latest-{os}.json"),
+        Some(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match tokio::fs::read(s.config.update_dir.join(name)).await {
         Ok(bytes) => ([("content-type", "application/json")], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -291,14 +304,39 @@ async fn update_latest(State(s): State<AppState>) -> Response {
 
 // shortcut: reads the whole file into memory (~65 MB per download); stream it if many clients update at once.
 async fn update_file(State(s): State<AppState>, Path(name): Path<String>) -> Response {
-    // Plain file names only, so a request can't reach outside the update folder.
-    if name.contains(['/', '\\']) || name.starts_with('.') {
+    if !plain_name(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
     match tokio::fs::read(s.config.update_dir.join(&name)).await {
         Ok(bytes) => ([("content-type", "application/octet-stream")], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Plain file names only, so a request can't reach outside the update folder.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\']) && !name.starts_with('.')
+}
+
+/// Stores a release file or manifest in the update folder (the release workflow uploads here).
+async fn admin_upload(State(s): State<AppState>, headers: HeaderMap, Path(name): Path<String>, body: Bytes) -> Result<StatusCode, ApiError> {
+    require_admin(&s, &headers)?;
+    if !plain_name(&name) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "plain file names only"));
+    }
+    let dir = &s.config.update_dir;
+    // Written aside then renamed, so nobody downloads a half-written file.
+    let part = dir.join(format!(".{name}.part"));
+    let stored = async {
+        tokio::fs::create_dir_all(dir).await?;
+        tokio::fs::write(&part, &body).await?;
+        tokio::fs::rename(&part, dir.join(&name)).await
+    };
+    stored.await.map_err(|e| {
+        eprintln!("update upload {name}: {e}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "couldn't store the file")
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The account behind the request's bearer token.

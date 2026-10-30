@@ -72,8 +72,8 @@ async fn admin(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 const UPDATE_USAGE: &str = "usage: relix-server update <command>
   keygen <key-file>                    make a signing key; prints the public key the app is built with
-  sign <key-file> <zip> <version>      sign a release; writes latest.json next to the zip
-Copy the zip and latest.json into the server's RELIX_UPDATE_DIR to publish.";
+  sign <key-file> <file> <version>     sign a release; prints its manifest (save as latest-<os>.json)
+The release workflow publishes files and manifests with PUT /admin/update/<name>.";
 
 /// `relix-server update ...`: release signing, run on the machine that builds releases.
 fn update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -93,11 +93,8 @@ fn update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         ["sign", key, zip, version] => {
             let (_, signature) = sign(&read_key(key)?, &signed_message(version, &std::fs::read(zip)?));
-            let zip = std::path::Path::new(zip);
-            let file = zip.file_name().and_then(|f| f.to_str()).ok_or("bad zip path")?.to_owned();
-            let manifest = UpdateManifest { version: (*version).to_owned(), file, signature };
-            std::fs::write(zip.with_file_name("latest.json"), serde_json::to_string_pretty(&manifest)?)?;
-            println!("wrote {}", zip.with_file_name("latest.json").display());
+            let file = std::path::Path::new(zip).file_name().and_then(|f| f.to_str()).ok_or("bad file path")?.to_owned();
+            println!("{}", serde_json::to_string_pretty(&UpdateManifest { version: (*version).to_owned(), file, signature })?);
         }
         _ => return Err(UPDATE_USAGE.into()),
     }

@@ -33,7 +33,7 @@ pub async fn check(ctx: Ctx) {
 }
 
 async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
-    let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url("/update/latest")).await.map_err(|e| e.to_string())?;
+    let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url(&format!("/update/latest?os={}", std::env::consts::OS))).await.map_err(|e| e.to_string())?;
     if !is_newer(&latest.version, env!("CARGO_PKG_VERSION")) {
         return Ok(None);
     }
@@ -49,8 +49,8 @@ async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
 }
 
 /// Unpacks the zip into a fresh `dir` and returns the folder that holds relix-app.exe.
-// shortcut: uses Windows' built-in tar (Windows 10+) because only a Windows zip is released; add a zip
-// crate or per-OS packages when Linux/macOS builds update themselves.
+// shortcut: shells out to `tar`, which Windows 10+ ships (reads zip) and Linux has (reads .tar.gz); macOS
+// builds will need their own package format.
 fn unpack(dir: &Path, zip: &[u8]) -> Result<PathBuf, String> {
     let _ = std::fs::remove_dir_all(dir);
     let out = dir.join("files");

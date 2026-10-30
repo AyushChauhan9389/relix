@@ -11,7 +11,6 @@ Delete the file named "portable" to make this copy use your Windows profile
 Files
   relix-app.exe     the app
   libmpv-2.dll      the video player engine (mpv, LGPL; with FFmpeg)
-  relix-server.exe  optional: your own sync server (see README on GitHub)
   portable          marker that keeps data next to the app
 
 Source and docs: https://github.com/AyushChauhan9389/relix

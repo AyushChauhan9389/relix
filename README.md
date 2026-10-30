@@ -24,16 +24,15 @@ cargo run -p relix-app                      # Home screen
 cargo run -p relix-app -- --play <url>      # playback spike
 ```
 
-## Portable Windows build
+## Builds
 
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging\portable.ps1
-```
+Release builds happen only in GitHub Actions. **CI** (every push) lints and tests on Windows and Linux. **Release**
+(Actions → Release → Run workflow) refuses a version that's already tagged or not newer than the one the server
+publishes, then builds `Relix-<version>-windows-x64-portable.zip` and `Relix-<version>-linux-x64.tar.gz`, signs them,
+creates the GitHub release and uploads both to the server for auto-update.
 
-Produces `dist\Relix-<version>-windows-x64-portable.zip`: `relix-app.exe`, `libmpv-2.dll`, `relix-server.exe` and a
-`portable` marker. With the marker next to the exe, Relix keeps its data in a `data` folder beside it instead of
-`%APPDATA%
-elix`, so the folder can be carried around. Release builds open without a console window.
+Each build carries a `portable` marker, so Relix keeps its data in a `data` folder beside the app; delete it to use the
+per-user folder instead. The Linux build needs the system libmpv.
 
 ## Sync server
 
@@ -64,13 +63,9 @@ relix-server admin remove 1                  # RELIX_SERVER_URL defaults to http
 
 ## Releasing an update
 
-1. Bump `version` in `crates/relix-app/Cargo.toml`.
-2. Run `packaging/portable.ps1` (it builds against `https://relix.carbonkit.tech` unless `RELIX_SERVER` is set). It builds the app with the
-   public key in `packaging/update-key.pub` and signs the zip with `%USERPROFILE%/.relix/update-signing.key`
-   (or `RELIX_UPDATE_KEY`), writing `dist/latest.json`.
-3. Copy the zip and `latest.json` into the server's `RELIX_UPDATE_DIR`: see `packaging/server/README.md`. Running copies pick it up
-   on their next launch and offer "Restart".
+1. Bump `version` in `crates/relix-app/Cargo.toml` and push.
+2. Run the **Release** workflow. Running copies pick the new version up on their next launch and offer "Restart".
 
-Keep `update-signing.key` safe and out of git: whoever has it can ship code to every install. A new key is made with
-`relix-server update keygen <file>` (it prints the public key for `packaging/update-key.pub`).
-
+The workflow signs with the `RELIX_UPDATE_SIGNING_KEY` secret and uploads with `RELIX_ADMIN_TOKEN`. The public half of
+the signing key is `packaging/update-key.pub`; a new pair is made with `relix-server update keygen <file>`. Whoever
+has the private key can ship code to every install.

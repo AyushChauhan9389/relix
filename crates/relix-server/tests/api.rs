@@ -250,3 +250,30 @@ async fn serves_the_latest_update_and_its_file() {
     assert_eq!(call(&app, "/update/files/missing.zip", None, None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(call(&app, "/update/files/..%2Flatest.json", None, None).await.0, StatusCode::NOT_FOUND, "no paths out of the folder");
 }
+
+async fn put(app: &Router, path: &str, token: Option<&str>, body: &'static [u8]) -> StatusCode {
+    let mut req = Request::builder().uri(path).method("PUT");
+    if let Some(t) = token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    app.clone().oneshot(req.body(Body::from(body)).unwrap()).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn admins_publish_updates_per_os() {
+    let (app, _) = server(false);
+    assert_eq!(put(&app, "/admin/update/latest-linux.json", None, b"{}").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(put(&app, "/admin/update/Relix-linux.tar.gz", Some(ADMIN), b"archive").await, StatusCode::NO_CONTENT);
+    let latest = json!({ "version": "0.2.0", "file": "Relix-linux.tar.gz", "signature": "sig" });
+    let bytes: &'static [u8] = Box::leak(latest.to_string().into_bytes().into_boxed_slice());
+    assert_eq!(put(&app, "/admin/update/latest-linux.json", Some(ADMIN), bytes).await, StatusCode::NO_CONTENT);
+
+    assert_eq!(call(&app, "/update/latest?os=linux", None, None).await, (StatusCode::OK, latest));
+    assert_eq!(call(&app, "/update/latest", None, None).await.0, StatusCode::NOT_FOUND, "no Windows (default) build yet");
+    assert_eq!(call(&app, "/update/latest?os=..%2Flatest", None, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(put(&app, "/admin/update/..%2Fescape", Some(ADMIN), b"x").await, StatusCode::BAD_REQUEST);
+
+    let req = Request::builder().uri("/update/files/Relix-linux.tar.gz").body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(&res.into_body().collect().await.unwrap().to_bytes()[..], b"archive");
+}

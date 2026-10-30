@@ -6,6 +6,7 @@ The server, not GitHub, hosts updates because the repository is private. The sig
 
 ## Consequences
 
-- Only the portable Windows build updates itself (it unpacks with Windows' built-in `tar`); Linux and macOS will use their package managers or need their own updater.
+- Windows (zip) and Linux (tar.gz) builds update themselves; each OS has its own `latest-<os>.json`, and plain `latest.json` stays the Windows one for builds that predate that. Both unpack with the system `tar`; macOS will need its own package format.
+- Releases are built, signed and published only by the Release workflow in GitHub Actions (2026-10-30).
 - Losing the private key means installed copies can't be updated until users download a build with a new key by hand.
 - If copying fails halfway, the files done so far stay new; each failed file is put back from `*.old`.

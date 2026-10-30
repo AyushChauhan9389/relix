@@ -1,0 +1,128 @@
+# Run by hand (Actions → Release → Run workflow) after bumping version in crates/relix-app/Cargo.toml.
+# Builds Windows and Linux, signs both, makes the GitHub release and publishes them for auto-update.
+name: Release
+
+on: workflow_dispatch
+
+permissions:
+  contents: write
+
+env:
+  RELIX_SERVER: https://relix.carbonkit.tech
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version is new
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/relix-app/Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released. Bump version in crates/relix-app/Cargo.toml."
+            exit 1
+          fi
+          published=$(curl -fsS "$RELIX_SERVER/update/latest?os=windows" | jq -r .version || curl -fsS "$RELIX_SERVER/update/latest" | jq -r .version || true)
+          newest=$(printf '%s\n%s\n' "$published" "$version" | sort -V | tail -1)
+          if [ -n "$published" ] && { [ "$published" = "$version" ] || [ "$newest" != "$version" ]; }; then
+            echo "::error::$version isn't newer than the published $published. Bump version in crates/relix-app/Cargo.toml."
+            exit 1
+          fi
+          echo "Releasing $version (published: ${published:-none})"
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - shell: pwsh
+        run: packaging/ci/windows-mpv.ps1
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $env:RELIX_UPDATE_PUBKEY = (Get-Content packaging/update-key.pub -Raw).Trim()
+          cargo build --release -p relix-app
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          $name = "Relix-${{ needs.check.outputs.version }}-windows-x64-portable"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target/release/relix-app.exe, target/release/libmpv-2.dll $name
+          Copy-Item packaging/portable-readme.txt "$name/README.txt"
+          New-Item -ItemType File "$name/portable" | Out-Null
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Relix-*.zip
+
+  linux:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bash packaging/ci/linux-deps.sh
+      - name: Build and package
+        run: |
+          export RELIX_UPDATE_PUBKEY=$(tr -d '\r\n' < packaging/update-key.pub)
+          cargo build --release -p relix-app -p relix-server
+          name="Relix-${{ needs.check.outputs.version }}-linux-x64"
+          mkdir "$name"
+          cp target/release/relix-app "$name/"
+          cp packaging/linux-readme.txt "$name/README.txt"
+          touch "$name/portable"
+          tar -czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: Relix-*.tar.gz
+      # The publish job signs with relix-server's `update sign`.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signer
+          path: target/release/relix-server
+
+  publish:
+    needs: [check, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Sign
+        env:
+          KEY: ${{ secrets.RELIX_UPDATE_SIGNING_KEY }}
+        run: |
+          chmod +x dist/relix-server
+          printf '%s' "$KEY" > signing.key
+          trap 'rm -f signing.key' EXIT
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/latest-windows.json
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/latest-linux.json
+          # Builds before per-OS manifests ask for latest.json; it's the Windows one.
+          cp dist/latest-windows.json dist/latest.json
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" dist/Relix-* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Relix $VERSION" --generate-notes
+      - name: Publish for auto-update
+        env:
+          TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
+        run: |
+          up() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/update/$1"; }
+          up "Relix-$VERSION-windows-x64-portable.zip"
+          up "Relix-$VERSION-linux-x64.tar.gz"
+          # Manifests last, so no client sees a version whose file isn't there yet.
+          up latest-windows.json
+          up latest-linux.json
+          up latest.json
