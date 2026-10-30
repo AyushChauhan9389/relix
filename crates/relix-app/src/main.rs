@@ -20,6 +20,7 @@ mod store;
 mod stremio;
 mod sync;
 mod update;
+mod video;
 mod theme;
 
 use std::rc::Rc;
@@ -79,6 +80,17 @@ fn main() {
         }
     }
 
+    // shortcut: in-window video test (`--video-spike <url>`) until the player moves to video.rs.
+    if let Some(url) = std::env::args().skip_while(|a| a != "--video-spike").nth(1) {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _rt = rt.enter();
+        let window = WindowConfig::new(move || VideoSpike { url: url.clone() })
+            .with_title("Relix video test")
+            .with_size(1280., 720.)
+            .with_renderer(RendererPreference::OpenGl)
+            .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs });
+        return launch(LaunchConfig::new().with_window(window));
+    }
     // ponytail: playback check without the UI:
     // `--play <url> [--subs movie/<imdb id>] [--title T] [--episode E] [--has-next] [--start secs]`.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
@@ -559,5 +571,41 @@ impl Component for Shell {
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
             .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::OverlayLevel(3))))
+    }
+}
+
+#[derive(PartialEq)]
+struct VideoSpike {
+    url: String,
+}
+
+impl Component for VideoSpike {
+    fn render(&self) -> impl IntoElement {
+        let mut frame = use_state(|| 0u64);
+        let renderer = use_hook({
+            let url = self.url.clone();
+            move || {
+                let mpv = libmpv2::Mpv::with_initializer(|init| {
+                    init.set_option("vo", "libmpv")?;
+                    init.set_option("hwdec", "auto-safe")?;
+                    if test_offscreen() {
+                        init.set_option("mute", "yes")?;
+                    }
+                    Ok(())
+                })
+                .expect("mpv");
+                mpv.command("loadfile", &[&url]).expect("loadfile");
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                spawn(async move {
+                    while rx.recv().await.is_some() {
+                        *frame.write() += 1;
+                    }
+                });
+                Rc::new(video::VideoRenderer::new(std::sync::Arc::new(mpv), move || {
+                    let _ = tx.send(());
+                }))
+            }
+        });
+        rect().expanded().background((0, 0, 0)).child(video::video(renderer, *frame.read()).width(Size::fill()).height(Size::fill()))
     }
 }

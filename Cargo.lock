@@ -4117,6 +4117,8 @@ name = "relix-app"
 version = "0.1.2"
 dependencies = [
  "freya",
+ "freya-core",
+ "freya-skia-safe",
  "libmpv2",
  "raw-window-handle",
  "relix-proto",
