@@ -314,8 +314,15 @@ pub fn play_button(text: String) -> Rect {
 }
 
 pub fn chip(text: String, active: bool) -> Rect {
+    // shortcut: width estimated from the text (~8px a character at 14px) because Freya measures a
+    // chip at the end of a row against the space left and wraps its text; measure text if that misfits.
+    // (A min width came out ~1.5x on a 150% display, so this sets the width itself.)
+    let w = text.chars().count() as f32 * 8. + 28.;
     rect()
-        .padding(Gaps::new(6., 14., 6., 14.))
+        .width(Size::px(w))
+        .main_align(Alignment::Center)
+        .horizontal()
+        .padding(Gaps::new(6., 0., 6., 0.))
         .corner_radius(16.)
         .background(if active { (255, 255, 255) } else { theme().raised })
         .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))

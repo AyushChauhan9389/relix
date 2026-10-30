@@ -406,7 +406,11 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
         .height(Size::fill())
         .spacing(16.)
         .main_align(Alignment::End)
-        .child(Focusable::new(label().text("‹ Back").font_size(16.).color(theme().muted), |()| RouterContext::get().go_back()))
+        // Pinned top-left; the rest of the column sits at the bottom.
+        .child(rect().position(Position::new_absolute().top(0.).left(0.)).child(Focusable::new(
+            label().text("‹ Back").font_size(16.).color(theme().muted),
+            |()| RouterContext::get().go_back(),
+        )))
         .child(title_art(meta.logo.as_deref(), &meta.name))
         .child(
             rect()

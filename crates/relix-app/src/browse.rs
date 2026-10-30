@@ -1,7 +1,7 @@
 use freya::prelude::*;
 use relix_proto::addon::{Catalog, CatalogResponse, MetaPreview, discover_catalogs};
 
-use crate::focus::{Focusable, use_page_scroller, use_scroller};
+use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
 use crate::home::{button, chip, poster};
 use crate::{Ctx, get};
 use crate::theme::theme;
@@ -17,6 +17,7 @@ impl Component for Browse {
     fn render(&self) -> impl IntoElement {
         let ctx = use_consume::<Ctx>();
         let page = use_scroller();
+        let (catalog_row, genre_row) = (use_scroller(), use_scroller());
         use_page_scroller(page);
         // Movies <-> Series reuses this component with a new `kind`.
         let kind = use_reactive(&self.kind);
@@ -92,36 +93,32 @@ impl Component for Browse {
                     .padding(Gaps::new(theme().top, 48., 48., 48.))
                     .spacing(16.)
                     .child(label().text(title).font_size(32.).font_weight(FontWeight::BOLD))
-                    .child(rect().horizontal().content(Content::wrap_spacing(8.)).spacing(8.).children(list.iter().enumerate().map(
+                    .child(chip_row(catalog_row, list.iter().enumerate().map(
                         |(n, (i, c))| {
                             let name = c.name.clone().unwrap_or_else(|| c.id.clone());
                             let text = if several_addons { format!("{name} · {}", addons[*i].manifest.name) } else { name };
-                            Focusable { radius: 16., ..Focusable::new(chip(text, n == *picked.read()), move |()| {
+                            Focusable { radius: 16., row: Some(catalog_row), ..Focusable::new(chip(text, n == *picked.read()), move |()| {
                                 genre.set(None);
                                 picked.set(n);
                             }) }
                             .into_element()
                         },
-                    )))
+                    ).collect()))
                     .map(current.filter(|c| !c.genres().is_empty()), |el, c| {
                         // "All" only when the catalog works without a genre.
                         let all = c.discover_request(None, 0).extra.is_empty();
                         let default = c.discover_request(None, 0).extra.first().map(|(_, g)| g.clone());
                         let active = chosen_genre.clone().or(default);
-                        el.child(
-                            rect()
-                                .horizontal()
-                                .content(Content::wrap_spacing(8.))
-                                .spacing(8.)
-                                .maybe(all, |el| {
-                                    el.child(Focusable { radius: 16., ..Focusable::new(chip("All".into(), active.is_none()), move |()| genre.set(None)) })
-                                })
-                                .children(c.genres().iter().map(|g| {
-                                    let g2 = g.clone();
-                                    Focusable { radius: 16., ..Focusable::new(chip(g.clone(), active.as_deref() == Some(g)), move |()| genre.set(Some(g2.clone()))) }
-                                        .into_element()
-                                })),
-                        )
+                        let all = all.then(|| {
+                            Focusable { radius: 16., row: Some(genre_row), ..Focusable::new(chip("All".into(), active.is_none()), move |()| genre.set(None)) }
+                                .into_element()
+                        });
+                        let genres = c.genres().iter().map(|g| {
+                            let g2 = g.clone();
+                            Focusable { radius: 16., row: Some(genre_row), ..Focusable::new(chip(g.clone(), active.as_deref() == Some(g)), move |()| genre.set(Some(g2.clone()))) }
+                                .into_element()
+                        });
+                        el.child(chip_row(genre_row, all.into_iter().chain(genres).collect()))
                     })
                     .maybe(list.is_empty(), |el| el.child(label().text("No addon has a browsable catalog for this type.").color(theme().muted)))
                     .child(
@@ -138,4 +135,20 @@ impl Component for Browse {
             ),
         )
     }
+}
+
+/// One row of chips that scrolls sideways (wrapping squeezes the last chip on a line).
+fn chip_row(row: Scroller, chips: Vec<Element>) -> Element {
+    // `wrap` fills its parent, so the parent fixes the row's height.
+    rect()
+        .width(Size::fill())
+        .height(Size::px(42.))
+        .child(row.wrap(
+            ScrollView::new_controlled(row.controller)
+                .direction(Direction::Horizontal)
+                .scroll_with_arrows(false)
+                .show_scrollbar(false)
+                .child(rect().horizontal().padding(Gaps::new_all(4.)).spacing(8.).children(chips)),
+        ))
+        .into()
 }
