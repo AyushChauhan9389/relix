@@ -205,6 +205,8 @@ pub struct Ctx {
     pub rows: State<Vec<Row>>,
     /// While Home's catalogs are being fetched.
     pub rows_loading: State<bool>,
+    /// A title Home's Play asked to start; its page plays it once loaded.
+    pub autoplay_title: State<Option<String>>,
     /// Wakes the sync loop (sign-in, local changes).
     pub sync: Arc<tokio::sync::Notify>,
     /// Last sync outcome, for the Account screen.
@@ -322,6 +324,7 @@ fn app() -> impl IntoElement {
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
     let rows_loading = use_state(|| true);
+    let autoplay_title = use_state(|| None);
     let sync_status = use_state(String::new);
     let player = use_state(|| None);
     let fullscreen = use_state(|| false);
@@ -340,6 +343,7 @@ fn app() -> impl IntoElement {
         admin_enabled,
         rows,
         rows_loading,
+        autoplay_title,
         sync: Arc::default(),
         sync_status,
         player,

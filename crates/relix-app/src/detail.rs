@@ -4,8 +4,9 @@ use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{
     Meta, MetaPreview, MetaResponse, ResourceRequest, Stream, StreamsResponse, SubtitlesResponse, Video, route, seasons, stream_groups,
-    pick_binge_stream, subtitle_requests, without_torrents,
+    pick_binge_stream, pick_preferred, subtitle_requests, without_torrents,
 };
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
@@ -38,6 +39,17 @@ impl Component for Detail {
         let mut searching = use_state(|| false);
         // Why the last stream didn't play, shown above the streams.
         let mut play_error = use_state(|| None::<String>);
+        // One-click Play: the video to play as soon as its streams are in, and which video the
+        // loaded streams belong to (so it never plays the previous episode's).
+        let mut autoplay = use_state(|| None::<String>);
+        let mut streams_for = use_state(|| None::<String>);
+        // Set from the moment Play is pressed until playback ends, so a second press can't start a second player.
+        let mut starting = use_state(|| false);
+        // Home's Play opened this page.
+        let from_hero = use_hook({
+            let (title, id) = (ctx.autoplay_title, self.id.clone());
+            move || title.peek().as_deref() == Some(id.as_str())
+        });
         // The title's details couldn't be loaded from any addon.
         let mut load_failed = use_state(|| false);
         let (store, profile) = (ctx.store.clone(), ctx.profile.clone());
@@ -60,6 +72,10 @@ impl Component for Detail {
             let ctx = ctx.clone();
             move |first: Play| {
                 let (Some(m), Some(first_vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
+                if *starting.peek() {
+                    return;
+                }
+                starting.set(true);
                 let ctx = ctx.clone();
                 play_error.set(None);
                 spawn(async move {
@@ -81,6 +97,12 @@ impl Component for Detail {
                     let (mut req, mut vid) = (first, first_vid);
                     async {
                     loop {
+                        if let Some(addon) = ctx.all_addons().get(req.addon) {
+                            let pref = PreferredStream { addon: addon.manifest.id.clone(), name: req.name.clone().unwrap_or_default() };
+                            if let Err(e) = ctx.store.put(&ctx.profile, "settings", "preferred_stream", &pref) {
+                                eprintln!("saving preferred stream: {e}");
+                            }
+                        }
                         let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
                         let next = next_video(&m.videos, &vid);
                         let (to_player, inbox) = std::sync::mpsc::channel();
@@ -142,6 +164,7 @@ impl Component for Detail {
                     }
                     .await;
                     playing.set(None);
+                    starting.set(false);
                 });
             }
         });
@@ -182,9 +205,21 @@ impl Component for Detail {
                         if let Ok(r) = get::<MetaResponse>(ctx.http.clone(), url).await {
                             // Open on the season the user left off in (Resume opens the episode itself).
                             let resume = watch.peek().as_ref().and_then(|w| r.meta.videos.iter().find(|v| v.id == w.video_id).cloned());
-                            season.set(resume.and_then(|v| v.season).or_else(|| seasons(&r.meta.videos).first().map(|(s, _)| *s)));
+                            season.set(resume.clone().and_then(|v| v.season).or_else(|| seasons(&r.meta.videos).first().map(|(s, _)| *s)));
+                            let first_episode = || seasons(&r.meta.videos).into_iter().find(|(n, _)| *n > 0).and_then(|(_, eps)| eps.first().map(|v| (*v).clone()));
                             if seasons(&r.meta.videos).is_empty() {
                                 video.set(Some(id.clone()));
+                                if from_hero {
+                                    autoplay.set(Some(id.clone()));
+                                }
+                            } else if from_hero && let Some(v) = resume.or_else(first_episode) {
+                                season.set(v.season);
+                                video.set(Some(v.id.clone()));
+                                autoplay.set(Some(v.id));
+                            }
+                            if from_hero {
+                                let mut title = ctx.autoplay_title;
+                                title.set(None);
                             }
                             meta.set(Some(r.meta));
                             return;
@@ -201,6 +236,7 @@ impl Component for Detail {
             move || {
                 let Some(id) = video.read().clone() else { return };
                 streams.set(vec![]);
+                streams_for.set(Some(id.clone()));
                 searching.set(true);
                 let (kind, ctx) = (kind.clone(), ctx.clone());
                 spawn(async move {
@@ -224,6 +260,31 @@ impl Component for Detail {
                     }
                     searching.set(false);
                 });
+            }
+        });
+
+        // Plays the queued video once its streams are in: the remembered addon's same-quality stream when
+        // it has one. Waits for that addon's answer, or for every addon when nothing is remembered.
+        use_side_effect({
+            let (ctx, play) = (ctx.clone(), play.clone());
+            move || {
+                let Some(target) = autoplay.read().clone() else { return };
+                let (groups, done) = (streams.read().clone(), !*searching.read());
+                if streams_for.read().as_deref() != Some(target.as_str()) {
+                    return;
+                }
+                let addons = ctx.all_addons();
+                let pref = ctx.store.get::<PreferredStream>(&ctx.profile, "settings", "preferred_stream").ok().flatten();
+                let pref_addon = pref.as_ref().and_then(|p| addons.iter().position(|a| a.manifest.id == p.addon));
+                if !done && !pref_addon.is_some_and(|i| groups.iter().any(|(a, _)| *a == i)) {
+                    return;
+                }
+                autoplay.set(None);
+                let groups = stream_groups(groups);
+                let name = pref.as_ref().map_or("", |p| p.name.as_str());
+                if let Some(req) = pick_preferred(&groups, pref_addon, name).and_then(|(i, s)| Play::of(s, i)) {
+                    play.call(req);
+                }
             }
         });
 
@@ -282,17 +343,13 @@ impl Component for Detail {
                 if let Some(v) = &target {
                     season.set(v.season);
                     video.set(Some(v.id.clone()));
+                    autoplay.set(Some(v.id.clone()));
                 }
             }))
         } else {
-            let first = groups.iter().find_map(|(i, _, list)| list.iter().find_map(|s| Play::of(s, *i)));
             let resumes = current.as_ref().is_some_and(|w| w.position > 0. && !w.finished());
-            let play = play.clone();
-            (if resumes { "Resume".into() } else { "Play".into() }, Box::new(move |()| {
-                if let Some(req) = first.clone() {
-                    play.call(req);
-                }
-            }))
+            let id = meta.id.clone();
+            (if resumes { "Resume".into() } else { "Play".into() }, Box::new(move |()| autoplay.set(Some(id.clone()))))
         };
 
         let panel: Element = if showing_streams {
@@ -587,8 +644,17 @@ struct Play {
     headers: HashMap<String, String>,
     filename: Option<String>,
     binge_group: Option<String>,
+    /// The stream's name, usually its quality label ("Torrentio\n4k").
+    name: Option<String>,
     /// Index of the addon the stream came from.
     addon: usize,
+}
+
+/// The addon and quality label of the last stream played, for one-click Play (a synced setting).
+#[derive(Serialize, Deserialize)]
+struct PreferredStream {
+    addon: String,
+    name: String,
 }
 
 impl Play {
@@ -598,6 +664,7 @@ impl Play {
             headers: stream.behavior_hints.proxy_headers.clone().map(|h| h.request).unwrap_or_default(),
             filename: stream.behavior_hints.filename.clone(),
             binge_group: stream.behavior_hints.binge_group.clone(),
+            name: stream.name.clone(),
             addon,
         })
     }

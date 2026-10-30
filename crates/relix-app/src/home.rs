@@ -226,7 +226,7 @@ impl Component for Hero {
             // Freya doesn't order siblings on the same layer, so every stacked piece gets its own.
             .maybe_child(behind.map(|m| backdrop(m.background.as_deref()).layer(1)))
             .child(backdrop(meta.background.as_deref()).layer(2).opacity(fade.get().value()))
-            .child(details(meta).layer(5))
+            .child(details(meta, use_consume::<Ctx>().autoplay_title).layer(5))
             .child(dots(len, current).layer(5))
             .into_element()
     }
@@ -263,7 +263,7 @@ fn shade() -> Rect {
         ))
 }
 
-fn details(meta: &MetaPreview) -> Rect {
+fn details(meta: &MetaPreview, autoplay: State<Option<String>>) -> Rect {
     rect()
         .position(Position::new_absolute().left(48.).bottom(110.))
         .width(Size::px(560.))
@@ -277,7 +277,7 @@ fn details(meta: &MetaPreview) -> Rect {
             rect()
                 .horizontal()
                 .spacing(12.)
-                .child(Focusable::new(play_button("Play".into()), open_title(meta)))
+                .child(Focusable::new(play_button("Play".into()), play_title(meta, autoplay)))
                 .child(Focusable::new(button("More Info", theme().secondary, (255, 255, 255)), open_title(meta))),
         )
 }
@@ -287,6 +287,15 @@ pub fn open_title(meta: &MetaPreview) -> EventHandler<()> {
     let route = Route::Detail { kind: meta.r#type.clone(), id: meta.id.clone() };
     EventHandler::new(move |()| {
         let _ = RouterContext::get().push(route.clone());
+    })
+}
+
+/// Opens a title's page and plays it right away (its remembered stream, or the first playable one).
+fn play_title(meta: &MetaPreview, mut autoplay: State<Option<String>>) -> EventHandler<()> {
+    let (open, id) = (open_title(meta), meta.id.clone());
+    EventHandler::new(move |()| {
+        autoplay.set(Some(id.clone()));
+        open.call(());
     })
 }
 

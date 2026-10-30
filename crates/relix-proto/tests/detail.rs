@@ -89,3 +89,20 @@ fn torrents_and_ungrouped_streams_never_auto_play() {
     let groups = vec![(0, vec![stream(serde_json::json!({ "infoHash": "x", "behaviorHints": { "bingeGroup": "g" } })), binge("https://a", None)])];
     assert_eq!(relix_proto::addon::pick_binge_stream(&groups, 0, "g").map(|(a, _)| a), None);
 }
+
+#[test]
+fn preferred_stream_is_the_same_quality_from_the_same_addon_then_that_addon_then_any() {
+    let s = |name: &str, url: &str| stream(serde_json::json!({ "name": name, "url": url }));
+    let torrent = stream(serde_json::json!({ "name": "4k", "infoHash": "abc" }));
+    let groups = vec![
+        (0, vec![s("Other\n1080p", "https://o/1080")]),
+        (2, vec![torrent, s("Torrentio\n720p", "https://t/720"), s("Torrentio\n4k", "https://t/4k")]),
+    ];
+    let pick = |addon, name| relix_proto::addon::pick_preferred(&groups, addon, name).map(|(a, s)| (a, s.playable_url().unwrap().to_owned()));
+
+    assert_eq!(pick(Some(2), "Torrentio\n4k"), Some((2, "https://t/4k".into())), "same quality, skipping the torrent");
+    assert_eq!(pick(Some(2), "Torrentio\n1080p"), Some((2, "https://t/720".into())), "that addon's first playable");
+    assert_eq!(pick(Some(5), "x"), Some((0, "https://o/1080".into())), "preferred addon absent: first playable anywhere");
+    assert_eq!(pick(None, ""), Some((0, "https://o/1080".into())));
+    assert_eq!(relix_proto::addon::pick_preferred(&[], Some(0), "x").map(|(a, _)| a), None);
+}

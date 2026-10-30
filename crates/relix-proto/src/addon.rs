@@ -515,3 +515,15 @@ pub fn pick_binge_stream<'a>(groups: &'a [(usize, Vec<Stream>)], prev_addon: usi
     let in_addon = |(a, streams): &'a (usize, Vec<Stream>)| streams.iter().find(matches).map(|s| (*a, s));
     groups.iter().filter(|(a, _)| *a == prev_addon).find_map(in_addon).or_else(|| groups.iter().find_map(in_addon))
 }
+
+/// The stream to play for one-click Play: from the preferred addon, one with the same name (its
+/// quality label, e.g. "Torrentio\n4k"), else that addon's first playable one, else the first
+/// playable one anywhere in addon order.
+pub fn pick_preferred<'a>(groups: &'a [(usize, Vec<Stream>)], addon: Option<usize>, name: &str) -> Option<(usize, &'a Stream)> {
+    let playable = |s: &&Stream| s.playable_url().is_some();
+    let preferred = groups.iter().find(|(a, _)| Some(*a) == addon);
+    preferred
+        .and_then(|(a, list)| list.iter().filter(playable).find(|s| s.name.as_deref() == Some(name)).map(|s| (*a, s)))
+        .or_else(|| preferred.and_then(|(a, list)| list.iter().find(playable).map(|s| (*a, s))))
+        .or_else(|| groups.iter().find_map(|(a, list)| list.iter().find(playable).map(|s| (*a, s))))
+}
