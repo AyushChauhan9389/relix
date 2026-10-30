@@ -5,6 +5,7 @@ mod account;
 mod addons;
 mod browse;
 mod detail;
+mod filter;
 mod focus;
 mod home;
 mod library;
@@ -354,7 +355,7 @@ pub async fn load_rows(mut ctx: Ctx) {
                 other => other.to_owned(),
             };
             let id = format!("{}/{}/{}", addon.manifest.id, c.r#type, c.id);
-            rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![] });
+            rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![], loading: true });
             let url = ResourceRequest::new("catalog", &c.r#type, &c.id).url(addon);
             let http = ctx.http.clone();
             set.spawn(async move { (id, get::<CatalogResponse>(http, url).await) });
@@ -365,8 +366,17 @@ pub async fn load_rows(mut ctx: Ctx) {
         // Rows may have been rebuilt meanwhile, so find ours by id.
         let Some(i) = ctx.rows.peek().iter().position(|r| r.id == id) else { continue };
         match res {
-            Ok(r) => ctx.rows.write()[i].metas = r.metas,
-            Err(e) => eprintln!("catalog {id}: {e}"),
+            Ok(r) if !r.metas.is_empty() => {
+                let mut rows = ctx.rows.write();
+                rows[i].metas = r.metas;
+                rows[i].loading = false;
+            }
+            // Failed or empty: the row goes rather than sit blank.
+            Ok(_) => drop(ctx.rows.write().remove(i)),
+            Err(e) => {
+                eprintln!("catalog {id}: {e}");
+                ctx.rows.write().remove(i);
+            }
         }
     }
 }

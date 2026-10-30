@@ -9,7 +9,7 @@ use relix_proto::addon::{
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
-use crate::motion::FadeIn;
+use crate::motion::{FadeIn, Placeholder, busy};
 use crate::home::{backdrop, button, layer, play_button, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
@@ -218,7 +218,7 @@ impl Component for Detail {
         });
 
         let Some(meta) = meta.read().clone() else {
-            return rect().expanded().center().child(label().text("Loading…").color(theme().muted)).into_element();
+            return loading_page().into_element();
         };
         let addons = ctx.all_addons();
         let has_stream_addons = addons.iter().any(|a| a.serves(&ResourceRequest::new("stream", &self.kind, &self.id)));
@@ -451,7 +451,12 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
 fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
     let (w, h) = (128., 72.);
     let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
-        Some(url) => ImageViewer::new(url).width(Size::px(w)).height(Size::px(h)).error_renderer(|_| rect().into()).into(),
+        Some(url) => ImageViewer::new(url)
+            .width(Size::px(w))
+            .height(Size::px(h))
+            .loading_placeholder(Placeholder::new(Size::px(w), h))
+            .error_renderer(|_| rect().into())
+            .into(),
         None => rect().width(Size::px(w)).height(Size::px(h)).background(theme().placeholder).into(),
     };
     rect()
@@ -500,6 +505,48 @@ fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
                 .maybe_child(ep.overview.clone().map(|o| {
                     paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(13.).color(theme().muted).span(o)
                 })),
+        )
+}
+
+/// The title page's layout in pulsing blocks, while its details load.
+fn loading_page() -> Rect {
+    let episode = || {
+        rect()
+            .horizontal()
+            .spacing(12.)
+            .padding(Gaps::new_all(8.))
+            .child(Placeholder::new(Size::px(128.), 72.))
+            .child(rect().spacing(8.).child(Placeholder::new(Size::px(180.), 16.)).child(Placeholder::new(Size::px(220.), 12.)))
+            .into_element()
+    };
+    rect()
+        .expanded()
+        .horizontal()
+        .content(Content::Flex)
+        .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
+        .spacing(40.)
+        .child(
+            rect()
+                .width(Size::flex(1.))
+                .height(Size::fill())
+                .main_align(Alignment::End)
+                .spacing(16.)
+                .child(Placeholder::new(Size::px(380.), 110.))
+                .child(Placeholder::new(Size::px(240.), 18.))
+                .child(Placeholder::new(Size::px(560.), 16.))
+                .child(Placeholder::new(Size::px(520.), 16.))
+                .child(Placeholder::new(Size::px(300.), 16.))
+                .child(rect().horizontal().spacing(12.).child(Placeholder::new(Size::px(130.), 44.)).child(Placeholder::new(Size::px(140.), 44.))),
+        )
+        .child(
+            rect()
+                .width(Size::px(460.))
+                .height(Size::fill())
+                .padding(Gaps::new_all(16.))
+                .spacing(8.)
+                .corner_radius(12.)
+                .background(theme().panel)
+                .children((0..6).map(|_| episode())),
         )
 }
 
@@ -576,20 +623,25 @@ fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, St
     if !has_stream_addons {
         return panel.child(note("No stream addons installed. Add one in Addons."));
     }
-    if groups.is_empty() {
-        return panel.child(note(if searching {
-            "Looking for streams…"
-        } else {
-            "No playable streams found. Torrent addons need a debrid service (e.g. Torrentio with Real-Debrid)."
-        }));
+    if groups.is_empty() && searching {
+        return panel
+            .spacing(12.)
+            .child(busy("Looking for streams…"))
+            .children((0..4).map(|_| Placeholder::new(Size::fill(), 64.).into_element()));
     }
-    panel.children(groups.into_iter().map(|(i, addon, streams)| {
-        rect()
-            .spacing(6.)
-            .child(label().text(addon).font_size(14.).color(theme().muted))
-            .children(streams.into_iter().map(|s| stream_card(s, i, play.clone())))
-            .into_element()
-    }))
+    if groups.is_empty() {
+        return panel.child(note("No playable streams found. Torrent addons need a debrid service (e.g. Torrentio with Real-Debrid)."));
+    }
+    panel
+        .children(groups.into_iter().map(|(i, addon, streams)| {
+            rect()
+                .spacing(6.)
+                .child(label().text(addon).font_size(14.).color(theme().muted))
+                .children(streams.into_iter().map(|s| stream_card(s, i, play.clone())))
+                .into_element()
+        }))
+        // Slower addons may still answer below what's shown.
+        .maybe(searching, |el| el.child(busy("Asking more addons…")))
 }
 
 fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>) -> Element {

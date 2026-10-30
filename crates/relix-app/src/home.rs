@@ -6,7 +6,7 @@ use freya::router::*;
 use relix_proto::addon::MetaPreview;
 
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
-use crate::motion::{FadeIn, HOVER_MS};
+use crate::motion::{FadeIn, HOVER_MS, Placeholder};
 use crate::{Ctx, Route};
 use crate::theme::theme;
 
@@ -25,6 +25,8 @@ pub struct Row {
     pub metas: Vec<MetaPreview>,
     /// Watched fraction per poster (Continue Watching only).
     pub progress: Vec<f32>,
+    /// Its catalog hasn't answered yet: shows placeholder posters.
+    pub loading: bool,
 }
 
 /// A vertically virtualized page: item 0 is the hero, the rest are rows.
@@ -42,6 +44,12 @@ impl Component for Home {
             .find(|r| !r.id.starts_with("local/"))
             .map(|r| r.metas.iter().filter(|m| m.background.is_some()).take(FEATURED).cloned().collect())
             .unwrap_or_default();
+        // Nothing yet (first start, addons loading): placeholder rows.
+        let rows = if rows.is_empty() {
+            (0..3).map(|n| Row { id: format!("skeleton/{n}"), title: String::new(), metas: vec![], progress: vec![], loading: true }).collect()
+        } else {
+            rows
+        };
         let len = rows.len() + 1;
 
         page.wrap(
@@ -191,7 +199,18 @@ impl Component for Hero {
         });
 
         let Some(meta) = self.items.get(current) else {
-            return rect().width(Size::fill()).height(Size::px(HERO_H)).into_element();
+            // Featured titles still loading: the hero's shape, pulsing.
+            return rect()
+                .width(Size::fill())
+                .height(Size::px(HERO_H))
+                .padding(Gaps::new(theme().top + 40., 48., 110., 48.))
+                .main_align(Alignment::End)
+                .spacing(16.)
+                .child(Placeholder::new(Size::px(380.), 90.))
+                .child(Placeholder::new(Size::px(520.), 18.))
+                .child(Placeholder::new(Size::px(460.), 18.))
+                .child(rect().horizontal().spacing(12.).child(Placeholder::new(Size::px(110.), 44.)).child(Placeholder::new(Size::px(150.), 44.)))
+                .into_element();
         };
         let behind = self.items.get(*prev.read()).filter(|_| *prev.read() != current);
 
@@ -276,6 +295,7 @@ pub fn title_art(logo: Option<&str>, name: &str) -> Element {
                 .width(Size::px(420.))
                 .height(Size::px(150.))
                 .aspect_ratio(AspectRatio::Min)
+                .loading_placeholder(Placeholder::new(Size::px(320.), 100.))
                 .error_renderer(move |_| text(name.clone()))
                 .into()
         }
@@ -353,22 +373,28 @@ impl Component for PosterRow {
         let row = use_scroller();
         let metas = self.row.metas.clone();
         let progress = self.row.progress.clone();
-        let len = metas.len();
+        let len = if self.row.loading { 8 } else { metas.len() };
+        let loading = self.row.loading;
         rect()
             .height(Size::px(row_h()))
             .padding(Gaps::new(12., 48., 12., 48.))
             .spacing(10.)
-            .child(label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD))
+            .child(if self.row.title.is_empty() {
+                Placeholder::new(Size::px(200.), 22.).into_element()
+            } else {
+                label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD).into_element()
+            })
             .child(
                 row.wrap(
                     VirtualScrollView::new_with_data_controlled(
-                        (metas, progress, row),
-                        |item, (metas, progress, row): &(Vec<MetaPreview>, Vec<f32>, Scroller)| {
-                            rect()
-                                .key(item.index)
-                                .padding(Gaps::new(0., 8., 0., 0.))
-                                .child(poster(&metas[item.index], progress.get(item.index).copied(), Some(*row)))
-                                .into()
+                        (metas, progress, row, loading),
+                        |item, (metas, progress, row, loading): &(Vec<MetaPreview>, Vec<f32>, Scroller, bool)| {
+                            let card: Element = if *loading {
+                                Placeholder::new(Size::px(POSTER_W), POSTER_H).into()
+                            } else {
+                                poster(&metas[item.index], progress.get(item.index).copied(), Some(*row))
+                            };
+                            rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(card).into()
                         },
                         row.controller,
                     )
@@ -404,7 +430,7 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
                     .width(Size::px(POSTER_W))
                     .height(Size::px(POSTER_H))
                     // A soft grey card until the poster arrives.
-                    .loading_placeholder(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).background(theme().placeholder))
+                    .loading_placeholder(Placeholder::new(Size::px(POSTER_W), POSTER_H))
                     .error_renderer(move |_| blank(name.clone())),
             )
             .into(),

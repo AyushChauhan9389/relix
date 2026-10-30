@@ -134,7 +134,7 @@ impl Component for Account {
                     .spacing(16.)
                     .child(label().text("Account").font_size(32.).font_weight(FontWeight::BOLD))
                     .child(body)
-                    .maybe(*busy.read(), |el| el.child(label().text("Working…").color(theme().muted)))
+                    .maybe(*busy.read(), |el| el.child(crate::motion::busy("Working…")))
                     .maybe_child(error.read().clone().map(|e| label().text(e).font_size(15.).color(crate::theme::ERROR))),
             )
     }

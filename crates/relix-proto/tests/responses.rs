@@ -86,3 +86,15 @@ fn people_come_as_a_list_a_string_or_only_links() {
     links_only["links"] = serde_json::json!([{ "name": "Christopher Nolan", "category": "Directors", "url": "stremio:///search?search=Nolan" }]);
     assert_eq!(meta(links_only).people("director", "Directors"), ["Christopher Nolan"]);
 }
+
+#[test]
+fn catalog_previews_carry_genres_rating_and_year() {
+    let r: CatalogResponse = fixture("catalog_movie_top");
+    let m = &r.metas[0];
+    assert_eq!(m.genres, ["Comedy", "Drama", "Romance"]);
+    assert_eq!(m.rating(), Some(7.5));
+    assert_eq!(m.year(), Some(2026));
+    let series: relix_proto::addon::MetaPreview =
+        serde_json::from_value(serde_json::json!({ "id": "x", "type": "series", "name": "X", "releaseInfo": "2008–2013", "imdbRating": 9.5 })).unwrap();
+    assert_eq!((series.year(), series.rating()), (Some(2008), Some(9.5)));
+}

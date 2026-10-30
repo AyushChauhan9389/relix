@@ -283,6 +283,26 @@ pub struct MetaPreview {
     pub logo: Option<String>,
     pub description: Option<String>,
     pub release_info: Option<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    /// Addons send this as a number or a string.
+    pub imdb_rating: Option<serde_json::Value>,
+}
+
+impl MetaPreview {
+    pub fn rating(&self) -> Option<f32> {
+        match self.imdb_rating.as_ref()? {
+            serde_json::Value::String(s) => s.parse().ok(),
+            serde_json::Value::Number(n) => n.as_f64().map(|n| n as f32),
+            _ => None,
+        }
+    }
+
+    /// The first year in `releaseInfo` ("2010", "2008–2013").
+    pub fn year(&self) -> Option<u32> {
+        let info = self.release_info.as_deref()?;
+        info.get(..4).filter(|y| y.bytes().all(|b| b.is_ascii_digit()))?.parse().ok()
+    }
 }
 
 /// A title's full details.

@@ -4,6 +4,7 @@ use relix_proto::addon::{Addon, Manifest, base_url, manifest_url};
 use crate::focus::Focusable;
 use crate::home::button;
 use crate::{Ctx, get, stremio};
+use crate::motion::busy;
 use crate::theme::theme;
 
 
@@ -75,7 +76,10 @@ impl Component for Addons {
                         )
                         .child(button("Install", theme().primary.0, theme().primary.1).on_press(move |_| install(url.read().clone()))),
                 )
-                .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(theme().muted)))
+                // "Installing…" spins; results are plain text.
+                .maybe_child(status.read().clone().map(|s| {
+                    if s.ends_with('…') { busy(&s).into_element() } else { label().text(s).font_size(15.).color(theme().muted).into_element() }
+                }))
                 .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element()))
                 .maybe(!admin.is_empty(), |el| {
                     let ctx = ctx.clone();
@@ -272,7 +276,7 @@ impl Component for StremioPanel {
                     .span("Bring the addons from your Stremio account into Relix, or send Relix's addons to Stremio. Both merge: nothing is removed, and Stremio's built-in addons are left alone. Your password goes only to Stremio and isn't stored."),
             )
             .child(body)
-            .maybe(*busy.read(), |el| el.child(label().text("Working…").font_size(14.).color(theme().muted)))
+            .maybe(*busy.read(), |el| el.child(crate::motion::busy("Working…")))
             .maybe_child(message.read().clone().map(|m| label().text(m).font_size(15.)))
     }
 }

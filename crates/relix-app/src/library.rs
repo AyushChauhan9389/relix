@@ -87,6 +87,8 @@ pub fn preview(m: &Meta) -> MetaPreview {
         logo: m.logo.clone(),
         description: m.description.clone(),
         release_info: m.release_info.clone(),
+        genres: m.genres.clone(),
+        imdb_rating: m.imdb_rating.clone(),
     }
 }
 
@@ -110,10 +112,11 @@ pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
             title: "Continue Watching".into(),
             progress: watching.iter().map(WatchState::fraction).collect(),
             metas: watching.into_iter().map(|s| s.title).collect(),
+            loading: false,
         });
     }
     if !list.is_empty() {
-        rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![] });
+        rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![], loading: false });
     }
     rows
 }

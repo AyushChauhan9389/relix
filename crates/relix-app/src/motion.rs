@@ -74,3 +74,44 @@ pub fn glide(mut controller: ScrollController, vertical: bool, from: f32, to: f3
         }
     });
 }
+
+/// A grey block that gently pulses where content is still loading.
+#[derive(PartialEq)]
+pub struct Placeholder {
+    pub width: Size,
+    pub height: f32,
+    pub radius: f32,
+}
+
+impl Placeholder {
+    pub fn new(width: impl Into<Size>, height: f32) -> Self {
+        Self { width: width.into(), height, radius: crate::theme::theme().radius }
+    }
+}
+
+impl Component for Placeholder {
+    fn render(&self) -> impl IntoElement {
+        let pulse = use_animation(|conf| {
+            conf.on_creation(OnCreation::Run);
+            // Reversing on every finish makes it breathe back and forth.
+            conf.on_finish(OnFinish::Reverse { delay: std::time::Duration::ZERO });
+            AnimNum::new(0.45, 1.).time(850).ease(Ease::InOut).function(Function::Sine)
+        });
+        rect()
+            .width(self.width.clone())
+            .height(Size::px(self.height))
+            .corner_radius(self.radius)
+            .background(crate::theme::theme().placeholder)
+            .opacity(pulse.get().value())
+    }
+}
+
+/// A spinner with a short note, for actions in progress.
+pub fn busy(text: &str) -> Rect {
+    rect()
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(10.)
+        .child(CircularLoader::new().size(22.))
+        .child(label().text(text.to_owned()).font_size(15.).color(crate::theme::theme().muted))
+}
