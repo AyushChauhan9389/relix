@@ -143,8 +143,14 @@ pub fn nav(active: Option<NavLink>) -> Rect {
         .background(theme().bg)
         .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
         .child(
-            Link::new(Route::Home)
-                .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color(theme().accent)),
+            Link::new(Route::Home).child(
+                rect()
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(10.)
+                    .child(logo(40.))
+                    .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color(theme().accent)),
+            ),
         )
         .child(link(NavLink::Home, "Home", Route::Home))
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
@@ -462,6 +468,12 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
         .into()
 }
 
+/// The Relix logo, bundled with the app.
+fn logo(size: f32) -> ImageViewer {
+    const LOGO: &[u8] = include_bytes!("../assets/logo.png");
+    ImageViewer::new(LOGO).width(Size::px(size)).height(Size::px(size))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,7 +550,7 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .background(theme().bg)
         .child(
             rect().height(Size::px(64.)).main_align(Alignment::Center).child(
-                Link::new(Route::Home).child(label().text("RELIX").font_size(15.).font_weight(FontWeight::BLACK)),
+                Link::new(Route::Home).child(logo(46.)),
             ),
         )
         .child(item(NavLink::Home, ICON_HOME, "Board", Route::Home))
