@@ -4,9 +4,8 @@ use crate::Ctx;
 use crate::focus::Focusable;
 use crate::home::button;
 use crate::sync::{self, DEFAULT_SERVER, account};
+use crate::theme::theme;
 
-const MUTED: (u8, u8, u8) = (170, 170, 170);
-const RED: (u8, u8, u8) = (229, 9, 20);
 
 /// Sign in, create an account (recovery key shown once, emailed code if the server asks), or sign out.
 #[derive(PartialEq)]
@@ -58,7 +57,7 @@ impl Component for Account {
         };
 
         let field = |label_text: &'static str, el: Input| {
-            rect().width(Size::fill()).spacing(6.).child(label().text(label_text).font_size(14.).color(MUTED)).child(el)
+            rect().width(Size::fill()).spacing(6.).child(label().text(label_text).font_size(14.).color(theme().muted)).child(el)
         };
         let status = ctx.sync_status.read().clone();
 
@@ -67,40 +66,40 @@ impl Component for Account {
             (_, Some((key, needs_code))) => rect()
                 .spacing(14.)
                 .child(label().text("Save your recovery key").font_size(22.).font_weight(FontWeight::BOLD))
-                .child(paragraph().font_size(15.).color(MUTED).span(
+                .child(paragraph().font_size(15.).color(theme().muted).span(
                     "It's the only way back into your addon list if you forget your password. Relix can't recover it for you. Write it down or keep it in a password manager.",
                 ))
                 .child(
                     rect()
                         .padding(Gaps::new_all(16.))
                         .corner_radius(6.)
-                        .background((32, 32, 32))
+                        .background(theme().surface)
                         .child(paragraph().font_size(18.).font_family("Consolas").span(key)),
                 )
                 .map(needs_code.then_some(()), |el, ()| {
                     let mut act = act.clone();
                     el.child(field("Code from your email", Input::new(code).width(Size::fill()).placeholder("123456")))
-                        .child(Focusable::new(button("Verify", RED, (255, 255, 255)), move |()| act("verify")))
+                        .child(Focusable::new(button("Verify", theme().accent, (255, 255, 255)), move |()| act("verify")))
                 })
                 .map((!needs_code).then_some(()), |el, ()| {
-                    el.child(Focusable::new(button("I've saved it", RED, (255, 255, 255)), move |()| recovery.set(None)))
+                    el.child(Focusable::new(button("I've saved it", theme().accent, (255, 255, 255)), move |()| recovery.set(None)))
                 }),
             (Some(acc), None) => {
                 let ctx2 = ctx.clone();
                 rect()
                     .spacing(12.)
                     .child(label().text(format!("Signed in as {}", acc.email)).font_size(20.))
-                    .child(label().text(format!("Server: {}", acc.server)).font_size(14.).color(MUTED))
-                    .child(label().text(if status.is_empty() { "Syncing…".into() } else { status }).font_size(14.).color(MUTED))
+                    .child(label().text(format!("Server: {}", acc.server)).font_size(14.).color(theme().muted))
+                    .child(label().text(if status.is_empty() { "Syncing…".into() } else { status }).font_size(14.).color(theme().muted))
                     .child(
                         rect()
                             .horizontal()
                             .spacing(12.)
-                            .child(Focusable::new(button("Sync now", (60, 60, 60), (255, 255, 255)), {
+                            .child(Focusable::new(button("Sync now", theme().raised, (255, 255, 255)), {
                                 let ctx = ctx.clone();
                                 move |()| ctx.sync_soon()
                             }))
-                            .child(Focusable::new(button("Sign out", (60, 60, 60), (255, 255, 255)), move |()| {
+                            .child(Focusable::new(button("Sign out", theme().raised, (255, 255, 255)), move |()| {
                                 sync::sign_out(&ctx2);
                                 signed_in.set(None);
                             })),
@@ -110,7 +109,7 @@ impl Component for Account {
                 let (mut a1, mut a2) = (act.clone(), act.clone());
                 rect()
                     .spacing(14.)
-                    .child(paragraph().font_size(15.).color(MUTED).span(
+                    .child(paragraph().font_size(15.).color(theme().muted).span(
                         "An account syncs your addons, My List and progress across devices. Your addon list is encrypted on this device first, so the server never sees your debrid keys.",
                     ))
                     .child(field("Server", Input::new(server).width(Size::fill())))
@@ -120,23 +119,23 @@ impl Component for Account {
                         rect()
                             .horizontal()
                             .spacing(12.)
-                            .child(Focusable::new(button("Sign in", RED, (255, 255, 255)), move |()| a1("sign_in")))
-                            .child(Focusable::new(button("Create account", (60, 60, 60), (255, 255, 255)), move |()| a2("sign_up"))),
+                            .child(Focusable::new(button("Sign in", theme().accent, (255, 255, 255)), move |()| a1("sign_in")))
+                            .child(Focusable::new(button("Create account", theme().raised, (255, 255, 255)), move |()| a2("sign_up"))),
                     )
             }
         };
 
         rect()
             .expanded()
-            .padding(Gaps::new(100., 48., 48., 48.))
+            .padding(Gaps::new(theme().top, 48., 48., 48.))
             .child(
                 rect()
                     .width(Size::px(560.))
                     .spacing(16.)
                     .child(label().text("Account").font_size(32.).font_weight(FontWeight::BOLD))
                     .child(body)
-                    .maybe(*busy.read(), |el| el.child(label().text("Working…").color(MUTED)))
-                    .maybe_child(error.read().clone().map(|e| label().text(e).font_size(15.).color(RED))),
+                    .maybe(*busy.read(), |el| el.child(label().text("Working…").color(theme().muted)))
+                    .maybe_child(error.read().clone().map(|e| label().text(e).font_size(15.).color(theme().accent))),
             )
     }
 }

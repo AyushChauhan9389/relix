@@ -7,6 +7,7 @@ use tokio::task::JoinSet;
 use crate::focus::{use_page_scroller, use_scroller};
 use crate::home::{PosterRow, Row};
 use crate::{Ctx, get};
+use crate::theme::theme;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -69,11 +70,11 @@ impl Component for Search {
                 .child(
                     rect()
                         .width(Size::fill())
-                        .padding(Gaps::new(100., 48., 16., 48.))
+                        .padding(Gaps::new(theme().top, 48., 16., 48.))
                         .child(Input::new(query).width(Size::fill()).placeholder("Titles, people, genres").auto_focus(true)),
                 )
                 .maybe(*searched.read() && results.is_empty(), |el| {
-                    el.child(rect().padding(Gaps::new(24., 48., 0., 48.)).child(label().text("No matches yet.").color((170, 170, 170))))
+                    el.child(rect().padding(Gaps::new(24., 48., 0., 48.)).child(label().text("No matches yet.").color(theme().muted)))
                 })
                 .children(results.into_iter().map(|row| PosterRow { row }.into_element())),
         )

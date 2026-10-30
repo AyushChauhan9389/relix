@@ -4,8 +4,8 @@ use relix_proto::addon::{Catalog, CatalogResponse, MetaPreview, discover_catalog
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::home::{button, chip, poster};
 use crate::{Ctx, get};
+use crate::theme::theme;
 
-const MUTED: (u8, u8, u8) = (170, 170, 170);
 
 /// Discover: browse one catalog of a type at a time, filtered by genre, a page at a time.
 #[derive(PartialEq)]
@@ -89,7 +89,7 @@ impl Component for Browse {
             ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
                 rect()
                     .width(Size::fill())
-                    .padding(Gaps::new(100., 48., 48., 48.))
+                    .padding(Gaps::new(theme().top, 48., 48., 48.))
                     .spacing(16.)
                     .child(label().text(title).font_size(32.).font_weight(FontWeight::BOLD))
                     .child(rect().horizontal().content(Content::wrap_spacing(8.)).spacing(8.).children(list.iter().enumerate().map(
@@ -123,7 +123,7 @@ impl Component for Browse {
                                 })),
                         )
                     })
-                    .maybe(list.is_empty(), |el| el.child(label().text("No addon has a browsable catalog for this type.").color(MUTED)))
+                    .maybe(list.is_empty(), |el| el.child(label().text("No addon has a browsable catalog for this type.").color(theme().muted)))
                     .child(
                         rect()
                             .horizontal()
@@ -133,7 +133,7 @@ impl Component for Browse {
                     )
                     .maybe(*more.read(), |el| {
                         let skip = grid.len();
-                        el.child(Focusable::new(button("Load more", (60, 60, 60), (255, 255, 255)), move |()| load(skip)))
+                        el.child(Focusable::new(button("Load more", theme().raised, (255, 255, 255)), move |()| load(skip)))
                     }),
             ),
         )

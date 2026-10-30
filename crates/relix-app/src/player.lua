@@ -2,10 +2,10 @@
 -- Talks to the app through `script-message relix-next`; everything else is plain mpv commands.
 
 local options = require "mp.options"
-local opts = { title = "", episode = "", has_next = false, embedded = false }
+local opts = { title = "", episode = "", has_next = false, embedded = false, accent = "1409E5" }
 options.read_options(opts, "relix")
 
-local RED = "1409E5" -- #E50914 in ASS's BGR order
+local RED = opts.accent -- the look's accent, in ASS's BGR order
 local HIDE_AFTER = 3 -- seconds without mouse movement
 local NEXT_CARD_AT = 20 -- seconds before the end
 

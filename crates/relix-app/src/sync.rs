@@ -159,6 +159,7 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
     if changed.iter().any(|k| k == "settings") {
         let mut enabled = ctx.admin_enabled;
         enabled.set(ctx.store.get(&ctx.profile, "settings", "admin_addons_enabled").ok().flatten().unwrap_or(true));
+        ctx.show_look(ctx.store.get(&ctx.profile, "settings", "look").ok().flatten().unwrap_or(crate::theme::Look::Netflix));
     }
     let admin: Vec<Addon> = call::<(), _>(&ctx.http, server_url(&acc.server, "/addons/admin"), Some(&acc.token), None).await?;
     let admin_changed = *ctx.admin_addons.peek() != admin;

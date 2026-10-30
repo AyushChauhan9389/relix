@@ -14,8 +14,8 @@ use crate::home::{backdrop, button, button_owned, layer, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
+use crate::theme::theme;
 
-const MUTED: (u8, u8, u8) = (170, 170, 170);
 
 /// A title's page: header, episodes (series only) and the stream list for the chosen video.
 #[derive(PartialEq)]
@@ -85,7 +85,8 @@ impl Component for Detail {
                             title: m.name.clone(),
                             episode: m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default(),
                             has_next: next.is_some(),
-                        };
+                            accent: crate::theme::accent_bgr(),
+};
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // mpv blocks until playback stops, so it gets its own thread.
                         std::thread::spawn(move || {
@@ -217,7 +218,7 @@ impl Component for Detail {
         });
 
         let Some(meta) = meta.read().clone() else {
-            return rect().expanded().center().child(label().text("Loading…").color(MUTED)).into_element();
+            return rect().expanded().center().child(label().text("Loading…").color(theme().muted)).into_element();
         };
         let addons = ctx.all_addons();
         let has_stream_addons = addons.iter().any(|a| a.serves(&ResourceRequest::new("stream", &self.kind, &self.id)));
@@ -277,7 +278,7 @@ impl Component for Detail {
                             .horizontal()
                             .spacing(12.)
                             .cross_align(Alignment::Center)
-                            .child(Focusable::new(label().text("‹ Episodes").font_size(15.).color(MUTED), move |()| video.set(None)))
+                            .child(Focusable::new(label().text("‹ Episodes").font_size(15.).color(theme().muted), move |()| video.set(None)))
                             .maybe_child(picked_video.as_ref().map(|v| {
                                 label().text(short_label(v)).font_size(16.).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis)
                             })),
@@ -317,7 +318,7 @@ impl Component for Detail {
                     .layer(5)
                     .horizontal()
                     .content(Content::Flex)
-                    .padding(Gaps::new(92., 40., 32., 48.))
+                    .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
                     .spacing(40.)
                     .child(info_column(&meta, *in_list.read(), toggle_list, play_label, on_play))
                     .child(
@@ -326,7 +327,7 @@ impl Component for Detail {
                             .height(Size::fill())
                             .padding(Gaps::new_all(16.))
                             .corner_radius(12.)
-                            .background((12, 12, 12, 0.82))
+                            .background(theme().panel)
                             // Switching episodes ↔ streams (or seasons) slides the new content in.
                             .child(FadeIn::page(panel).key(format!("{showing_streams}-{current_season:?}-{picked:?}"))),
                     ),
@@ -349,7 +350,8 @@ fn season_switcher(all: &[(u32, Vec<Video>)], current: Option<u32>, mut season: 
                     .height(Size::px(36.))
                     .corner_radius(18.)
                     .center()
-                    .background((60, 60, 60, if enabled { 1. } else { 0.35 }))
+                    .background(theme().raised)
+                    .opacity(if enabled { 1. } else { 0.35 })
                     .child(label().text(glyph).font_size(20.)),
                 move |()| {
                     if to.is_some() {
@@ -391,7 +393,7 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
                 .max_lines(2)
                 .text_overflow(TextOverflow::Ellipsis)
                 .font_size(15.)
-                .span(Span::new(format!("{title}  ")).color(MUTED))
+                .span(Span::new(format!("{title}  ")).color(theme().muted))
                 .span(names.into_iter().take(5).collect::<Vec<_>>().join(", "))
         })
     };
@@ -404,7 +406,7 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
         .height(Size::fill())
         .spacing(16.)
         .main_align(Alignment::End)
-        .child(Focusable::new(label().text("‹ Back").font_size(16.).color(MUTED), |()| RouterContext::get().go_back()))
+        .child(Focusable::new(label().text("‹ Back").font_size(16.).color(theme().muted), |()| RouterContext::get().go_back()))
         .child(title_art(meta.logo.as_deref(), &meta.name))
         .child(
             rect()
@@ -434,7 +436,7 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
                 .horizontal()
                 .spacing(12.)
                 .padding(Gaps::new(8., 0., 0., 0.))
-                .child(Focusable::new(button_owned(format!("►  {play_label}"), (255, 255, 255), (0, 0, 0)), move |()| on_play(())))
+                .child(Focusable::new(button_owned(format!("►  {play_label}"), theme().cta.0, theme().cta.1), move |()| on_play(())))
                 .child(Focusable::new(
                     button(if in_list { "✓ My List" } else { "+ My List" }, (109, 109, 110, 0.7), (255, 255, 255)),
                     toggle_list,
@@ -446,7 +448,7 @@ fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
     let (w, h) = (128., 72.);
     let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
         Some(url) => ImageViewer::new(url).width(Size::px(w)).height(Size::px(h)).error_renderer(|_| rect().into()).into(),
-        None => rect().width(Size::px(w)).height(Size::px(h)).background((50, 50, 50)).into(),
+        None => rect().width(Size::px(w)).height(Size::px(h)).background(theme().placeholder).into(),
     };
     rect()
         .horizontal()
@@ -465,8 +467,8 @@ fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
                             .width(Size::px(w))
                             .height(Size::px(3.))
                             .corner_radius(2.)
-                            .background((90, 90, 90))
-                            .child(rect().width(Size::px(w * p.clamp(0., 1.))).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
+                            .background(theme().track)
+                            .child(rect().width(Size::px(w * p.clamp(0., 1.))).height(Size::fill()).corner_radius(2.).background(theme().accent)),
                     )
                 }),
         )
@@ -490,9 +492,9 @@ fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
                         )
                         .maybe(watched, |el| el.child(label().text("✓").font_size(15.).color((70, 211, 105)))),
                 )
-                .maybe_child(ep.released.as_deref().and_then(|d| d.get(..10)).map(|d| label().text(d.to_owned()).font_size(12.).color(MUTED)))
+                .maybe_child(ep.released.as_deref().and_then(|d| d.get(..10)).map(|d| label().text(d.to_owned()).font_size(12.).color(theme().muted)))
                 .maybe_child(ep.overview.clone().map(|o| {
-                    paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(13.).color(MUTED).span(o)
+                    paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(13.).color(theme().muted).span(o)
                 })),
         )
 }
@@ -566,7 +568,7 @@ async fn binge_stream(ctx: &Ctx, kind: &str, video_id: &str, prev_addon: usize, 
 
 fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
     let panel = rect().width(Size::fill()).spacing(10.);
-    let note = |text: &'static str| paragraph().width(Size::fill()).font_size(15.).color(MUTED).span(text);
+    let note = |text: &'static str| paragraph().width(Size::fill()).font_size(15.).color(theme().muted).span(text);
     if !has_stream_addons {
         return panel.child(note("No stream addons installed. Add one in Addons."));
     }
@@ -580,7 +582,7 @@ fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, St
     panel.children(groups.into_iter().map(|(i, addon, streams)| {
         rect()
             .spacing(6.)
-            .child(label().text(addon).font_size(14.).color(MUTED))
+            .child(label().text(addon).font_size(14.).color(theme().muted))
             .children(streams.into_iter().map(|s| stream_card(s, i, play.clone())))
             .into_element()
     }))
@@ -595,10 +597,10 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>) -> Elemen
         .padding(Gaps::new_all(12.))
         .spacing(4.)
         .corner_radius(6.)
-        .background((32, 32, 32))
+        .background(theme().surface)
         .maybe(request.is_none(), |el| el.opacity(0.45))
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
-        .child(paragraph().font_size(13.).color(MUTED).span(title));
+        .child(paragraph().font_size(13.).color(theme().muted).span(title));
     match request {
         Some(request) => Focusable::new(card, move |()| play.call(request.clone())).into(),
         None => card.into(),

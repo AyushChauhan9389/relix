@@ -8,12 +8,13 @@ use relix_proto::addon::MetaPreview;
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, HOVER_MS};
 use crate::{Ctx, Route};
+use crate::theme::theme;
 
-pub const BG: (u8, u8, u8) = (20, 20, 20);
 const POSTER_W: f32 = 150.;
 const POSTER_H: f32 = 225.;
-const ROW_H: f32 = POSTER_H + 60.;
 const HERO_H: f32 = 600.;
+/// Stremio's Home starts with a search bar instead of the hero.
+const SEARCH_H: f32 = 96.;
 const NAV_H: f32 = 68.;
 const FEATURED: usize = 5;
 const ROTATE_EVERY: Duration = Duration::from_secs(8);
@@ -49,7 +50,9 @@ impl Component for Home {
             VirtualScrollView::new_with_data_controlled(
                 (featured, rows),
                 |item, (featured, rows)| {
-                    if item.index == 0 {
+                    if item.index == 0 && theme().sidebar {
+                        search_bar().into()
+                    } else if item.index == 0 {
                         Hero { items: featured.clone() }.into()
                     } else {
                         PosterRow { row: rows[item.index - 1].clone() }.into()
@@ -59,7 +62,7 @@ impl Component for Home {
             )
             .scroll_with_arrows(false)
             .length(len)
-            .item_size(ItemSize::Dynamic(Callback::new(|i| if i == 0 { HERO_H } else { ROW_H }))),
+            .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { SEARCH_H } else { HERO_H }))),
         )
     }
 }
@@ -72,6 +75,7 @@ pub enum NavLink {
     MyList,
     Addons,
     Search,
+    Settings,
     Account,
 }
 
@@ -84,6 +88,7 @@ pub fn active_link(route: &Route) -> Option<NavLink> {
         Route::MyList => Some(NavLink::MyList),
         Route::Addons => Some(NavLink::Addons),
         Route::Search => Some(NavLink::Search),
+        Route::Settings => Some(NavLink::Settings),
         Route::Account => Some(NavLink::Account),
         Route::Browse { .. } | Route::Detail { .. } => None,
     }
@@ -128,11 +133,11 @@ pub fn nav(active: Option<NavLink>) -> Rect {
         .content(Content::Flex)
         .cross_align(Alignment::Center)
         .spacing(28.)
-        .background(BG)
-        .border(Border::new().fill((40, 40, 40)).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
+        .background(theme().bg)
+        .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
         .child(
             Link::new(Route::Home)
-                .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20))),
+                .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color(theme().accent)),
         )
         .child(link(NavLink::Home, "Home", Route::Home))
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
@@ -146,6 +151,7 @@ pub fn nav(active: Option<NavLink>) -> Rect {
                 .spacing(24.)
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
+                .child(link(NavLink::Settings, "Settings", Route::Settings))
                 .child(link(NavLink::Account, "Account", Route::Account)),
         )
 }
@@ -220,7 +226,7 @@ pub fn backdrop(background: Option<&str>) -> Rect {
                     .error_renderer(|_| rect().into()),
             ))
             .child(shade()),
-        None => layer().background((40, 40, 40)).child(shade()),
+        None => layer().background(theme().border).child(shade()),
     }
 }
 
@@ -230,7 +236,7 @@ fn shade() -> Rect {
         .layer(1)
         .background(LinearGradient::new().angle(270.).stop(((0, 0, 0, 0.85), 0.)).stop(((0, 0, 0, 0.), 60.)))
         .child(layer().layer(1).background(
-            LinearGradient::new().angle(0.).stop(((BG.0, BG.1, BG.2, 0.), 65.)).stop((BG, 100.)),
+            LinearGradient::new().angle(0.).stop(((theme().bg.0, theme().bg.1, theme().bg.2, 0.), 65.)).stop((theme().bg, 100.)),
         ))
 }
 
@@ -248,7 +254,7 @@ fn details(meta: &MetaPreview) -> Rect {
             rect()
                 .horizontal()
                 .spacing(12.)
-                .child(Focusable::new(button("Play", (255, 255, 255), (0, 0, 0)), open_title(meta)))
+                .child(Focusable::new(button("Play", theme().cta.0, theme().cta.1), open_title(meta)))
                 .child(Focusable::new(button("More Info", (109, 109, 110, 0.7), (255, 255, 255)), open_title(meta))),
         )
 }
@@ -294,8 +300,8 @@ pub fn chip(text: String, active: bool) -> Rect {
     rect()
         .padding(Gaps::new(6., 14., 6., 14.))
         .corner_radius(16.)
-        .background(if active { (255, 255, 255, 1.) } else { (60, 60, 60, 1.) })
-        .child(label().text(text).font_size(14.).color(if active { (0, 0, 0) } else { (230, 230, 230) }))
+        .background(if active { theme().cta.0 } else { theme().raised })
+        .child(label().text(text).font_size(14.).color(if active { theme().cta.1 } else { (230, 230, 230) }))
 }
 
 fn dots(len: usize, current: usize) -> Rect {
@@ -325,7 +331,7 @@ impl Component for PosterRow {
         let progress = self.row.progress.clone();
         let len = metas.len();
         rect()
-            .height(Size::px(ROW_H))
+            .height(Size::px(row_h()))
             .padding(Gaps::new(12., 48., 12., 48.))
             .spacing(10.)
             .child(label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD))
@@ -359,14 +365,14 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
             .width(Size::px(POSTER_W))
             .height(Size::px(POSTER_H))
             .padding(Gaps::new_all(8.))
-            .background((50, 50, 50))
+            .background(theme().placeholder)
             .center()
             .child(paragraph().text_align(TextAlign::Center).font_size(15.).span(name))
             .into()
     };
     let name = meta.name.clone();
     let art: Element = rect()
-        .corner_radius(4.)
+        .corner_radius(theme().radius)
         .overflow(Overflow::Clip)
         .child(match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
             Some(url) => FadeIn::image(
@@ -374,26 +380,36 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
                     .width(Size::px(POSTER_W))
                     .height(Size::px(POSTER_H))
                     // A soft grey card until the poster arrives.
-                    .loading_placeholder(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).background((38, 38, 38)))
+                    .loading_placeholder(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).background(theme().placeholder))
                     .error_renderer(move |_| blank(name.clone())),
             )
             .into(),
             None => blank(name),
         })
         .into();
-    let art = rect().child(art).map(progress, |el, p| {
+    // Sized to the poster so the progress bar's position is exact in both looks.
+    let art = rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).child(art).map(progress, |el, p| {
         el.child(
             rect()
                 .position(Position::new_absolute().left(8.).bottom(8.))
-                .layer(1)
+                .layer(Layer::OverlayLevel(1)) // above the poster image, below the nav
                 .width(Size::px(POSTER_W - 16.))
                 .height(Size::px(4.))
                 .corner_radius(2.)
-                .background((90, 90, 90))
-                .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
+                .background(theme().track)
+                .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background(theme().accent)),
         )
     });
-    Focusable { row, radius: 4., grow: 1.08, ..Focusable::new(art, open_title(meta)) }.into()
+    let card = Focusable { row, radius: theme().radius, grow: 1.08, ..Focusable::new(art, open_title(meta)) };
+    if !theme().sidebar {
+        return card.into();
+    }
+    rect()
+        .width(Size::px(POSTER_W))
+        .spacing(8.)
+        .child(card)
+        .child(label().text(meta.name.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+        .into()
 }
 
 #[cfg(test)]
@@ -409,7 +425,112 @@ mod tests {
         assert_eq!(active_link(&Route::Addons), Some(NavLink::Addons));
         assert_eq!(active_link(&Route::Search), Some(NavLink::Search));
         assert_eq!(active_link(&Route::Account), Some(NavLink::Account));
+        assert_eq!(active_link(&Route::Settings), Some(NavLink::Settings));
         assert_eq!(active_link(&Route::Browse { kind: "anime".into() }), None, "no nav link for other types");
         assert_eq!(active_link(&Route::Detail { kind: "movie".into(), id: "tt1".into() }), None);
+    }
+}
+
+/// A row's height: posters, plus the title under each one in the Stremio look.
+fn row_h() -> f32 {
+    POSTER_H + if theme().sidebar { 88. } else { 60. }
+}
+
+/// Stremio Home's top bar: a search field that opens Search.
+fn search_bar() -> Rect {
+    rect().width(Size::fill()).padding(Gaps::new(theme().top, 48., 0., 48.)).child(Focusable {
+        radius: 24.,
+        ..Focusable::new(
+            rect()
+                .width(Size::px(560.))
+                .height(Size::px(46.))
+                .padding(Gaps::new(0., 20., 0., 20.))
+                .corner_radius(24.)
+                .background(theme().surface)
+                .main_align(Alignment::Center)
+                .child(label().text("Search movies & series").font_size(15.).color(theme().muted)),
+            |()| {
+                let _ = RouterContext::get().push(Route::Search);
+            },
+        )
+    })
+}
+
+pub const SIDEBAR_W: f32 = 96.;
+
+/// 24px stroke icons for the Stremio sidebar; SvgViewer tints the root stroke.
+const ICON_HOME: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg>"#;
+const ICON_MOVIES: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg>"#;
+const ICON_SERIES: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="m8 3 4 4 4-4"/></svg>"#;
+const ICON_LIBRARY: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4z"/></svg>"#;
+const ICON_SEARCH: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>"#;
+const ICON_ADDONS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>"#;
+const ICON_SETTINGS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>"#;
+const ICON_ACCOUNT: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>"#;
+
+/// Stremio's left rail: logo, then icon + label links.
+pub fn sidebar(active: Option<NavLink>) -> Rect {
+    let item = move |which: NavLink, icon: &'static str, text: &'static str, to: Route| {
+        SideItem { icon, text, to, active: active == Some(which) }
+    };
+    rect()
+        .position(Position::new_absolute().top(0.).left(0.))
+        .width(Size::px(SIDEBAR_W))
+        .height(Size::percent(100.))
+        .padding(Gaps::new(20., 0., 20., 0.))
+        .spacing(4.)
+        .cross_align(Alignment::Center)
+        .background(theme().bg)
+        .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 1., bottom: 0., left: 0. }))
+        .child(
+            Link::new(Route::Home).child(
+                rect()
+                    .width(Size::px(44.))
+                    .height(Size::px(44.))
+                    .margin(Gaps::new(0., 0., 18., 0.))
+                    .corner_radius(12.)
+                    .background(theme().accent)
+                    .center()
+                    .child(label().text("R").font_size(24.).font_weight(FontWeight::BLACK)),
+            ),
+        )
+        .child(item(NavLink::Home, ICON_HOME, "Board", Route::Home))
+        .child(item(NavLink::Movies, ICON_MOVIES, "Movies", Route::Browse { kind: "movie".into() }))
+        .child(item(NavLink::Series, ICON_SERIES, "Series", Route::Browse { kind: "series".into() }))
+        .child(item(NavLink::MyList, ICON_LIBRARY, "Library", Route::MyList))
+        .child(item(NavLink::Search, ICON_SEARCH, "Search", Route::Search))
+        .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
+        .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
+        .child(item(NavLink::Account, ICON_ACCOUNT, "Account", Route::Account))
+}
+
+/// A sidebar link: accent when current, brightening on hover, eased.
+#[derive(PartialEq)]
+struct SideItem {
+    icon: &'static str,
+    text: &'static str,
+    to: Route,
+    active: bool,
+}
+
+impl Component for SideItem {
+    fn render(&self) -> impl IntoElement {
+        let mut hovered = use_state(|| false);
+        let color = use_animation_transition((self.active, *hovered.read()), |from, to| {
+            let c = |(active, hovered): (bool, bool)| if active { theme().accent } else if hovered { (255, 255, 255) } else { theme().muted };
+            AnimColor::new(c(from), c(to)).time(HOVER_MS)
+        });
+        let c: Color = (&*color.read()).into();
+        Link::new(self.to.clone()).child(
+            rect()
+                .width(Size::px(SIDEBAR_W))
+                .padding(Gaps::new(10., 0., 10., 0.))
+                .spacing(6.)
+                .cross_align(Alignment::Center)
+                .on_pointer_enter(move |_| hovered.set(true))
+                .on_pointer_leave(move |_| hovered.set(false))
+                .child(SvgViewer::new(self.icon.as_bytes()).width(Size::px(26.)).height(Size::px(26.)).stroke(c))
+                .child(label().text(self.text).font_size(12.).color(c)),
+        )
     }
 }

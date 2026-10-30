@@ -4,6 +4,7 @@ use relix_proto::addon::MetaPreview;
 use crate::Ctx;
 use crate::focus::{use_page_scroller, use_scroller};
 use crate::home::poster;
+use crate::theme::theme;
 
 /// Everything saved with "+ My List", newest first.
 #[derive(PartialEq)]
@@ -28,11 +29,11 @@ impl Component for MyList {
             ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
                 rect()
                     .width(Size::fill())
-                    .padding(Gaps::new(100., 48., 48., 48.))
+                    .padding(Gaps::new(theme().top, 48., 48., 48.))
                     .spacing(16.)
                     .child(label().text("My List").font_size(32.).font_weight(FontWeight::BOLD))
                     .maybe(titles.is_empty(), |el| {
-                        el.child(label().text("Titles you add with \"+ My List\" show up here.").color((170, 170, 170)))
+                        el.child(label().text("Titles you add with \"+ My List\" show up here.").color(theme().muted))
                     })
                     .child(
                         rect()

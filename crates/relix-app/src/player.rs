@@ -54,6 +54,8 @@ pub struct Overlay {
     pub episode: String,
     /// Shows "Next episode" and the countdown card.
     pub has_next: bool,
+    /// The look's accent in ASS's BGR hex (the player thread can't read the UI's look).
+    pub accent: String,
 }
 
 /// The Netflix-style controls (player.lua), embedded so there's nothing extra to ship.
@@ -64,11 +66,12 @@ fn skin_opts(o: &Overlay, embedded: bool) -> String {
     let q = |v: &str| format!("%{}%{v}", v.len());
     let yes = |b: bool| if b { "yes" } else { "no" };
     format!(
-        "relix-title={},relix-episode={},relix-has_next={},relix-embedded={}",
+        "relix-title={},relix-episode={},relix-has_next={},relix-embedded={},relix-accent={}",
         q(&o.title),
         q(&o.episode),
         yes(o.has_next),
-        yes(embedded)
+        yes(embedded),
+        q(&o.accent)
     )
 }
 

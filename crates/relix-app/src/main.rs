@@ -12,9 +12,11 @@ mod motion;
 mod my_list;
 mod player;
 mod search;
+mod settings;
 mod store;
 mod stremio;
 mod sync;
+mod theme;
 
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -32,7 +34,9 @@ use focus::{Dir, Registry};
 use home::{Home, Row};
 use my_list::MyList;
 use search::Search;
+use settings::Settings;
 use store::Store;
+use theme::Look;
 
 /// Preinstalled addons (PLAN.md: defaults).
 const DEFAULT_ADDONS: [&str; 2] =
@@ -60,7 +64,8 @@ fn main() {
             title: std::env::args().skip_while(|a| a != "--title").nth(1).unwrap_or_default(),
             episode: std::env::args().skip_while(|a| a != "--episode").nth(1).unwrap_or_default(),
             has_next: std::env::args().any(|a| a == "--has-next"),
-        };
+            accent: crate::theme::accent_bgr(),
+};
         let start = std::env::args().skip_while(|a| a != "--start").nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.);
         let inbox = {
             let (to_player, inbox) = std::sync::mpsc::channel();
@@ -167,6 +172,10 @@ pub struct Ctx {
     /// The running player, while something plays.
     pub player: State<Option<std::sync::mpsc::Sender<player::ToPlayer>>>,
     pub fullscreen: State<bool>,
+    /// Netflix or Stremio look (synced setting).
+    pub look: State<Look>,
+    /// Freya's built-in widget colours, following the look.
+    pub widgets: State<Theme>,
 }
 
 impl Ctx {
@@ -192,6 +201,25 @@ impl Ctx {
         enabled.set(on);
         spawn(load_rows(self.clone()));
         self.sync_soon();
+    }
+
+    /// Switches the look and syncs the choice.
+    pub fn set_look(&self, look: Look) {
+        if let Err(e) = self.store.put(&self.profile, "settings", "look", &look) {
+            eprintln!("saving setting: {e}");
+        }
+        self.show_look(look);
+        self.sync_soon();
+    }
+
+    /// Applies a look without saving it (e.g. synced from another device).
+    pub fn show_look(&self, look: Look) {
+        let (mut current, mut widgets) = (self.look, self.widgets);
+        if *current.peek() != look {
+            theme::set_look(look);
+            widgets.set(theme::widgets(look));
+            current.set(look);
+        }
     }
 
     /// Makes Relix's window fullscreen, or back.
@@ -236,12 +264,18 @@ pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: Str
 }
 
 fn app() -> impl IntoElement {
-    use_init_theme(dark_theme);
     let store = use_hook(|| Rc::new(Store::open(&data_dir().join("relix.db")).expect("open database")));
     let profile = use_hook(|| {
         let first = store.profiles().ok().and_then(|p| p.into_iter().next());
         first.unwrap_or_else(|| store.create_profile("Me").expect("create profile")).id
     });
+    let look = use_hook(|| {
+        let look = store.get::<Look>(&profile, "settings", "look").ok().flatten().unwrap_or(Look::Netflix);
+        theme::set_look(look);
+        look
+    });
+    let widgets = use_init_theme(|| theme::widgets(look));
+    let look = use_state(|| look);
     let saved = store.get::<Vec<Addon>>(&profile, "addons", "list").ok().flatten();
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
@@ -266,6 +300,8 @@ fn app() -> impl IntoElement {
         sync_status,
         player,
         fullscreen,
+        look,
+        widgets,
     });
 
     use_hook({
@@ -353,6 +389,8 @@ pub enum Route {
         Account,
         #[route("/my-list")]
         MyList,
+        #[route("/settings")]
+        Settings,
 }
 
 #[derive(PartialEq)]
@@ -363,6 +401,9 @@ impl Component for Shell {
         let registry = use_provide_context(Registry::default);
         let ctx = use_consume::<Ctx>();
         let playing = ctx.player.read().is_some();
+        let look = *ctx.look.read();
+        let sidebar = theme::theme().sidebar;
+        let route = RouterContext::get().current::<Route>().to_string();
         rect()
             .expanded()
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
@@ -389,14 +430,20 @@ impl Component for Shell {
                 };
                 registry.navigate(dir);
             })
-            .background(home::BG)
+            .background(theme::theme().bg)
             .color(Color::WHITE)
-            // Every screen fades and rises in; the key replays it on each navigation.
-            .child(motion::FadeIn::page(Outlet::<Route>::new()).key(RouterContext::get().current::<Route>().to_string()))
+            // Every screen fades and rises in; the key replays it on each navigation and remounts
+            // pages when the look changes, so they redraw in the new colours.
+            .child(
+                rect().expanded().padding(Gaps::new(0., 0., 0., if sidebar { home::SIDEBAR_W } else { 0. })).child(
+                    motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}")),
+                ),
+            )
             .maybe(!playing, |el| {
-                el.child(home::nav(home::active_link(&RouterContext::get().current::<Route>())).layer(Layer::Overlay))
+                let active = home::active_link(&RouterContext::get().current::<Route>());
+                el.child(if sidebar { home::sidebar(active) } else { home::nav(active) }.layer(Layer::OverlayLevel(2)))
             })
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
-            .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::Overlay)))
+            .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::OverlayLevel(3))))
     }
 }

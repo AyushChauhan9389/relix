@@ -4,8 +4,8 @@ use relix_proto::addon::{Addon, Manifest, base_url, manifest_url};
 use crate::focus::Focusable;
 use crate::home::button;
 use crate::{Ctx, get, stremio};
+use crate::theme::theme;
 
-const MUTED: (u8, u8, u8) = (170, 170, 170);
 
 /// Installed addons: install by URL or stremio:// link, reorder, configure, remove.
 #[derive(PartialEq)]
@@ -54,7 +54,7 @@ impl Component for Addons {
             .child(
             rect()
                 .width(Size::fill())
-                .padding(Gaps::new(100., 48., 48., 48.))
+                .padding(Gaps::new(theme().top, 48., 48., 48.))
                 .spacing(16.)
                 .child(label().text("Addons").font_size(32.).font_weight(FontWeight::BOLD))
                 .child(
@@ -73,9 +73,9 @@ impl Component for Addons {
                                     move |text: String| install(text)
                                 }),
                         )
-                        .child(button("Install", (229, 9, 20), (255, 255, 255)).on_press(move |_| install(url.read().clone()))),
+                        .child(button("Install", theme().accent, (255, 255, 255)).on_press(move |_| install(url.read().clone()))),
                 )
-                .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(MUTED)))
+                .maybe_child(status.read().clone().map(|s| label().text(s).font_size(15.).color(theme().muted)))
                 .children(addons.iter().enumerate().map(|(i, addon)| card(&ctx, &addons, i, addon).into_element()))
                 .maybe(!admin.is_empty(), |el| {
                     let ctx = ctx.clone();
@@ -91,13 +91,13 @@ impl Component for Addons {
                                     .cross_align(Alignment::Center)
                                     .child(label().text("From your server").font_size(22.).font_weight(FontWeight::BOLD))
                                     .child(Switch::new(WritableSetter::new(ctx.admin_enabled.into_readable(), move |on| ctx.set_admin_enabled(on))))
-                                    .child(label().text(if admin_on { "On" } else { "Off" }).font_size(14.).color(MUTED)),
+                                    .child(label().text(if admin_on { "On" } else { "Off" }).font_size(14.).color(theme().muted)),
                             )
                             .child(
                                 label()
                                     .text("Your server's admin provides these. Turn them off to use only your own addons.")
                                     .font_size(14.)
-                                    .color(MUTED),
+                                    .color(theme().muted),
                             )
                             .children(admin.iter().map(|a| admin_card(a, admin_on).into_element())),
                     )
@@ -118,18 +118,18 @@ fn card(ctx: &Ctx, addons: &[Addon], i: usize, addon: &Addon) -> Rect {
         .padding(Gaps::new_all(16.))
         .spacing(8.)
         .corner_radius(8.)
-        .background((32, 32, 32))
+        .background(theme().surface)
         .child(
             rect()
                 .horizontal()
                 .spacing(10.)
                 .cross_align(Alignment::End)
                 .child(label().text(m.name.clone()).font_size(19.).font_weight(FontWeight::BOLD))
-                .child(label().text(format!("v{}", m.version)).font_size(13.).color(MUTED))
-                .maybe(m.behavior_hints.adult, |el| el.child(label().text("18+").font_size(13.).color((229, 9, 20)))),
+                .child(label().text(format!("v{}", m.version)).font_size(13.).color(theme().muted))
+                .maybe(m.behavior_hints.adult, |el| el.child(label().text("18+").font_size(13.).color(theme().accent))),
         )
-        .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(MUTED).span(d)))
-        .child(label().text(m.types.join(" · ")).font_size(13.).color(MUTED))
+        .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(theme().muted).span(d)))
+        .child(label().text(m.types.join(" · ")).font_size(13.).color(theme().muted))
         .child(
             rect()
                 .horizontal()
@@ -153,7 +153,7 @@ fn admin_card(addon: &Addon, on: bool) -> Rect {
         .padding(Gaps::new_all(16.))
         .spacing(6.)
         .corner_radius(8.)
-        .background((32, 32, 32))
+        .background(theme().surface)
         .maybe(!on, |el| el.opacity(0.45))
         .child(
             rect()
@@ -161,9 +161,9 @@ fn admin_card(addon: &Addon, on: bool) -> Rect {
                 .spacing(10.)
                 .cross_align(Alignment::End)
                 .child(label().text(m.name.clone()).font_size(19.).font_weight(FontWeight::BOLD))
-                .child(label().text(format!("v{}", m.version)).font_size(13.).color(MUTED)),
+                .child(label().text(format!("v{}", m.version)).font_size(13.).color(theme().muted)),
         )
-        .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(MUTED).span(d)))
+        .maybe_child(m.description.clone().map(|d| paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(theme().muted).span(d)))
 }
 
 /// A text button that edits the addon list and saves it.
@@ -236,14 +236,14 @@ impl Component for StremioPanel {
         };
         let action = |text: &'static str, name: &'static str, primary: bool| {
             let mut run = run.clone();
-            let bg = if primary { (229, 9, 20) } else { (60, 60, 60) };
+            let bg = if primary { theme().accent } else { theme().raised };
             Focusable::new(button(text, bg, (255, 255, 255)), move |()| run(name))
         };
 
         let body = match connected.read().clone() {
             Some(account) => rect()
                 .spacing(12.)
-                .child(label().text(format!("Connected as {account}")).font_size(15.).color(MUTED))
+                .child(label().text(format!("Connected as {account}")).font_size(15.).color(theme().muted))
                 .child(
                     rect()
                         .horizontal()
@@ -268,11 +268,11 @@ impl Component for StremioPanel {
             .child(
                 paragraph()
                     .font_size(14.)
-                    .color(MUTED)
+                    .color(theme().muted)
                     .span("Bring the addons from your Stremio account into Relix, or send Relix's addons to Stremio. Both merge: nothing is removed, and Stremio's built-in addons are left alone. Your password goes only to Stremio and isn't stored."),
             )
             .child(body)
-            .maybe(*busy.read(), |el| el.child(label().text("Working…").font_size(14.).color(MUTED)))
+            .maybe(*busy.read(), |el| el.child(label().text("Working…").font_size(14.).color(theme().muted)))
             .maybe_child(message.read().clone().map(|m| label().text(m).font_size(15.)))
     }
 }
