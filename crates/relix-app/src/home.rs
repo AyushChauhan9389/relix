@@ -253,8 +253,8 @@ fn details(meta: &MetaPreview) -> Rect {
             rect()
                 .horizontal()
                 .spacing(12.)
-                .child(Focusable::new(button("Play", theme().cta.0, theme().cta.1), open_title(meta)))
-                .child(Focusable::new(button("More Info", (109, 109, 110, 0.7), (255, 255, 255)), open_title(meta))),
+                .child(Focusable::new(play_button("Play".into()), open_title(meta)))
+                .child(Focusable::new(button("More Info", theme().secondary, (255, 255, 255)), open_title(meta))),
         )
 }
 
@@ -289,10 +289,28 @@ pub fn button(text: &'static str, bg: impl Into<Color>, fg: impl Into<Color>) ->
 
 pub fn button_owned(text: String, bg: impl Into<Color>, fg: impl Into<Color>) -> Rect {
     rect()
-        .padding(Gaps::new(10., 28., 10., 24.))
-        .corner_radius(4.)
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(10.)
+        .padding(Gaps::new(10., 24., 10., 24.))
+        .corner_radius(theme().radius.min(8.))
         .background(bg.into())
         .child(label().text(text).font_size(18.).font_weight(FontWeight::BOLD).color(fg.into()))
+}
+
+/// The Play button: a drawn triangle (font glyphs render lopsided) and the look's Play colours.
+pub fn play_button(text: String) -> Rect {
+    let (bg, fg) = theme().cta;
+    const TRIANGLE: &str = r#"<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>"#;
+    rect()
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(10.)
+        .padding(Gaps::new(10., 26., 10., 20.))
+        .corner_radius(theme().radius.min(8.))
+        .background(bg)
+        .child(SvgViewer::new(TRIANGLE.as_bytes()).width(Size::px(20.)).height(Size::px(20.)).fill(fg))
+        .child(label().text(text).font_size(18.).font_weight(FontWeight::BOLD).color(fg))
 }
 
 pub fn chip(text: String, active: bool) -> Rect {

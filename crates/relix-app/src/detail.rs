@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::motion::FadeIn;
-use crate::home::{backdrop, button, button_owned, layer, title_art};
+use crate::home::{backdrop, button, layer, play_button, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
@@ -436,9 +436,9 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
                 .horizontal()
                 .spacing(12.)
                 .padding(Gaps::new(8., 0., 0., 0.))
-                .child(Focusable::new(button_owned(format!("►  {play_label}"), theme().cta.0, theme().cta.1), move |()| on_play(())))
+                .child(Focusable::new(play_button(play_label.clone()), move |()| on_play(())))
                 .child(Focusable::new(
-                    button(if in_list { "✓ My List" } else { "+ My List" }, (109, 109, 110, 0.7), (255, 255, 255)),
+                    button(if in_list { "✓ My List" } else { "+ My List" }, theme().secondary, (255, 255, 255)),
                     toggle_list,
                 )),
         )

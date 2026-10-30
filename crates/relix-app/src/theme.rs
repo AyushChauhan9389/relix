@@ -34,6 +34,8 @@ pub struct Palette {
     pub cta: (Rgb, Rgb),
     /// Other main buttons (Sign in, Install): background and text.
     pub primary: (Rgb, Rgb),
+    /// The button beside Play (My List, More Info).
+    pub secondary: (u8, u8, u8, f32),
     /// Poster and card corners.
     pub radius: f32,
     /// Space above page content (the top bar floats over it).
@@ -54,6 +56,7 @@ const NETFLIX: Palette = Palette {
     panel: (12, 12, 12, 0.82),
     cta: ((255, 255, 255), (0, 0, 0)),
     primary: ((229, 9, 20), (255, 255, 255)),
+    secondary: (109, 109, 110, 0.7),
     radius: 4.,
     top: 100.,
     sidebar: false,
@@ -72,6 +75,7 @@ const STREMIO: Palette = Palette {
     panel: (16, 16, 16, 0.88),
     cta: ((123, 91, 245), (255, 255, 255)),
     primary: ((255, 255, 255), (0, 0, 0)),
+    secondary: (40, 40, 40, 1.),
     radius: 10.,
     top: 88.,
     sidebar: true,
