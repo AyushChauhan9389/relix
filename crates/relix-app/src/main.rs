@@ -8,6 +8,7 @@ mod detail;
 mod focus;
 mod home;
 mod library;
+mod motion;
 mod my_list;
 mod player;
 mod search;
@@ -390,7 +391,8 @@ impl Component for Shell {
             })
             .background(home::BG)
             .color(Color::WHITE)
-            .child(Outlet::<Route>::new())
+            // Every screen fades and rises in; the key replays it on each navigation.
+            .child(motion::FadeIn::page(Outlet::<Route>::new()).key(RouterContext::get().current::<Route>().to_string()))
             .maybe(!playing, |el| {
                 el.child(home::nav(home::active_link(&RouterContext::get().current::<Route>())).layer(Layer::Overlay))
             })

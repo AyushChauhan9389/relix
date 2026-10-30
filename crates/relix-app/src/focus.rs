@@ -4,7 +4,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use freya::animation::*;
 use freya::prelude::*;
+
+use crate::motion::{HOVER_MS, glide};
 
 /// Space the floating nav covers at the top of every page.
 const TOP_INSET: f32 = 90.;
@@ -59,24 +62,25 @@ impl Scroller {
         rect().expanded().on_sized(move |e: Event<SizedEventData>| viewport.set(e.area)).child(view)
     }
 
-    fn reveal(mut self, area: Area, dir: Direction, top_inset: f32) {
+    /// Glides the view so `area` is inside it (with `top_inset` clear of the nav).
+    fn reveal(self, area: Area, dir: Direction, top_inset: f32) {
         let vp = *self.viewport.peek();
         let pos = self.controller.position();
         match dir {
             Direction::Vertical => {
                 let (top, bottom) = (vp.min_y() + top_inset, vp.max_y() - MARGIN);
                 if area.min_y() < top {
-                    self.controller.scroll_to_y((pos.y + top - area.min_y()) as i32);
+                    glide(self.controller, true, pos.y, pos.y + top - area.min_y());
                 } else if area.max_y() > bottom {
-                    self.controller.scroll_to_y((pos.y - (area.max_y() - bottom)) as i32);
+                    glide(self.controller, true, pos.y, pos.y - (area.max_y() - bottom));
                 }
             }
             Direction::Horizontal => {
                 let (left, right) = (vp.min_x() + MARGIN, vp.max_x() - MARGIN);
                 if area.min_x() < left {
-                    self.controller.scroll_to_x((pos.x + left - area.min_x()) as i32);
+                    glide(self.controller, false, pos.x, pos.x + left - area.min_x());
                 } else if area.max_x() > right {
-                    self.controller.scroll_to_x((pos.x - (area.max_x() - right)) as i32);
+                    glide(self.controller, false, pos.x, pos.x - (area.max_x() - right));
                 }
             }
         }
@@ -146,11 +150,13 @@ pub struct Focusable {
     pub on_press: EventHandler<()>,
     pub row: Option<Scroller>,
     pub radius: f32,
+    /// How much it grows when hovered or focused (posters grow more).
+    pub grow: f32,
 }
 
 impl Focusable {
     pub fn new(child: impl Into<Element>, on_press: impl Into<EventHandler<()>>) -> Self {
-        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6. }
+        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6., grow: 1.04 }
     }
 }
 
@@ -166,11 +172,22 @@ impl Component for Focusable {
             }
         });
         let (on_press, row) = (self.on_press.clone(), self.row);
+        let mut hovered = use_state(|| false);
+        // Hover or focus lifts it a little, eased both ways.
+        let lifted = *hovered.read() || focus().is_focused();
+        let grow = self.grow;
+        let lift = use_animation_transition(lifted, move |from, to| {
+            AnimNum::new(if from { 1. } else { 0. }, if to { 1. } else { 0. }).time(HOVER_MS).ease(Ease::Out).function(Function::Cubic)
+        });
+        let l = lift.get().value();
 
         rect()
             .a11y_id(id)
             .a11y_focusable(true)
             .corner_radius(self.radius)
+            .scale((1. + (grow - 1.) * l, 1. + (grow - 1.) * l))
+            .on_pointer_enter(move |_| hovered.set(true))
+            .on_pointer_leave(move |_| hovered.set(false))
             .on_sized(move |e: Event<SizedEventData>| {
                 registry.entries.borrow_mut().insert(id, Entry { area: e.area, row });
             })

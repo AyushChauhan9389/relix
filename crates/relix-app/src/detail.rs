@@ -9,6 +9,7 @@ use relix_proto::addon::{
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
+use crate::motion::FadeIn;
 use crate::home::{backdrop, button, button_owned, layer, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
@@ -326,7 +327,8 @@ impl Component for Detail {
                             .padding(Gaps::new_all(16.))
                             .corner_radius(12.)
                             .background((12, 12, 12, 0.82))
-                            .child(panel),
+                            // Switching episodes ↔ streams (or seasons) slides the new content in.
+                            .child(FadeIn::page(panel).key(format!("{showing_streams}-{current_season:?}-{picked:?}"))),
                     ),
             )
             .into_element()

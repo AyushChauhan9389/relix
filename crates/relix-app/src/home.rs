@@ -6,6 +6,7 @@ use freya::router::*;
 use relix_proto::addon::MetaPreview;
 
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
+use crate::motion::{FadeIn, HOVER_MS};
 use crate::{Ctx, Route};
 
 pub const BG: (u8, u8, u8) = (20, 20, 20);
@@ -88,17 +89,36 @@ pub fn active_link(route: &Route) -> Option<NavLink> {
     }
 }
 
-pub fn nav(active: Option<NavLink>) -> Rect {
-    let link = move |which: NavLink, text: &'static str, to: Route| {
-        let on = active == Some(which);
-        Link::new(to).child(
+/// A nav link whose colour eases on hover.
+#[derive(PartialEq)]
+struct NavItem {
+    text: &'static str,
+    to: Route,
+    active: bool,
+}
+
+impl Component for NavItem {
+    fn render(&self) -> impl IntoElement {
+        let mut hovered = use_state(|| false);
+        let bright = self.active || *hovered.read();
+        let color = use_animation_transition(bright, |from, to| {
+            let c = |b: bool| if b { (255, 255, 255) } else { (190, 190, 190) };
+            AnimColor::new(c(from), c(to)).time(HOVER_MS)
+        });
+        Link::new(self.to.clone()).child(
             label()
-                .text(text)
+                .text(self.text)
                 .font_size(15.)
-                .maybe(!on, |el| el.color((200, 200, 200)))
-                .maybe(on, |el| el.font_weight(FontWeight::BOLD)),
+                .color(&*color.read())
+                .maybe(self.active, |el| el.font_weight(FontWeight::BOLD))
+                .on_pointer_enter(move |_| hovered.set(true))
+                .on_pointer_leave(move |_| hovered.set(false)),
         )
-    };
+    }
+}
+
+pub fn nav(active: Option<NavLink>) -> Rect {
+    let link = move |which: NavLink, text: &'static str, to: Route| NavItem { text, to, active: active == Some(which) };
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
         .width(Size::fill())
@@ -188,14 +208,15 @@ pub fn layer() -> Rect {
 pub fn backdrop(background: Option<&str>) -> Rect {
     match background.and_then(|u| Url::parse(u).ok()) {
         Some(url) => layer()
-            .child(
+            .child(FadeIn::page(
                 ImageViewer::new(url)
                     .width(Size::fill())
                     .height(Size::fill())
                     .aspect_ratio(AspectRatio::Max)
                     .image_cover(ImageCover::Center)
+                    .loading_placeholder(rect())
                     .error_renderer(|_| rect().into()),
-            )
+            ))
             .child(shade()),
         None => layer().background((40, 40, 40)).child(shade()),
     }
@@ -346,11 +367,15 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
         .corner_radius(4.)
         .overflow(Overflow::Clip)
         .child(match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
-            Some(url) => ImageViewer::new(url)
-                .width(Size::px(POSTER_W))
-                .height(Size::px(POSTER_H))
-                .error_renderer(move |_| blank(name.clone()))
-                .into(),
+            Some(url) => FadeIn::image(
+                ImageViewer::new(url)
+                    .width(Size::px(POSTER_W))
+                    .height(Size::px(POSTER_H))
+                    // A soft grey card until the poster arrives.
+                    .loading_placeholder(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).background((38, 38, 38)))
+                    .error_renderer(move |_| blank(name.clone())),
+            )
+            .into(),
             None => blank(name),
         })
         .into();
@@ -366,7 +391,7 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
                 .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
         )
     });
-    Focusable { row, ..Focusable::new(art, open_title(meta)) }.into()
+    Focusable { row, radius: 4., grow: 1.08, ..Focusable::new(art, open_title(meta)) }.into()
 }
 
 #[cfg(test)]
