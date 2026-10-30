@@ -13,9 +13,19 @@ type Outbox = Arc<Mutex<Vec<(String, String)>>>;
 
 const ADMIN: &str = "admin-secret";
 
+/// A fresh folder per test for update files.
+fn update_dir() -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("relix-updates-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 fn server(verify_email: bool) -> (Router, Outbox) {
     let outbox = Outbox::default();
-    let config = Config { verify_email, mailer: Mailer::Outbox(outbox.clone()), admin_token: Some(ADMIN.into()) };
+    let config = Config { verify_email, mailer: Mailer::Outbox(outbox.clone()), admin_token: Some(ADMIN.into()), update_dir: update_dir() };
     (app(rusqlite::Connection::open_in_memory().unwrap(), config).unwrap(), outbox)
 }
 
@@ -217,4 +227,26 @@ async fn adding_an_admin_addon_notifies_every_account() {
         let frame = tokio::time::timeout(Duration::from_secs(2), body.frame()).await.expect("an event within 2s").unwrap().unwrap();
         assert!(String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap().contains("data: admin"));
     }
+}
+
+#[tokio::test]
+async fn serves_the_latest_update_and_its_file() {
+    let dir = update_dir();
+    let outbox = Outbox::default();
+    let config = Config { verify_email: false, mailer: Mailer::Outbox(outbox), admin_token: None, update_dir: dir.clone() };
+    let app = app(rusqlite::Connection::open_in_memory().unwrap(), config).unwrap();
+    assert_eq!(call(&app, "/update/latest", None, None).await.0, StatusCode::NOT_FOUND, "nothing published yet");
+
+    let latest = json!({ "version": "0.2.0", "file": "Relix-0.2.0.zip", "signature": "sig" });
+    std::fs::write(dir.join("latest.json"), latest.to_string()).unwrap();
+    std::fs::write(dir.join("Relix-0.2.0.zip"), b"zip bytes").unwrap();
+    assert_eq!(call(&app, "/update/latest", None, None).await, (StatusCode::OK, latest));
+
+    let req = Request::builder().uri("/update/files/Relix-0.2.0.zip").body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(&res.into_body().collect().await.unwrap().to_bytes()[..], b"zip bytes");
+
+    assert_eq!(call(&app, "/update/files/missing.zip", None, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&app, "/update/files/..%2Flatest.json", None, None).await.0, StatusCode::NOT_FOUND, "no paths out of the folder");
 }

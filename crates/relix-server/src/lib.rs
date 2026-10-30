@@ -41,6 +41,8 @@ pub struct Config {
     pub mailer: Mailer,
     /// Bearer token for the `/admin` endpoints; `None` turns them off.
     pub admin_token: Option<String>,
+    /// Holds `latest.json` and the update files it names (see `relix-server update`).
+    pub update_dir: std::path::PathBuf,
 }
 
 pub enum Mailer {
@@ -150,6 +152,8 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/addons/admin", get(admin_addons_for_users))
         .route("/admin/addons", get(admin_list).post(admin_add))
         .route("/admin/addons/{id}", delete(admin_remove))
+        .route("/update/latest", get(update_latest))
+        .route("/update/files/{name}", get(update_file))
         .with_state(state))
 }
 
@@ -275,6 +279,25 @@ async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<S
             entry.0 += 1;
             Err(ApiError(StatusCode::UNAUTHORIZED, "wrong email or password"))
         }
+    }
+}
+
+async fn update_latest(State(s): State<AppState>) -> Response {
+    match tokio::fs::read(s.config.update_dir.join("latest.json")).await {
+        Ok(bytes) => ([("content-type", "application/json")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+// shortcut: reads the whole file into memory (~65 MB per download); stream it if many clients update at once.
+async fn update_file(State(s): State<AppState>, Path(name): Path<String>) -> Response {
+    // Plain file names only, so a request can't reach outside the update folder.
+    if name.contains(['/', '\\']) || name.starts_with('.') {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(s.config.update_dir.join(&name)).await {
+        Ok(bytes) => ([("content-type", "application/octet-stream")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

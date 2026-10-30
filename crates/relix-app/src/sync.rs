@@ -51,7 +51,7 @@ async fn call<B: Serialize, T: DeserializeOwned>(
     res.json().await.map_err(|e| format!("Unexpected server reply: {e}"))
 }
 
-fn server_url(path: &str) -> String {
+pub fn server_url(path: &str) -> String {
     format!("{}{path}", SERVER.trim_end_matches('/'))
 }
 

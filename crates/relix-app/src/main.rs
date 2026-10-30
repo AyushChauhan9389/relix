@@ -17,6 +17,7 @@ mod settings;
 mod store;
 mod stremio;
 mod sync;
+mod update;
 mod theme;
 
 use std::rc::Rc;
@@ -84,6 +85,7 @@ fn main() {
         return;
     }
 
+    update::cleanup();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let _rt = rt.enter();
     launch(
@@ -177,6 +179,8 @@ pub struct Ctx {
     pub look: State<Look>,
     /// Freya's built-in widget colours, following the look.
     pub widgets: State<Theme>,
+    /// A downloaded update waiting for a restart.
+    pub update: State<Option<update::Ready>>,
 }
 
 impl Ctx {
@@ -303,11 +307,13 @@ fn app() -> impl IntoElement {
         fullscreen,
         look,
         widgets,
+        update: use_state(|| None),
     });
 
     use_hook({
         let ctx = ctx.clone();
         move || {
+            spawn(update::check(ctx.clone()));
             spawn(sync::run(ctx));
         }
     });
@@ -403,6 +409,28 @@ pub enum Route {
         Settings,
 }
 
+/// "Relix x.y.z is ready · Restart", bottom-right, once an update has downloaded.
+fn update_banner(ready: &update::Ready) -> Rect {
+    let restart = {
+        let ready = ready.clone();
+        move |()| {
+            if let Err(e) = update::apply(&ready) {
+                eprintln!("update: {e}");
+            }
+        }
+    };
+    rect()
+        .position(Position::new_absolute().right(24.).bottom(24.))
+        .horizontal()
+        .cross_align(Alignment::Center)
+        .spacing(16.)
+        .padding(Gaps::new(12., 12., 12., 20.))
+        .corner_radius(8.)
+        .background(theme::theme().surface)
+        .child(label().text(format!("Relix {} is ready", ready.version)).font_size(15.))
+        .child(focus::Focusable::new(home::button("Restart", theme::theme().primary.0, theme::theme().primary.1), restart))
+}
+
 #[derive(PartialEq)]
 struct Shell;
 
@@ -411,6 +439,7 @@ impl Component for Shell {
         let registry = use_provide_context(Registry::default);
         let ctx = use_consume::<Ctx>();
         let playing = ctx.player.read().is_some();
+        let update = ctx.update.read().clone();
         let look = *ctx.look.read();
         let sidebar = theme::theme().sidebar;
         let route = RouterContext::get().current::<Route>().to_string();
@@ -458,6 +487,7 @@ impl Component for Shell {
                 let active = home::active_link(&RouterContext::get().current::<Route>());
                 el.child(if sidebar { home::sidebar(active) } else { home::nav(active) }.layer(Layer::OverlayLevel(2)))
             })
+            .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
             .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::OverlayLevel(3))))
     }

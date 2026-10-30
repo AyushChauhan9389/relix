@@ -48,7 +48,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
   - Windows: NSIS installer with `libmpv-2.dll` bundled.
   - Linux: Flatpak and AUR.
   - macOS: `.app` with the libmpv dylibs bundled, unsigned until an Apple Developer account exists.
-- **Updates:** check GitHub Releases on launch and show a banner. No self-updating.
+- **Updates:** signed self-update from the Relix server: downloads in the background, "Restart" banner ([ADR 0009](docs/adr/0009-signed-self-update.md)).
 - **Telemetry:** none. Rotating local log file, with an "Open logs" button.
 - **Licence:** GPL-3.0 for the app, AGPL-3.0 for the server.
 

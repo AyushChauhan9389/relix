@@ -62,3 +62,15 @@ relix-server admin list
 relix-server admin remove 1                  # RELIX_SERVER_URL defaults to http://127.0.0.1:8787
 ```
 
+## Releasing an update
+
+1. Bump `version` in `crates/relix-app/Cargo.toml`.
+2. Build with your server address: set `RELIX_SERVER`, then run `packaging/portable.ps1`. It builds the app with the
+   public key in `packaging/update-key.pub` and signs the zip with `%USERPROFILE%/.relix/update-signing.key`
+   (or `RELIX_UPDATE_KEY`), writing `dist/latest.json`.
+3. Copy the zip and `latest.json` into the server's `RELIX_UPDATE_DIR` (default `updates`). Running copies pick it up
+   on their next launch and offer "Restart".
+
+Keep `update-signing.key` safe and out of git: whoever has it can ship code to every install. A new key is made with
+`relix-server update keygen <file>` (it prints the public key for `packaging/update-key.pub`).
+

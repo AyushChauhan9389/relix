@@ -4,6 +4,8 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# Release builds check for signed updates with this public key (and talk to $env:RELIX_SERVER if set).
+$env:RELIX_UPDATE_PUBKEY = (Get-Content "packaging\update-key.pub" -Raw).Trim()
 cargo build --release -p relix-app -p relix-server
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
@@ -22,3 +24,13 @@ $zip = Join-Path $root "dist\$name.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $out -DestinationPath $zip
 Get-Item $zip | Select-Object Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }
+
+# Sign it for auto-update; the private key never lives in the repo.
+$key = if ($env:RELIX_UPDATE_KEY) { $env:RELIX_UPDATE_KEY } else { Join-Path $env:USERPROFILE ".relix\update-signing.key" }
+if (Test-Path $key) {
+    & "target\release\relix-server.exe" update sign $key $zip $version
+    if ($LASTEXITCODE -ne 0) { throw "signing failed" }
+    "To publish: copy $name.zip and latest.json from dist\ into the server's RELIX_UPDATE_DIR."
+} else {
+    "Not signed (no key at $key), so installed copies won't update to this build."
+}

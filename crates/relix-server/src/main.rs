@@ -6,9 +6,14 @@
 //! - `RELIX_SMTP_FROM` sender, e.g. `Relix <no-reply@example.com>`
 //! - `RELIX_VERIFY_EMAIL` `true`/`false`; defaults to `true` when SMTP is set. Without SMTP, codes are printed.
 //! - `RELIX_ADMIN_TOKEN` enables the `/admin` endpoints and the `admin` command (see `relix-server admin`).
+//! - `RELIX_UPDATE_DIR` folder with `latest.json` and app updates (default `updates`; see `relix-server update`).
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 
 use relix_proto::addon::{Addon, Manifest};
 use relix_proto::sync::{AddedAdminAddon, AdminAddon};
+use relix_proto::update::{UpdateManifest, sign, signed_message};
 use relix_server::cli::{AdminCommand, USAGE, parse_admin};
 use relix_server::{Config, Mailer, app};
 
@@ -65,11 +70,52 @@ async fn admin(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+const UPDATE_USAGE: &str = "usage: relix-server update <command>
+  keygen <key-file>                    make a signing key; prints the public key the app is built with
+  sign <key-file> <zip> <version>      sign a release; writes latest.json next to the zip
+Copy the zip and latest.json into the server's RELIX_UPDATE_DIR to publish.";
+
+/// `relix-server update ...`: release signing, run on the machine that builds releases.
+fn update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let read_key = |path: &str| -> Result<[u8; 32], Box<dyn std::error::Error>> {
+        let bytes = B64.decode(std::fs::read_to_string(path)?.trim())?;
+        Ok(<[u8; 32]>::try_from(bytes).map_err(|_| "not a Relix signing key")?)
+    };
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["keygen", path] => {
+            if std::path::Path::new(path).exists() {
+                return Err(format!("{path} already exists; not overwriting a signing key").into());
+            }
+            let mut secret = [0u8; 32];
+            rand::fill(&mut secret);
+            std::fs::write(path, B64.encode(secret))?;
+            println!("{}", sign(&secret, b"").0);
+        }
+        ["sign", key, zip, version] => {
+            let (_, signature) = sign(&read_key(key)?, &signed_message(version, &std::fs::read(zip)?));
+            let zip = std::path::Path::new(zip);
+            let file = zip.file_name().and_then(|f| f.to_str()).ok_or("bad zip path")?.to_owned();
+            let manifest = UpdateManifest { version: (*version).to_owned(), file, signature };
+            std::fs::write(zip.with_file_name("latest.json"), serde_json::to_string_pretty(&manifest)?)?;
+            println!("wrote {}", zip.with_file_name("latest.json").display());
+        }
+        _ => return Err(UPDATE_USAGE.into()),
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("admin") {
         if let Err(e) = admin(&args[1..]).await {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("update") {
+        if let Err(e) = update(&args[1..]) {
             eprintln!("{e}");
             std::process::exit(1);
         }
@@ -93,7 +139,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = rusqlite::Connection::open(env("RELIX_DB").unwrap_or_else(|| "relix-server.db".into()))?;
     let addr = env("RELIX_ADDR").unwrap_or_else(|| "0.0.0.0:8787".into());
-    let router = app(db, Config { verify_email, mailer, admin_token: env("RELIX_ADMIN_TOKEN") })?;
+    let update_dir = env("RELIX_UPDATE_DIR").unwrap_or_else(|| "updates".into()).into();
+    let router = app(db, Config { verify_email, mailer, admin_token: env("RELIX_ADMIN_TOKEN"), update_dir })?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("relix-server listening on {addr} (email verification {})", if verify_email { "on" } else { "off" });
     axum::serve(listener, router).await?;
