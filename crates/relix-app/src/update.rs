@@ -78,6 +78,20 @@ fn app_exe_name() -> String {
 pub fn apply(ready: &Ready) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let install = exe.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    // The single-file portable build stays one file: rebuild it from the update's exe and libmpv.
+    #[cfg(windows)]
+    if crate::bundled::appended_len(&exe).is_some() {
+        let old = old_name(&exe);
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(&exe, &old)?;
+        let new = (ready.files.join(app_exe_name()), ready.files.join("libmpv-2.dll"));
+        if let Err(e) = crate::bundled::write(&exe, &new.0, &new.1) {
+            let _ = std::fs::rename(&old, &exe);
+            return Err(e);
+        }
+        std::process::Command::new(&exe).spawn()?;
+        std::process::exit(0);
+    }
     for entry in std::fs::read_dir(&ready.files)?.flatten().filter(|e| e.path().is_file()) {
         let target = install.join(entry.file_name());
         let old = old_name(&target);

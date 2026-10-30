@@ -6,6 +6,9 @@ fn main() {
     // The logo as the exe's icon in Explorer (the window icon is set at runtime).
     println!("cargo:rerun-if-changed=assets/icon.ico");
     winresource::WindowsResource::new().set_icon("assets/icon.ico").compile().expect("embed the exe icon");
+    // libmpv loads on first use, not at startup, so the single-file portable exe can unpack it first.
+    println!("cargo:rustc-link-arg-bins=/DELAYLOAD:libmpv-2.dll");
+    println!("cargo:rustc-link-lib=delayimp");
     let vendor = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/mpv");
     println!("cargo:rustc-link-search=native={}", vendor.display());
     println!("cargo:rerun-if-changed={}", vendor.join("mpv.lib").display());

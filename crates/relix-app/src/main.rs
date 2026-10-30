@@ -4,6 +4,8 @@
 mod account;
 mod addons;
 mod browse;
+#[cfg(windows)]
+mod bundled;
 mod detail;
 mod filter;
 mod focus;
@@ -45,6 +47,26 @@ const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
 fn main() {
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe() {
+        // Release workflow: `relix-app --bundle <out.exe>` writes the single-file portable build.
+        if let Some(out) = std::env::args().skip_while(|a| a != "--bundle").nth(1) {
+            let dll = exe.with_file_name("libmpv-2.dll");
+            std::process::exit(match bundled::write(std::path::Path::new(&out), &exe, &dll) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("bundle: {e}");
+                    1
+                }
+            });
+        }
+        if let Some(len) = bundled::appended_len(&exe)
+            && let Err(e) = bundled::unpack(&exe, len, &data_dir().join("mpv"))
+        {
+            eprintln!("unpacking libmpv: {e}");
+        }
+    }
+
     // ponytail: playback check without the UI:
     // `--play <url> [--subs movie/<imdb id>] [--title T] [--episode E] [--has-next] [--start secs]`.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
@@ -137,11 +159,23 @@ fn native_id(window: &freya::winit::window::Window) -> Option<i64> {
     }
 }
 
+/// Whether `exe` is the single-file portable build (libmpv appended), which keeps its data next to itself.
+fn bundled_exe(exe: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    return bundled::appended_len(exe).is_some();
+    #[cfg(not(windows))]
+    return {
+        let _ = exe;
+        false
+    };
+}
+
 /// Where Relix keeps its database: `data` next to the executable for a portable copy (a file
 /// named `portable` sits beside it), otherwise the usual per-user app data folder of each OS.
 fn data_dir() -> std::path::PathBuf {
-    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
-    if let Some(dir) = exe_dir.filter(|d| d.join("portable").exists()) {
+    let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_deref().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    if let Some(dir) = exe_dir.filter(|d| d.join("portable").exists() || exe.as_deref().is_some_and(bundled_exe)) {
         return dir.join("data");
     }
     let env = |k| std::env::var_os(k).map(std::path::PathBuf::from);

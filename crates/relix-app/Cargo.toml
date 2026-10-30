@@ -17,3 +17,26 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 
 [build-dependencies]
 winresource = "0.1.34"
+
+# Installers (cargo packager), built by the Release workflow.
+[package.metadata.packager]
+product-name = "Relix"
+identifier = "tech.carbonkit.relix"
+publisher = "Relix"
+description = "Netflix-style desktop app for Stremio addons"
+homepage = "https://relix.carbonkit.tech"
+category = "Video"
+icons = ["assets/icon.ico", "assets/icon.png"]
+binaries-dir = "../../target/release"
+out-dir = "../../dist"
+binaries = [{ path = "relix-app", main = true }]
+# libmpv next to relix-app.exe on Windows (build.rs copies it there); matches nothing on Linux.
+resources = ["../../target/release/libmpv-2.dll"]
+
+
+[package.metadata.packager.nsis]
+# Per-user install (no admin), so auto-update can replace the files.
+installer-mode = "currentUser"
+
+[package.metadata.packager.deb]
+depends = ["libmpv2"]
