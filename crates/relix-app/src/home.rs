@@ -125,9 +125,11 @@ pub fn nav(active: Option<NavLink>) -> Rect {
         .height(Size::px(NAV_H))
         .padding(Gaps::new(0., 48., 0., 48.))
         .horizontal()
+        .content(Content::Flex)
         .cross_align(Alignment::Center)
         .spacing(28.)
-        .background(LinearGradient::new().angle(180.).stop(((0, 0, 0, 0.8), 0.)).stop(((0, 0, 0, 0.), 100.)))
+        .background(BG)
+        .border(Border::new().fill((40, 40, 40)).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
         .child(
             Link::new(Route::Home)
                 .child(label().text("RELIX").font_size(30.).font_weight(FontWeight::BLACK).color((229, 9, 20))),
@@ -136,9 +138,9 @@ pub fn nav(active: Option<NavLink>) -> Rect {
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
         .child(link(NavLink::Movies, "Movies", Route::Browse { kind: "movie".into() }))
         .child(link(NavLink::MyList, "My List", Route::MyList))
+        .child(rect().width(Size::flex(1.)))
         .child(
             rect()
-                .position(Position::new_absolute().right(48.).top(18.))
                 .horizontal()
                 .cross_align(Alignment::Center)
                 .spacing(24.)
