@@ -1,6 +1,7 @@
 #!/bin/sh
 # Nightly copy of the account database (SQLite's online backup, safe while the server runs); keeps 7 days.
 set -eu
+umask 077
 dir=/var/lib/relix/backups
 mkdir -p "$dir"
 file="$dir/relix-$(date +%F).db"
