@@ -65,10 +65,10 @@ relix-server admin remove 1                  # RELIX_SERVER_URL defaults to http
 ## Releasing an update
 
 1. Bump `version` in `crates/relix-app/Cargo.toml`.
-2. Build with your server address: set `RELIX_SERVER`, then run `packaging/portable.ps1`. It builds the app with the
+2. Run `packaging/portable.ps1` (it builds against `https://relix.carbonkit.tech` unless `RELIX_SERVER` is set). It builds the app with the
    public key in `packaging/update-key.pub` and signs the zip with `%USERPROFILE%/.relix/update-signing.key`
    (or `RELIX_UPDATE_KEY`), writing `dist/latest.json`.
-3. Copy the zip and `latest.json` into the server's `RELIX_UPDATE_DIR` (default `updates`). Running copies pick it up
+3. Copy the zip and `latest.json` into the server's `RELIX_UPDATE_DIR`: see `packaging/server/README.md`. Running copies pick it up
    on their next launch and offer "Restart".
 
 Keep `update-signing.key` safe and out of git: whoever has it can ship code to every install. A new key is made with

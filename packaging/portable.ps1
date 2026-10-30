@@ -4,7 +4,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# Release builds check for signed updates with this public key (and talk to $env:RELIX_SERVER if set).
+# Release builds talk to the production server unless RELIX_SERVER says otherwise,
+# and check for signed updates with this public key.
+if (-not $env:RELIX_SERVER) { $env:RELIX_SERVER = "https://relix.carbonkit.tech" }
 $env:RELIX_UPDATE_PUBKEY = (Get-Content "packaging\update-key.pub" -Raw).Trim()
 cargo build --release -p relix-app -p relix-server
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }

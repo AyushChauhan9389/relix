@@ -1,0 +1,20 @@
+[Unit]
+Description=Relix sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=relix
+EnvironmentFile=/etc/relix/relix.env
+ExecStart=/usr/local/bin/relix-server
+StateDirectory=relix
+WorkingDirectory=/var/lib/relix
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
