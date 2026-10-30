@@ -444,9 +444,16 @@ impl Component for Shell {
         let look = *ctx.look.read();
         let sidebar = theme::theme().sidebar;
         let route = RouterContext::get().current::<Route>().to_string();
+        let keys = ctx.clone();
         rect()
             .expanded()
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                let ctx = &keys;
+                // F11 toggles fullscreen anywhere, like Stremio.
+                if e.key == Key::Named(NamedKey::F11) {
+                    ctx.toggle_fullscreen();
+                    return;
+                }
                 // While video plays, Relix's keys only stop it (mpv's controls take the rest).
                 if ctx.player.peek().is_some() {
                     if e.key == Key::Named(NamedKey::Escape) {
@@ -459,6 +466,11 @@ impl Component for Shell {
                     Key::Named(NamedKey::ArrowDown) => Dir::Down,
                     Key::Named(NamedKey::ArrowLeft) => Dir::Left,
                     Key::Named(NamedKey::ArrowRight) => Dir::Right,
+                    // Esc leaves fullscreen first, then goes back.
+                    Key::Named(NamedKey::Escape) if *ctx.fullscreen.peek() => {
+                        ctx.toggle_fullscreen();
+                        return;
+                    }
                     Key::Named(NamedKey::Escape) => {
                         let router = RouterContext::get();
                         if router.can_go_back() {
@@ -481,12 +493,12 @@ impl Component for Shell {
                     .child(motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}")))
                     // Stremio's search bar tops every page but Search, which has its own field.
                     .maybe(sidebar && !playing && route != Route::Search.to_string(), |el| {
-                        el.child(home::top_bar().layer(Layer::OverlayLevel(2)))
+                        el.child(home::top_bar(&ctx).layer(Layer::OverlayLevel(2)))
                     }),
             )
             .maybe(!playing, |el| {
                 let active = home::active_link(&RouterContext::get().current::<Route>());
-                el.child(if sidebar { home::sidebar(active) } else { home::nav(active) }.layer(Layer::OverlayLevel(2)))
+                el.child(if sidebar { home::sidebar(active) } else { home::nav(active, &ctx) }.layer(Layer::OverlayLevel(2)))
             })
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.

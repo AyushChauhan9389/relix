@@ -129,7 +129,7 @@ impl Component for NavItem {
     }
 }
 
-pub fn nav(active: Option<NavLink>) -> Rect {
+pub fn nav(active: Option<NavLink>, ctx: &Ctx) -> Rect {
     let link = move |which: NavLink, text: &'static str, to: Route| NavItem { text, to, active: active == Some(which) };
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
@@ -158,7 +158,8 @@ pub fn nav(active: Option<NavLink>) -> Rect {
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
                 .child(link(NavLink::Settings, "Settings", Route::Settings))
-                .child(link(NavLink::Account, "Account", Route::Account)),
+                .child(link(NavLink::Account, "Account", Route::Account))
+                .child(fullscreen_button(ctx)),
         )
 }
 
@@ -492,13 +493,15 @@ fn row_h() -> f32 {
 }
 
 /// The Stremio look's top bar: a search field (opening Search) above every page.
-pub fn top_bar() -> Rect {
+pub fn top_bar(ctx: &Ctx) -> Rect {
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
         .width(Size::percent(100.))
         .height(Size::px(64.))
         .padding(Gaps::new(0., 48., 0., 48.))
-        .main_align(Alignment::Center)
+        .horizontal()
+        .content(Content::Flex)
+        .cross_align(Alignment::Center)
         .background(theme().bg)
         .child(
             Link::new(Route::Search).child(
@@ -515,6 +518,18 @@ pub fn top_bar() -> Rect {
                     .child(label().text("Search movies & series").font_size(14.).color(theme().muted)),
             ),
         )
+        .child(rect().width(Size::flex(1.)))
+        .child(fullscreen_button(ctx))
+}
+
+/// Enters or leaves fullscreen for the whole app, like Stremio's (F11 does the same).
+fn fullscreen_button(ctx: &Ctx) -> Focusable {
+    let icon = if *ctx.fullscreen.read() { ICON_EXIT_FULLSCREEN } else { ICON_FULLSCREEN };
+    let ctx = ctx.clone();
+    Focusable::new(
+        rect().padding(Gaps::new_all(6.)).child(SvgViewer::new(icon.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke((230, 230, 230))),
+        move |()| ctx.toggle_fullscreen(),
+    )
 }
 
 pub const SIDEBAR_W: f32 = 80.;
@@ -527,6 +542,8 @@ const ICON_LIBRARY: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white
 const ICON_SEARCH: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>"#;
 const ICON_ADDONS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>"#;
 const ICON_SETTINGS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>"#;
+const ICON_FULLSCREEN: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>"#;
+const ICON_EXIT_FULLSCREEN: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>"#;
 const ICON_ACCOUNT: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>"#;
 
 /// Stremio's left rail: wordmark, then icon links; the current one sits on a grey pill.
