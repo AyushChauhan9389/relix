@@ -18,6 +18,8 @@ pub struct Progress {
 pub enum Ended {
     /// The "Next episode" button in the player controls.
     NextRequested,
+    /// mpv couldn't open or decode the stream (dead link, unsupported format).
+    Failed,
 }
 
 /// What the player's Lua controls ask for with `script-message`.
@@ -190,6 +192,7 @@ fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, outbox: &impl Fn(Messag
                 Some(other) => outbox(other),
                 None => {}
             },
+            Some(Ok(Event::EndFile(libmpv2::mpv_end_file_reason::Error))) => return Ok((progress, Some(Ended::Failed))),
             Some(Ok(Event::EndFile(_) | Event::Shutdown)) => return Ok((progress, None)),
             Some(Err(e)) => return Err(e),
             _ => {}

@@ -23,7 +23,8 @@ use futures_util::Stream;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox};
 use relix_proto::addon::Addon;
 use relix_proto::sync::{
-    AddedAdminAddon, AdminAddon, Login, PullResponse, Push, PushResponse, Session, Signup, SignupResponse, SyncedRecord, Verify,
+    AddedAdminAddon, AdminAddon, DeleteAccount, ForgotPassword, Login, PullResponse, Push, PushResponse, ResetPassword, Session,
+    Signup, SignupResponse, SyncedRecord, Verify,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -35,6 +36,11 @@ const MAX_LOGIN_FAILURES: u32 = 10;
 const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_CODE_TRIES: i64 = 5;
 const MIN_PASSWORD: usize = 8;
+/// Accounts one address can create, and reset codes one email can ask for, per window.
+const MAX_SIGNUPS: u32 = 5;
+const MAX_RESET_MAILS: u32 = 3;
+/// A session unused this long is signed out.
+const SESSION_IDLE_SECS: i64 = 90 * 24 * 3600;
 
 pub struct Config {
     /// Require an emailed code before an account can sign in (the official server does; self-hosters may not).
@@ -105,6 +111,25 @@ impl From<rusqlite::Error> for ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
+impl AppState {
+    /// Whether `key` already counted `max` events in the current window.
+    fn throttled(&self, key: &str, max: u32) -> bool {
+        let mut failures = self.failures.lock().unwrap();
+        match failures.get(key).copied() {
+            Some((_, since)) if since.elapsed() > FAILURE_WINDOW => {
+                failures.remove(key);
+                false
+            }
+            Some((count, _)) => count >= max,
+            None => false,
+        }
+    }
+
+    fn count(&self, key: String) {
+        self.failures.lock().unwrap().entry(key).or_insert((0, Instant::now())).0 += 1;
+    }
+}
+
 fn sha256_hex(data: &[u8]) -> String {
     Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -124,7 +149,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
              code TEXT,
              code_tries INTEGER NOT NULL DEFAULT 0
          );
-         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, account INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, account INTEGER NOT NULL, last_used INTEGER NOT NULL DEFAULT 0);
          CREATE TABLE IF NOT EXISTS records (
              account INTEGER NOT NULL,
              kind TEXT NOT NULL,
@@ -137,6 +162,10 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS admin_addons (id INTEGER PRIMARY KEY, addon TEXT NOT NULL);",
     )?;
+    // Databases from before session expiry: start their sessions' clocks now.
+    if !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'last_used'")?.exists([])? {
+        db.execute_batch("ALTER TABLE sessions ADD COLUMN last_used INTEGER NOT NULL DEFAULT 0; UPDATE sessions SET last_used = unixepoch();")?;
+    }
     let state = AppState {
         db: Arc::new(Mutex::new(db)),
         config: Arc::new(config),
@@ -147,6 +176,11 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/signup", post(signup))
         .route("/verify", post(verify))
         .route("/login", post(login))
+        .route("/logout", post(logout))
+        .route("/logout/all", post(logout_all))
+        .route("/password/forgot", post(forgot_password))
+        .route("/password/reset", post(reset_password))
+        .route("/account", delete(delete_account))
         .route("/sync/push", post(push))
         .route("/sync/pull", get(pull))
         .route("/sync/events", get(events))
@@ -163,7 +197,10 @@ fn new_session(db: &Connection, account: i64) -> Result<Session, ApiError> {
     let mut raw = [0u8; 32];
     rand::fill(&mut raw);
     let token = URL_SAFE_NO_PAD.encode(raw);
-    db.execute("INSERT INTO sessions (token_hash, account) VALUES (?1, ?2)", params![sha256_hex(token.as_bytes()), account])?;
+    db.execute(
+        "INSERT INTO sessions (token_hash, account, last_used) VALUES (?1, ?2, unixepoch())",
+        params![sha256_hex(token.as_bytes()), account],
+    )?;
     Ok(Session { token })
 }
 
@@ -194,7 +231,12 @@ fn six_digit_code() -> String {
     format!("{:06}", u32::from_le_bytes(b) % 1_000_000)
 }
 
-async fn signup(State(s): State<AppState>, Json(req): Json<Signup>) -> ApiResult<SignupResponse> {
+async fn signup(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<Signup>) -> ApiResult<SignupResponse> {
+    // Caddy sets X-Forwarded-For to the caller's address; without it (local runs, tests) nothing is limited.
+    let address = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).map(|ip| format!("signup {ip}"));
+    if address.as_deref().is_some_and(|key| s.throttled(key, MAX_SIGNUPS)) {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many new accounts from here; try again later"));
+    }
     let email = normalize(&req.email);
     if !email.contains('@') {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid email address"));
@@ -219,6 +261,9 @@ async fn signup(State(s): State<AppState>, Json(req): Json<Signup>) -> ApiResult
             Some(_) => None,
         }
     };
+    if let Some(key) = address {
+        s.count(key);
+    }
     if let Some(code) = code {
         s.config.mailer.send(&email, format!("Your Relix verification code is {code}")).await?;
     }
@@ -248,15 +293,8 @@ async fn verify(State(s): State<AppState>, Json(req): Json<Verify>) -> ApiResult
 
 async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<Session> {
     let email = normalize(&req.email);
-    {
-        let mut failures = s.failures.lock().unwrap();
-        if let Some((count, since)) = failures.get(&email).copied() {
-            if since.elapsed() > FAILURE_WINDOW {
-                failures.remove(&email);
-            } else if count >= MAX_LOGIN_FAILURES {
-                return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later"));
-            }
-        }
+    if s.throttled(&email, MAX_LOGIN_FAILURES) {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later"));
     }
     let row: Option<(i64, String, bool)> = s
         .db
@@ -276,12 +314,92 @@ async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<S
             Ok(Json(new_session(&s.db.lock().unwrap(), id)?))
         }
         _ => {
-            let mut failures = s.failures.lock().unwrap();
-            let entry = failures.entry(email).or_insert((0, Instant::now()));
-            entry.0 += 1;
+            s.count(email);
             Err(ApiError(StatusCode::UNAUTHORIZED, "wrong email or password"))
         }
     }
+}
+
+async fn logout(State(s): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
+    account_of(&s, &headers)?;
+    let hash = sha256_hex(bearer(&headers)?.as_bytes());
+    s.db.lock().unwrap().execute("DELETE FROM sessions WHERE token_hash = ?1", params![hash])?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn logout_all(State(s): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
+    let account = account_of(&s, &headers)?;
+    s.db.lock().unwrap().execute("DELETE FROM sessions WHERE account = ?1", params![account])?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Emails a reset code. The reply is the same whether or not the email has an account.
+async fn forgot_password(State(s): State<AppState>, Json(req): Json<ForgotPassword>) -> Result<StatusCode, ApiError> {
+    let email = normalize(&req.email);
+    let key = format!("reset {email}");
+    if s.throttled(&key, MAX_RESET_MAILS) {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many codes asked for; try again later"));
+    }
+    s.count(key);
+    let code = six_digit_code();
+    let known = s.db.lock().unwrap().execute(
+        "UPDATE accounts SET code = ?1, code_tries = 0 WHERE email = ?2",
+        params![code, email],
+    )? > 0;
+    if known {
+        s.config.mailer.send(&email, format!("Your Relix password reset code is {code}")).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sets a new password with an emailed code, signs every other device out and this one in.
+/// The code also proves the email, so the account counts as verified.
+async fn reset_password(State(s): State<AppState>, Json(req): Json<ResetPassword>) -> ApiResult<Session> {
+    if req.password.chars().count() < MIN_PASSWORD {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "use a password of at least 8 characters"));
+    }
+    let id = {
+        let db = s.db.lock().unwrap();
+        let row: Option<(i64, Option<String>, i64)> = db
+            .query_row("SELECT id, code, code_tries FROM accounts WHERE email = ?1", params![normalize(&req.email)], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
+        let Some((id, Some(code), tries)) = row else {
+            return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong or expired code"));
+        };
+        if tries >= MAX_CODE_TRIES {
+            return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many attempts; ask for a new code"));
+        }
+        if req.code.trim() != code {
+            db.execute("UPDATE accounts SET code_tries = code_tries + 1 WHERE id = ?1", params![id])?;
+            return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong or expired code"));
+        }
+        // Used up before the slow hash, so it can't be replayed meanwhile.
+        db.execute("UPDATE accounts SET code = NULL WHERE id = ?1", params![id])?;
+        id
+    };
+    let password_hash = hash_password(req.password).await?;
+    let db = s.db.lock().unwrap();
+    db.execute("UPDATE accounts SET password_hash = ?1, verified = 1, code_tries = 0 WHERE id = ?2", params![password_hash, id])?;
+    db.execute("DELETE FROM sessions WHERE account = ?1", params![id])?;
+    Ok(Json(new_session(&db, id)?))
+}
+
+async fn delete_account(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<DeleteAccount>) -> Result<StatusCode, ApiError> {
+    let account = account_of(&s, &headers)?;
+    let hash: Option<String> =
+        s.db.lock().unwrap().query_row("SELECT password_hash FROM accounts WHERE id = ?1", params![account], |r| r.get(0)).optional()?;
+    if !password_matches(req.password, hash).await {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong password"));
+    }
+    let mut db = s.db.lock().unwrap();
+    let tx = db.transaction()?;
+    for sql in ["DELETE FROM records WHERE account = ?1", "DELETE FROM sessions WHERE account = ?1", "DELETE FROM accounts WHERE id = ?1"] {
+        tx.execute(sql, params![account])?;
+    }
+    tx.commit()?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(serde::Deserialize)]
@@ -339,16 +457,22 @@ async fn admin_upload(State(s): State<AppState>, headers: HeaderMap, Path(name):
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The account behind the request's bearer token.
-fn account_of(s: &AppState, headers: &HeaderMap) -> Result<i64, ApiError> {
-    let token = headers
+fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(ApiError(StatusCode::UNAUTHORIZED, "sign in first"))?;
-    s.db.lock()
-        .unwrap()
-        .query_row("SELECT account FROM sessions WHERE token_hash = ?1", params![sha256_hex(token.as_bytes())], |r| r.get(0))
+        .ok_or(ApiError(StatusCode::UNAUTHORIZED, "sign in first"))
+}
+
+/// The account behind the request's bearer token. Sessions idle past SESSION_IDLE_SECS end here.
+fn account_of(s: &AppState, headers: &HeaderMap) -> Result<i64, ApiError> {
+    let hash = sha256_hex(bearer(headers)?.as_bytes());
+    let db = s.db.lock().unwrap();
+    db.execute("DELETE FROM sessions WHERE token_hash = ?1 AND last_used < unixepoch() - ?2", params![hash, SESSION_IDLE_SECS])?;
+    // Touched at most hourly, so syncing doesn't write on every request.
+    db.execute("UPDATE sessions SET last_used = unixepoch() WHERE token_hash = ?1 AND last_used < unixepoch() - 3600", params![hash])?;
+    db.query_row("SELECT account FROM sessions WHERE token_hash = ?1", params![hash], |r| r.get(0))
         .optional()?
         .ok_or(ApiError(StatusCode::UNAUTHORIZED, "sign in first"))
 }

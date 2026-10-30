@@ -203,6 +203,8 @@ pub struct Ctx {
     /// The user's switch for admin addons; on unless they turned it off (synced setting).
     pub admin_enabled: State<bool>,
     pub rows: State<Vec<Row>>,
+    /// While Home's catalogs are being fetched.
+    pub rows_loading: State<bool>,
     /// Wakes the sync loop (sign-in, local changes).
     pub sync: Arc<tokio::sync::Notify>,
     /// Last sync outcome, for the Account screen.
@@ -319,6 +321,7 @@ fn app() -> impl IntoElement {
     let saved = store.get::<Vec<Addon>>(&profile, "addons", "list").ok().flatten();
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
+    let rows_loading = use_state(|| true);
     let sync_status = use_state(String::new);
     let player = use_state(|| None);
     let fullscreen = use_state(|| false);
@@ -336,6 +339,7 @@ fn app() -> impl IntoElement {
         admin_addons,
         admin_enabled,
         rows,
+        rows_loading,
         sync: Arc::default(),
         sync_status,
         player,
@@ -384,6 +388,7 @@ async fn install_defaults(ctx: &Ctx) {
 
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
 pub async fn load_rows(mut ctx: Ctx) {
+    ctx.rows_loading.set(true);
     let addons = ctx.all_addons();
     let mut rows = library::local_rows(&ctx.store, &ctx.profile);
     let mut set = JoinSet::new();
@@ -420,6 +425,7 @@ pub async fn load_rows(mut ctx: Ctx) {
             }
         }
     }
+    ctx.rows_loading.set(false);
 }
 
 #[derive(Routable, Clone, PartialEq, Debug)]

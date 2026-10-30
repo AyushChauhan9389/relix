@@ -37,7 +37,11 @@ impl Component for Home {
     fn render(&self) -> impl IntoElement {
         let page = use_scroller();
         use_page_scroller(page);
-        let rows = use_consume::<Ctx>().rows.read().clone();
+        let ctx = use_consume::<Ctx>();
+        let rows = ctx.rows.read().clone();
+        if rows.is_empty() && !*ctx.rows_loading.read() {
+            return nothing_to_show(&ctx).into_element();
+        }
         // Featured titles come from the first catalog, not Continue Watching or My List.
         let featured: Vec<MetaPreview> = rows
             .iter()
@@ -71,6 +75,7 @@ impl Component for Home {
             .length(len)
             .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { theme().top - 24. } else { HERO_H }))),
         )
+        .into_element()
     }
 }
 
@@ -460,6 +465,33 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
         .child(card)
         .child(label().text(meta.name.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
         .into()
+}
+
+/// Home with no rows once loading is done: no addon offers Home catalogs, or every catalog failed (usually offline).
+fn nothing_to_show(ctx: &Ctx) -> Rect {
+    let no_addons = ctx.all_addons().iter().all(|a| a.manifest.home_catalogs().next().is_none());
+    let (title, text) = if no_addons {
+        ("Nothing on Home yet", "Home shows the catalogs your addons offer. Install one with catalogs, like Cinemeta, to fill it.")
+    } else {
+        ("Couldn't load anything", "None of your addons answered. Check your internet connection and try again.")
+    };
+    let action = if no_addons {
+        Focusable::new(button("Go to Addons", theme().primary.0, theme().primary.1), |()| {
+            let _ = RouterContext::get().push(Route::Addons);
+        })
+    } else {
+        let ctx = ctx.clone();
+        Focusable::new(button("Try again", theme().primary.0, theme().primary.1), move |()| {
+            spawn(crate::load_rows(ctx.clone()));
+        })
+    };
+    rect()
+        .expanded()
+        .center()
+        .spacing(14.)
+        .child(label().text(title).font_size(26.).font_weight(FontWeight::BOLD))
+        .child(paragraph().width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(text))
+        .child(action)
 }
 
 /// The Relix logo, bundled with the app.

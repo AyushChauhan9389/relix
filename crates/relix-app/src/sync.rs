@@ -4,7 +4,11 @@ use std::time::Duration;
 
 use freya::prelude::*;
 use relix_proto::addon::Addon;
-use relix_proto::sync::{Login, PullResponse, Push, PushRecord, PushResponse, Session, Signup, SignupResponse, Verify};
+use relix_proto::sync::{
+    DeleteAccount, ForgotPassword, Login, PullResponse, Push, PushRecord, PushResponse, ResetPassword, Session, Signup, SignupResponse,
+    Verify,
+};
+use reqwest::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::store::Store;
@@ -29,16 +33,18 @@ pub fn account(store: &Store) -> Option<Account> {
     store.meta("account").ok().flatten().and_then(|a| serde_json::from_str(&a).ok())
 }
 
-async fn call<B: Serialize, T: DeserializeOwned>(
+/// Sends a request; a failed one becomes the server's error message.
+async fn send<B: Serialize>(
     http: &reqwest::Client,
+    method: Method,
     url: String,
     token: Option<&str>,
     body: Option<&B>,
-) -> Result<T, String> {
-    let mut req = match body {
-        Some(b) => http.post(url).json(b),
-        None => http.get(url),
-    };
+) -> Result<reqwest::Response, String> {
+    let mut req = http.request(method, url);
+    if let Some(b) = body {
+        req = req.json(b);
+    }
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
@@ -48,7 +54,17 @@ async fn call<B: Serialize, T: DeserializeOwned>(
         let msg = res.json::<serde_json::Value>().await.ok().and_then(|v| v["error"].as_str().map(str::to_owned));
         return Err(msg.unwrap_or_else(|| format!("Server error {status}")));
     }
-    res.json().await.map_err(|e| format!("Unexpected server reply: {e}"))
+    Ok(res)
+}
+
+async fn call<B: Serialize, T: DeserializeOwned>(
+    http: &reqwest::Client,
+    url: String,
+    token: Option<&str>,
+    body: Option<&B>,
+) -> Result<T, String> {
+    let method = if body.is_some() { Method::POST } else { Method::GET };
+    send(http, method, url, token, body).await?.json().await.map_err(|e| format!("Unexpected server reply: {e}"))
 }
 
 pub fn server_url(path: &str) -> String {
@@ -89,8 +105,47 @@ pub async fn sign_in(ctx: &Ctx, email: &str, password: &str) -> Result<(), Strin
     save_session(ctx, email, &session)
 }
 
-/// Forgets the account on this device; local data stays.
+/// Ends this device's session on the server too (best effort: offline, it still signs out here).
 pub fn sign_out(ctx: &Ctx) {
+    if let Some(acc) = account(&ctx.store) {
+        let http = ctx.http.clone();
+        spawn(async move {
+            let _ = send(&http, Method::POST, server_url("/logout"), Some(&acc.token), None::<&()>).await;
+        });
+    }
+    forget_account(ctx);
+}
+
+/// Signs every device out of the account, this one included.
+pub async fn sign_out_everywhere(ctx: &Ctx) -> Result<(), String> {
+    let acc = account(&ctx.store).ok_or("Not signed in")?;
+    send(&ctx.http, Method::POST, server_url("/logout/all"), Some(&acc.token), None::<&()>).await?;
+    forget_account(ctx);
+    Ok(())
+}
+
+pub async fn forgot_password(ctx: &Ctx, email: &str) -> Result<(), String> {
+    let req = ForgotPassword { email: email.into() };
+    send(&ctx.http, Method::POST, server_url("/password/forgot"), None, Some(&req)).await.map(drop)
+}
+
+pub async fn reset_password(ctx: &Ctx, email: &str, code: &str, password: &str) -> Result<(), String> {
+    let req = ResetPassword { email: email.into(), code: code.into(), password: password.into() };
+    let session: Session = call(&ctx.http, server_url("/password/reset"), None, Some(&req)).await?;
+    save_session(ctx, email, &session)
+}
+
+/// Deletes the account and everything synced to it; this device keeps its local data.
+pub async fn delete_account(ctx: &Ctx, password: &str) -> Result<(), String> {
+    let acc = account(&ctx.store).ok_or("Not signed in")?;
+    let req = DeleteAccount { password: password.into() };
+    send(&ctx.http, Method::DELETE, server_url("/account"), Some(&acc.token), Some(&req)).await?;
+    forget_account(ctx);
+    Ok(())
+}
+
+/// Forgets the account on this device; local data stays.
+fn forget_account(ctx: &Ctx) {
     for key in ["account", "last_seq", "first_sync", "admin_addons"] {
         if let Err(e) = ctx.store.set_meta(key, None) {
             eprintln!("sign out: {e}");
@@ -176,6 +231,12 @@ pub async fn run(ctx: Ctx) {
         let mut status = ctx.sync_status;
         match sync_now(&ctx, &acc).await {
             Ok(()) => status.set("Synced".into()),
+            // The server's reply when the session is gone (expired, signed out everywhere, password reset).
+            Err(e) if e == "sign in first" => {
+                forget_account(&ctx);
+                status.set("Your session ended. Sign in again.".into());
+                continue;
+            }
             Err(e) => status.set(e),
         }
         if events.is_none() {

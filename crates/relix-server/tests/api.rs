@@ -277,3 +277,91 @@ async fn admins_publish_updates_per_os() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(&res.into_body().collect().await.unwrap().to_bytes()[..], b"archive");
 }
+
+#[tokio::test]
+async fn logout_ends_this_session_and_logout_all_ends_every_one() {
+    let (app, _) = server(false);
+    let a = account(&app, "a@x.com").await;
+    let login = json!({ "email": "a@x.com", "password": "right password" });
+    let b = call(&app, "/login", None, Some(login.clone())).await.1["token"].as_str().unwrap().to_owned();
+    let c = call(&app, "/login", None, Some(login)).await.1["token"].as_str().unwrap().to_owned();
+
+    assert_eq!(call(&app, "/logout", Some(&a), Some(json!({}))).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(call(&app, "/sync/pull?since=0", Some(&a), None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "/sync/pull?since=0", Some(&b), None).await.0, StatusCode::OK, "other devices stay signed in");
+
+    assert_eq!(call(&app, "/logout/all", Some(&b), Some(json!({}))).await.0, StatusCode::NO_CONTENT);
+    for t in [&b, &c] {
+        assert_eq!(call(&app, "/sync/pull?since=0", Some(t), None).await.0, StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn forgotten_passwords_are_reset_with_an_emailed_code() {
+    let (app, outbox) = server(false);
+    let old = account(&app, "a@x.com").await;
+
+    assert_eq!(call(&app, "/password/forgot", None, Some(json!({ "email": "nobody@x.com" }))).await.0, StatusCode::NO_CONTENT);
+    assert!(outbox.lock().unwrap().is_empty(), "unknown emails get nothing, and the reply doesn't say so");
+
+    assert_eq!(call(&app, "/password/forgot", None, Some(json!({ "email": " A@x.com " }))).await.0, StatusCode::NO_CONTENT);
+    let (to, text) = outbox.lock().unwrap().pop().unwrap();
+    assert_eq!(to, "a@x.com");
+    let code: String = text.chars().filter(char::is_ascii_digit).collect();
+
+    let reset = |code: &str, password: &str| json!({ "email": "a@x.com", "code": code, "password": password });
+    assert_eq!(call(&app, "/password/reset", None, Some(reset("000000x", "new password"))).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "/password/reset", None, Some(reset(&code, "short"))).await.0, StatusCode::BAD_REQUEST);
+    let (status, body) = call(&app, "/password/reset", None, Some(reset(&code, "new password"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["token"].is_string(), "reset signs this device in");
+
+    assert_eq!(call(&app, "/sync/pull?since=0", Some(&old), None).await.0, StatusCode::UNAUTHORIZED, "old sessions end");
+    assert_eq!(call(&app, "/password/reset", None, Some(reset(&code, "again password"))).await.0, StatusCode::UNAUTHORIZED, "codes work once");
+    let login = |password: &str| json!({ "email": "a@x.com", "password": password });
+    assert_eq!(call(&app, "/login", None, Some(login("right password"))).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "/login", None, Some(login("new password"))).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn deleting_an_account_needs_its_password_and_removes_everything() {
+    let (app, _) = server(false);
+    let token = account(&app, "a@x.com").await;
+    let push = json!({ "records": [{ "kind": "library", "key": "tt1", "value": "{}" }] });
+    assert_eq!(call(&app, "/sync/push", Some(&token), Some(push)).await.0, StatusCode::OK);
+
+    let delete = |password: &str| json!({ "password": password });
+    assert_eq!(send(&app, "DELETE", "/account", Some(&token), Some(delete("wrong one"))).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, "DELETE", "/account", Some(&token), Some(delete("right password"))).await.0, StatusCode::NO_CONTENT);
+
+    assert_eq!(call(&app, "/sync/pull?since=0", Some(&token), None).await.0, StatusCode::UNAUTHORIZED);
+    let fresh = account(&app, "a@x.com").await;
+    let (_, body) = call(&app, "/sync/pull?since=0", Some(&fresh), None).await;
+    assert_eq!(body["records"], json!([]), "a new account with the same email starts empty");
+}
+
+#[tokio::test]
+async fn signups_are_limited_per_address() {
+    let (app, _) = server(false);
+    let signup = |n: u32| {
+        Request::builder()
+            .uri("/signup")
+            .method("POST")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "203.0.113.7")
+            .body(Body::from(signup_body(&format!("u{n}@x.com")).to_string()))
+            .unwrap()
+    };
+    for n in 0..5 {
+        assert_eq!(app.clone().oneshot(signup(n)).await.unwrap().status(), StatusCode::OK);
+    }
+    assert_eq!(app.clone().oneshot(signup(5)).await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[test]
+fn opens_a_database_from_before_session_expiry() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, account INTEGER NOT NULL); INSERT INTO sessions VALUES ('h', 1);").unwrap();
+    let config = Config { verify_email: false, mailer: Mailer::Log, admin_token: None, update_dir: update_dir() };
+    assert!(app(db, config).is_ok());
+}

@@ -36,6 +36,10 @@ impl Component for Detail {
         let mut streams = use_state(Vec::<(usize, Vec<Stream>)>::new);
         // Until every addon has answered for the chosen video.
         let mut searching = use_state(|| false);
+        // Why the last stream didn't play, shown above the streams.
+        let mut play_error = use_state(|| None::<String>);
+        // The title's details couldn't be loaded from any addon.
+        let mut load_failed = use_state(|| false);
         let (store, profile) = (ctx.store.clone(), ctx.profile.clone());
         let mut watch = use_state(|| store.get::<WatchState>(&profile, "progress", &self.id).ok().flatten());
         let mut watched = use_state(|| {
@@ -57,6 +61,7 @@ impl Component for Detail {
             move |first: Play| {
                 let (Some(m), Some(first_vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
                 let ctx = ctx.clone();
+                play_error.set(None);
                 spawn(async move {
                     let mut playing = ctx.player;
                     // Requests from the player's controls that Relix handles (fullscreen, Esc).
@@ -98,8 +103,12 @@ impl Component for Detail {
                         fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), to_player);
 
                         let (mut p, ended) = match rx.await {
+                            // mpv reports a dead link either as a failed load (-13, MPV_ERROR_LOADING_FAILED) or as an errored end.
+                            Ok(Ok((_, Some(Ended::Failed))) | Err(libmpv2::Error::Raw(-13))) => {
+                                return play_error.set(Some("This stream didn't play: the link is dead or the format isn't supported. Try another one.".into()));
+                            }
                             Ok(Ok(played)) => played,
-                            Ok(Err(e)) => return eprintln!("mpv: {e}"),
+                            Ok(Err(e)) => return play_error.set(Some(format!("The player failed to start: {e}"))),
                             Err(_) => return,
                         };
                         // Skipping to the next episode counts as having finished this one.
@@ -182,6 +191,7 @@ impl Component for Detail {
                         }
                     }
                     eprintln!("no addon answered meta for {kind}/{id}");
+                    load_failed.set(true);
                 });
             }
         });
@@ -218,6 +228,23 @@ impl Component for Detail {
         });
 
         let Some(meta) = meta.read().clone() else {
+            let no_meta_addon = route(&ctx.all_addons(), &ResourceRequest::new("meta", &self.kind, &self.id)).next().is_none();
+            if *load_failed.read() || no_meta_addon && !ctx.addons.read().is_empty() {
+                return rect()
+                    .expanded()
+                    .center()
+                    .spacing(14.)
+                    .child(label().text("Couldn't load this title").font_size(26.).font_weight(FontWeight::BOLD))
+                    .child(paragraph().width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(
+                        if no_meta_addon {
+                            "None of your addons can show details for it."
+                        } else {
+                            "Your addons didn't return its details. Check your internet connection and try again."
+                        },
+                    ))
+                    .child(Focusable::new(button("‹ Back", theme().raised, (255, 255, 255)), |()| RouterContext::get().go_back()))
+                    .into_element();
+            }
             return loading_page().into_element();
         };
         let addons = ctx.all_addons();
@@ -287,6 +314,9 @@ impl Component for Detail {
                 .child(page.wrap(
                     ScrollView::new_controlled(page.controller)
                         .scroll_with_arrows(false)
+                        .maybe_child(play_error.read().clone().map(|e| {
+                            paragraph().width(Size::fill()).font_size(15.).color(crate::theme::ERROR).span(e)
+                        }))
                         .child(stream_panel(has_stream_addons, *searching.read(), groups, play)),
                 ))
                 .into()
