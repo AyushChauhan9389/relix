@@ -47,6 +47,18 @@ const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
 fn main() {
+    // Release builds have no console, so a panic would vanish: keep it in crash.log too.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let dir = data_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let entry = format!("{info}\n{}\n\n", std::backtrace::Backtrace::force_capture());
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(entry.as_bytes())
+        });
+        default_hook(info);
+    }));
     #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe() {
         // Release workflow: `relix-app --bundle <out.exe>` writes the single-file portable build.

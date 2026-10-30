@@ -277,7 +277,8 @@ mp.observe_property("mouse-pos", "native", function(_, m)
     state.last_move = mp.get_time()
     render()
 end)
-mp.register_event("file-loaded", function() state.loaded = true; render() end)
+-- Show the controls once the video appears (5s), so people see they're there.
+mp.register_event("file-loaded", function() state.loaded = true; state.last_move = mp.get_time() + 2; render() end)
 
 -- Hide the controls once the mouse has been still for a while.
 mp.add_periodic_timer(0.5, function()
