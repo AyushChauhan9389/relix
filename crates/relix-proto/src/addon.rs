@@ -302,6 +302,48 @@ pub struct Meta {
     pub genres: Vec<String>,
     #[serde(default)]
     pub videos: Vec<Video>,
+    /// Addons send these as a number or a string.
+    pub imdb_rating: Option<serde_json::Value>,
+    /// People fields come as a list or a single string; newer addons only use `links`.
+    pub cast: Option<serde_json::Value>,
+    pub director: Option<serde_json::Value>,
+    pub writer: Option<serde_json::Value>,
+    #[serde(default)]
+    pub links: Vec<MetaLink>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MetaLink {
+    pub name: String,
+    pub category: String,
+}
+
+impl Meta {
+    pub fn rating(&self) -> Option<String> {
+        match self.imdb_rating.as_ref()? {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Names from `field` (`cast`, `director`, `writer`), else from `links` of `category`.
+    pub fn people(&self, field: &str, category: &str) -> Vec<String> {
+        let value = match field {
+            "cast" => &self.cast,
+            "director" => &self.director,
+            _ => &self.writer,
+        };
+        let names: Vec<String> = match value {
+            Some(serde_json::Value::String(s)) => s.split(',').map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect(),
+            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            _ => vec![],
+        };
+        if !names.is_empty() {
+            return names;
+        }
+        self.links.iter().filter(|l| l.category == category).map(|l| l.name.clone()).collect()
+    }
 }
 
 /// An episode (or other video) of a title.

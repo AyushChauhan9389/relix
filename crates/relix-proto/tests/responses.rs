@@ -62,3 +62,27 @@ fn opensubtitles_subtitles() {
     assert_eq!(r.subtitles[0].lang, "eng");
     assert!(r.subtitles[0].url.starts_with("https://"));
 }
+
+#[test]
+fn meta_people_and_rating() {
+    let r: MetaResponse = fixture("meta_breaking_bad");
+    assert_eq!(r.meta.rating().as_deref(), Some("9.5"));
+    assert_eq!(r.meta.people("cast", "Cast"), ["Bryan Cranston", "Aaron Paul", "Anna Gunn"]);
+    assert_eq!(r.meta.people("writer", "Writers"), ["Vince Gilligan"]);
+    assert!(r.meta.people("director", "Directors").is_empty());
+}
+
+#[test]
+fn people_come_as_a_list_a_string_or_only_links() {
+    let meta = |v: serde_json::Value| -> relix_proto::addon::Meta { serde_json::from_value(v).unwrap() };
+    let base = serde_json::json!({ "id": "tt1", "type": "movie", "name": "X" });
+    let mut as_string = base.clone();
+    as_string["director"] = "Christopher Nolan".into();
+    as_string["imdbRating"] = 8.8.into();
+    assert_eq!(meta(as_string.clone()).people("director", "Directors"), ["Christopher Nolan"]);
+    assert_eq!(meta(as_string).rating().as_deref(), Some("8.8"));
+
+    let mut links_only = base;
+    links_only["links"] = serde_json::json!([{ "name": "Christopher Nolan", "category": "Directors", "url": "stremio:///search?search=Nolan" }]);
+    assert_eq!(meta(links_only).people("director", "Directors"), ["Christopher Nolan"]);
+}

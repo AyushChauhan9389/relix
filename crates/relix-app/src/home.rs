@@ -256,6 +256,10 @@ pub fn title_art(logo: Option<&str>, name: &str) -> Element {
 }
 
 pub fn button(text: &'static str, bg: impl Into<Color>, fg: impl Into<Color>) -> Rect {
+    button_owned(text.to_owned(), bg, fg)
+}
+
+pub fn button_owned(text: String, bg: impl Into<Color>, fg: impl Into<Color>) -> Rect {
     rect()
         .padding(Gaps::new(10., 28., 10., 24.))
         .corner_radius(4.)

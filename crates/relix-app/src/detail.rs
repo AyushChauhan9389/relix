@@ -9,12 +9,11 @@ use relix_proto::addon::{
 use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
-use crate::home::{backdrop, button, chip, layer, title_art};
+use crate::home::{backdrop, button, button_owned, layer, title_art};
 use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
 
-const HEADER_H: f32 = 520.;
 const MUTED: (u8, u8, u8) = (170, 170, 170);
 
 /// A title's page: header, episodes (series only) and the stream list for the chosen video.
@@ -170,15 +169,9 @@ impl Component for Detail {
                     // The first addon in list order that answers wins, like Stremio.
                     for (_, url) in route(&addons, &req) {
                         if let Ok(r) = get::<MetaResponse>(ctx.http.clone(), url).await {
-                            // Reopen where the user left off, else the first season.
+                            // Open on the season the user left off in (Resume opens the episode itself).
                             let resume = watch.peek().as_ref().and_then(|w| r.meta.videos.iter().find(|v| v.id == w.video_id).cloned());
-                            match resume {
-                                Some(v) => {
-                                    season.set(v.season);
-                                    video.set(Some(v.id));
-                                }
-                                None => season.set(seasons(&r.meta.videos).first().map(|(s, _)| *s)),
-                            }
+                            season.set(resume.and_then(|v| v.season).or_else(|| seasons(&r.meta.videos).first().map(|(s, _)| *s)));
                             if seasons(&r.meta.videos).is_empty() {
                                 video.set(Some(id.clone()));
                             }
@@ -239,65 +232,207 @@ impl Component for Detail {
         let watched_now = watched.read().clone();
         let current = watch.read().clone();
 
-        page.wrap(ScrollView::new_controlled(page.controller).scroll_with_arrows(false)
-            .child(header(&meta, *in_list.read(), toggle_list))
+        let is_series = !all_seasons.is_empty();
+        // Series: the panel shows episodes until one is picked, then its streams.
+        let showing_streams = picked.is_some();
+        let picked_video = picked.as_ref().and_then(|id| meta.videos.iter().find(|v| &v.id == id)).cloned();
+
+        // The big button: resume where you were, else start from the beginning.
+        let (play_label, on_play): (String, Box<dyn FnMut(())>) = if is_series {
+            let target = current
+                .as_ref()
+                .and_then(|w| meta.videos.iter().find(|v| v.id == w.video_id))
+                .or_else(|| all_seasons.iter().find(|(n, _)| *n > 0).and_then(|(_, eps)| eps.first()))
+                .cloned();
+            let started = current.as_ref().is_some_and(|w| w.position > 0. || w.up_next);
+            let label = match &target {
+                Some(v) => format!("{} {}", if started { "Resume" } else { "Play" }, short_label(v)),
+                None => "Play".into(),
+            };
+            (label, Box::new(move |()| {
+                if let Some(v) = &target {
+                    season.set(v.season);
+                    video.set(Some(v.id.clone()));
+                }
+            }))
+        } else {
+            let first = groups.iter().find_map(|(i, _, list)| list.iter().find_map(|s| Play::of(s, *i)));
+            let resumes = current.as_ref().is_some_and(|w| w.position > 0. && !w.finished());
+            let play = play.clone();
+            (if resumes { "Resume".into() } else { "Play".into() }, Box::new(move |()| {
+                if let Some(req) = first.clone() {
+                    play.call(req);
+                }
+            }))
+        };
+
+        let panel: Element = if showing_streams {
+            rect()
+                .expanded()
+                .spacing(12.)
+                .maybe(is_series, |el| {
+                    el.child(
+                        rect()
+                            .horizontal()
+                            .spacing(12.)
+                            .cross_align(Alignment::Center)
+                            .child(Focusable::new(label().text("‹ Episodes").font_size(15.).color(MUTED), move |()| video.set(None)))
+                            .maybe_child(picked_video.as_ref().map(|v| {
+                                label().text(short_label(v)).font_size(16.).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis)
+                            })),
+                    )
+                })
+                .child(page.wrap(
+                    ScrollView::new_controlled(page.controller)
+                        .scroll_with_arrows(false)
+                        .child(stream_panel(has_stream_addons, *searching.read(), groups, play)),
+                ))
+                .into()
+        } else {
+            rect()
+                .expanded()
+                .spacing(12.)
+                .child(season_switcher(&all_seasons, current_season, season))
+                .child(page.wrap(
+                    ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
+                        rect().width(Size::fill()).spacing(6.).children(episodes.iter().map(|ep| {
+                            let id = ep.id.clone();
+                            let progress = current.as_ref().filter(|w| w.video_id == ep.id && !w.up_next).map(WatchState::fraction);
+                            let row = episode_row(ep, watched_now.contains(&ep.id), progress);
+                            Focusable::new(row, move |()| video.set(Some(id.clone()))).into_element()
+                        })),
+                    ),
+                ))
+                .into()
+        };
+
+        rect()
+            .expanded()
+            .child(backdrop(meta.background.as_deref()).layer(1))
+            // Darken the whole picture so text and the panel read on any backdrop.
+            .child(layer().layer(2).background((0, 0, 0, 0.45)))
             .child(
-                rect()
+                layer()
+                    .layer(5)
                     .horizontal()
                     .content(Content::Flex)
-                    .padding(Gaps::new(0., 48., 48., 48.))
-                    .spacing(32.)
-                    .maybe_child((!all_seasons.is_empty()).then(|| {
+                    .padding(Gaps::new(92., 40., 32., 48.))
+                    .spacing(40.)
+                    .child(info_column(&meta, *in_list.read(), toggle_list, play_label, on_play))
+                    .child(
                         rect()
-                            .width(Size::flex(1.))
-                            .spacing(12.)
-                            .child(
-                                rect().horizontal().spacing(8.).children(all_seasons.iter().map(|(n, _)| {
-                                    let n = *n;
-                                    let active = Some(n) == current_season;
-                                    let text = if n == 0 { "Specials".into() } else { format!("Season {n}") };
-                                    Focusable { radius: 16., ..Focusable::new(chip(text, active), move |()| season.set(Some(n))) }
-                                        .into_element()
-                                })),
-                            )
-                            .children(episodes.iter().map(|ep| {
-                                let id = ep.id.clone();
-                                let progress = current.as_ref().filter(|w| w.video_id == ep.id && !w.up_next).map(WatchState::fraction);
-                                let row = episode_row(ep, picked.as_deref() == Some(&ep.id), watched_now.contains(&ep.id), progress);
-                                Focusable::new(row, move |()| {
-                                    video.set(Some(id.clone()))
-                                })
-                                .into_element()
-                            }))
-                    }))
-                    .child(stream_panel(picked.is_some(), has_stream_addons, *searching.read(), groups, play)),
-            ))
+                            .width(Size::px(460.))
+                            .height(Size::fill())
+                            .padding(Gaps::new_all(16.))
+                            .corner_radius(12.)
+                            .background((12, 12, 12, 0.82))
+                            .child(panel),
+                    ),
+            )
             .into_element()
     }
 }
 
-fn header(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static) -> Rect {
-    let info: Vec<String> = [meta.release_info.clone(), meta.runtime.clone(), (!meta.genres.is_empty()).then(|| meta.genres.join(" · "))]
-        .into_iter()
-        .flatten()
-        .collect();
+/// "‹ Season 2 ›": steps through the seasons (specials last), like Stremio's picker.
+fn season_switcher(all: &[(u32, Vec<Video>)], current: Option<u32>, mut season: State<Option<u32>>) -> Rect {
+    let i = all.iter().position(|(n, _)| Some(*n) == current).unwrap_or(0);
+    let name = |n: u32| if n == 0 { "Specials".to_owned() } else { format!("Season {n}") };
+    let step = |to: Option<u32>, glyph: &'static str| {
+        let enabled = to.is_some();
+        Focusable {
+            radius: 18.,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(36.))
+                    .height(Size::px(36.))
+                    .corner_radius(18.)
+                    .center()
+                    .background((60, 60, 60, if enabled { 1. } else { 0.35 }))
+                    .child(label().text(glyph).font_size(20.)),
+                move |()| {
+                    if to.is_some() {
+                        season.set(to);
+                    }
+                },
+            )
+        }
+    };
     rect()
+        .horizontal()
+        .content(Content::Flex)
         .width(Size::fill())
-        .height(Size::px(HEADER_H))
-        .overflow(Overflow::Clip)
-        .child(backdrop(meta.background.as_deref()).layer(1))
+        .cross_align(Alignment::Center)
+        .spacing(10.)
+        .child(step(i.checked_sub(1).map(|p| all[p].0), "‹"))
         .child(
-            layer()
-                .layer(5)
-                .padding(Gaps::new(96., 48., 32., 48.))
-                .spacing(16.)
-                .main_align(Alignment::End)
-                .child(Focusable::new(label().text("‹ Back").font_size(16.).color(MUTED), |()| RouterContext::get().go_back()))
-                .child(title_art(meta.logo.as_deref(), &meta.name))
-                .child(label().text(info.join("   ")).font_size(16.).color((70, 211, 105)))
-                .maybe_child(meta.description.clone().map(|d| {
-                    paragraph().width(Size::px(640.)).max_lines(4).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
-                }))
+            label()
+                .width(Size::flex(1.))
+                .text_align(TextAlign::Center)
+                .text(all.get(i).map(|(n, _)| name(*n)).unwrap_or_default())
+                .font_size(18.)
+                .font_weight(FontWeight::BOLD),
+        )
+        .child(step(all.get(i + 1).map(|(n, _)| *n), "›"))
+}
+
+/// "S1:E2 Cat's in the Bag..." for an episode, its title otherwise.
+fn short_label(v: &Video) -> String {
+    episode_label(v)
+}
+
+/// The title's details on the left of the page.
+fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static, play_label: String, on_play: Box<dyn FnMut(())>) -> Rect {
+    let facts: Vec<String> = [meta.release_info.clone(), meta.runtime.clone()].into_iter().flatten().collect();
+    let people = |title: &str, names: Vec<String>| {
+        (!names.is_empty()).then(|| {
+            paragraph()
+                .max_lines(2)
+                .text_overflow(TextOverflow::Ellipsis)
+                .font_size(15.)
+                .span(Span::new(format!("{title}  ")).color(MUTED))
+                .span(names.into_iter().take(5).collect::<Vec<_>>().join(", "))
+        })
+    };
+    let directors = meta.people("director", "Directors");
+    let (makers_title, makers) = if directors.is_empty() { ("Created by", meta.people("writer", "Writers")) } else { ("Directed by", directors) };
+    let mut on_play = on_play;
+
+    rect()
+        .width(Size::flex(1.))
+        .height(Size::fill())
+        .spacing(16.)
+        .main_align(Alignment::End)
+        .child(Focusable::new(label().text("‹ Back").font_size(16.).color(MUTED), |()| RouterContext::get().go_back()))
+        .child(title_art(meta.logo.as_deref(), &meta.name))
+        .child(
+            rect()
+                .horizontal()
+                .spacing(14.)
+                .cross_align(Alignment::Center)
+                .child(label().text(facts.join("  ·  ")).font_size(16.).color((220, 220, 220)))
+                .maybe_child(meta.rating().map(|r| label().text(format!("★ {r}")).font_size(16.).font_weight(FontWeight::BOLD).color((245, 197, 24)))),
+        )
+        .maybe(!meta.genres.is_empty(), |el| {
+            el.child(rect().horizontal().spacing(8.).children(meta.genres.iter().take(4).map(|g| {
+                rect()
+                    .padding(Gaps::new(4., 12., 4., 12.))
+                    .corner_radius(14.)
+                    .border(Border::new().fill((255, 255, 255, 0.35)).width(1.))
+                    .child(label().text(g.clone()).font_size(13.))
+                    .into_element()
+            })))
+        })
+        .maybe_child(meta.description.clone().map(|d| {
+            paragraph().width(Size::px(640.)).max_lines(5).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
+        }))
+        .maybe_child(people("Cast", meta.people("cast", "Cast")).map(|p| p.width(Size::px(640.))))
+        .maybe_child(people(makers_title, makers).map(|p| p.width(Size::px(640.))))
+        .child(
+            rect()
+                .horizontal()
+                .spacing(12.)
+                .padding(Gaps::new(8., 0., 0., 0.))
+                .child(Focusable::new(button_owned(format!("►  {play_label}"), (255, 255, 255), (0, 0, 0)), move |()| on_play(())))
                 .child(Focusable::new(
                     button(if in_list { "✓ My List" } else { "+ My List" }, (109, 109, 110, 0.7), (255, 255, 255)),
                     toggle_list,
@@ -305,42 +440,57 @@ fn header(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static) -> 
         )
 }
 
-fn episode_row(ep: &Video, picked: bool, watched: bool, progress: Option<f32>) -> Rect {
+fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
+    let (w, h) = (128., 72.);
     let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
-        Some(url) => ImageViewer::new(url).width(Size::px(176.)).height(Size::px(99.)).error_renderer(|_| rect().into()).into(),
-        None => rect().width(Size::px(176.)).height(Size::px(99.)).background((50, 50, 50)).into(),
+        Some(url) => ImageViewer::new(url).width(Size::px(w)).height(Size::px(h)).error_renderer(|_| rect().into()).into(),
+        None => rect().width(Size::px(w)).height(Size::px(h)).background((50, 50, 50)).into(),
     };
     rect()
         .horizontal()
         .content(Content::Flex)
         .width(Size::fill())
-        .padding(Gaps::new_all(12.))
-        .spacing(16.)
-        .corner_radius(6.)
-        .background(if picked { (51, 51, 51) } else { (24, 24, 24) })
-        .child(rect().corner_radius(4.).overflow(Overflow::Clip).child(thumb))
+        .padding(Gaps::new_all(8.))
+        .spacing(12.)
+        .corner_radius(8.)
         .child(
             rect()
-                .width(Size::flex(1.))
-                .spacing(6.)
-                .child(
-                    label()
-                        .text(format!("{}. {}{}", ep.episode.unwrap_or_default(), ep.title(), if watched { "  ✓" } else { "" }))
-                        .font_size(17.)
-                        .font_weight(FontWeight::BOLD),
-                )
+                .spacing(3.)
+                .child(rect().corner_radius(4.).overflow(Overflow::Clip).child(thumb))
                 .map(progress, |el, p| {
                     el.child(
                         rect()
-                            .width(Size::px(240.))
-                            .height(Size::px(4.))
+                            .width(Size::px(w))
+                            .height(Size::px(3.))
                             .corner_radius(2.)
                             .background((90, 90, 90))
-                            .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
+                            .child(rect().width(Size::px(w * p.clamp(0., 1.))).height(Size::fill()).corner_radius(2.).background((229, 9, 20))),
                     )
-                })
+                }),
+        )
+        .child(
+            rect()
+                .width(Size::flex(1.))
+                .spacing(4.)
+                .child(
+                    rect()
+                        .horizontal()
+                        .content(Content::Flex)
+                        .width(Size::fill())
+                        .child(
+                            label()
+                                .width(Size::flex(1.))
+                                .text(format!("{}. {}", ep.episode.unwrap_or_default(), ep.title()))
+                                .font_size(15.)
+                                .font_weight(FontWeight::BOLD)
+                                .max_lines(1)
+                                .text_overflow(TextOverflow::Ellipsis),
+                        )
+                        .maybe(watched, |el| el.child(label().text("✓").font_size(15.).color((70, 211, 105)))),
+                )
+                .maybe_child(ep.released.as_deref().and_then(|d| d.get(..10)).map(|d| label().text(d.to_owned()).font_size(12.).color(MUTED)))
                 .maybe_child(ep.overview.clone().map(|o| {
-                    paragraph().max_lines(3).text_overflow(TextOverflow::Ellipsis).font_size(14.).color(MUTED).span(o)
+                    paragraph().max_lines(2).text_overflow(TextOverflow::Ellipsis).font_size(13.).color(MUTED).span(o)
                 })),
         )
 }
@@ -412,14 +562,11 @@ async fn binge_stream(ctx: &Ctx, kind: &str, video_id: &str, prev_addon: usize, 
     Play::of(stream, addon)
 }
 
-fn stream_panel(picked: bool, has_stream_addons: bool, searching: bool, groups: Vec<(usize, String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
-    let panel = rect().width(Size::px(460.)).spacing(10.).child(label().text("Streams").font_size(22.).font_weight(FontWeight::BOLD));
-    let note = |text: &'static str| label().text(text).font_size(15.).color(MUTED);
+fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
+    let panel = rect().width(Size::fill()).spacing(10.);
+    let note = |text: &'static str| paragraph().width(Size::fill()).font_size(15.).color(MUTED).span(text);
     if !has_stream_addons {
         return panel.child(note("No stream addons installed. Add one in Addons."));
-    }
-    if !picked {
-        return panel.child(note("Pick an episode to see its streams."));
     }
     if groups.is_empty() {
         return panel.child(note(if searching {
