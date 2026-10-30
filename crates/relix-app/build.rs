@@ -3,6 +3,9 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    // The logo as the exe's icon in Explorer (the window icon is set at runtime).
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    winresource::WindowsResource::new().set_icon("assets/icon.ico").compile().expect("embed the exe icon");
     let vendor = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/mpv");
     println!("cargo:rustc-link-search=native={}", vendor.display());
     println!("cargo:rerun-if-changed={}", vendor.join("mpv.lib").display());

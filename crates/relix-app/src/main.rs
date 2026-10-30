@@ -92,6 +92,7 @@ fn main() {
         LaunchConfig::new().with_window(
             WindowConfig::new(app)
                 .with_title("Relix")
+                .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon.png")))
                 .with_size(1440., 900.)
                 .with_window_handle(|window| {
                     let _ = NATIVE_WINDOW.set(native_id(window));

@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Relix: every show, every movie, one fast player</title>
 <meta name="description" content="Relix is a Netflix-style desktop app for Stremio addons. Native, GPU-fast playback, synced across your devices.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23e50914'/%3E%3Cpath d='M12 9l12 7-12 7z' fill='white'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:title" content="Relix: every show, every movie, one fast player">
+<meta property="og:description" content="A Netflix-style desktop app for Stremio addons. Native playback, synced across every device.">
+<meta property="og:image" content="https://relix.carbonkit.tech/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -42,7 +47,7 @@
   nav.scrolled { border-color: var(--line); }
   nav .wrap { height: 76px; display: flex; align-items: center; gap: 36px; }
   .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 22px; letter-spacing: -.04em; }
-  .logo svg { width: 30px; height: 30px; }
+  .logo img { width: 38px; height: 38px; }
   .links { display: flex; gap: 28px; font-size: 17px; font-weight: 500; }
   .links a:hover { opacity: .6; }
   .right { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 17px; font-weight: 500; }
@@ -165,7 +170,7 @@
 <nav id="nav">
   <div class="wrap">
     <a class="logo" href="#top" aria-label="Relix home">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#111"/><path d="M12 9l12 7-12 7z" fill="#fff"/></svg>
+      <img src="img/logo.png" alt="" width="38" height="38">
       Relix
     </a>
     <div class="links">
@@ -289,12 +294,13 @@
 
   <section class="cta wrap" id="download">
     <h2 class="rise">Free. Fast.<br>Ready in a minute.</h2>
-    <p class="rise">Windows 10 and 11 · Portable, no installer · Updates itself</p>
+    <p class="rise">Windows 10 and 11 · Linux · Portable, no installer · Updates itself</p>
     <div class="actions rise">
       <a class="btn download" href="#download">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"/></svg>
         Download for Windows
       </a>
+      <a class="btn light download-linux" href="#download">Download for Linux</a>
     </div>
   </section>
 </main>
@@ -307,14 +313,17 @@
 </footer>
 
 <script>
-  // Every Download button points at the newest build the server lists.
-  fetch("/update/latest")
-    .then(r => r.ok ? r.json() : Promise.reject())
-    .then(m => document.querySelectorAll(".download").forEach(a => {
+  // Every Download button points at the newest build the server lists for its OS.
+  const manifest = url => fetch(url).then(r => r.ok ? r.json() : Promise.reject());
+  const link = (latest, selector) => latest
+    .then(m => document.querySelectorAll(selector).forEach(a => {
       a.href = "/update/files/" + encodeURIComponent(m.file);
       a.setAttribute("download", "");
     }))
     .catch(() => {});
+  // Windows builds published before per-OS manifests only have latest.json.
+  link(manifest("/update/latest?os=windows").catch(() => manifest("/update/latest")), ".download");
+  link(manifest("/update/latest?os=linux"), ".download-linux");
 
   const nav = document.getElementById("nav");
   const onScroll = () => nav.classList.toggle("scrolled", scrollY > 40);
