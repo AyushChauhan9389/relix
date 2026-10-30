@@ -24,7 +24,7 @@ mod video;
 mod theme;
 
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use freya::prelude::*;
 use freya::router::*;
@@ -80,17 +80,6 @@ fn main() {
         }
     }
 
-    // shortcut: in-window video test (`--video-spike <url>`) until the player moves to video.rs.
-    if let Some(url) = std::env::args().skip_while(|a| a != "--video-spike").nth(1) {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let _rt = rt.enter();
-        let window = WindowConfig::new(move || VideoSpike { url: url.clone() })
-            .with_title("Relix video test")
-            .with_size(1280., 720.)
-            .with_renderer(RendererPreference::OpenGl)
-            .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs });
-        return launch(LaunchConfig::new().with_window(window));
-    }
     // ponytail: playback check without the UI:
     // `--play <url> [--subs movie/<imdb id>] [--title T] [--episode E] [--has-next] [--start secs]`.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
@@ -140,9 +129,8 @@ fn main() {
                 .with_title("Relix")
                 .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon.png")))
                 .with_size(1440., 900.)
-                .with_window_handle(|window| {
-                    let _ = NATIVE_WINDOW.set(native_id(window));
-                })
+                // Video is drawn through OpenGL (video.rs), so Freya renders with it everywhere.
+                .with_renderer(RendererPreference::OpenGl)
                 .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs }),
         ),
     )
@@ -162,25 +150,6 @@ fn offscreen(attrs: freya::winit::window::WindowAttributes) -> freya::winit::win
         attrs.with_skip_taskbar(true)
     };
     attrs
-}
-
-/// Relix's own window as mpv's `wid`, so video plays inside it. `None` where mpv can't embed.
-static NATIVE_WINDOW: OnceLock<Option<i64>> = OnceLock::new();
-
-pub fn native_window() -> Option<i64> {
-    NATIVE_WINDOW.get().copied().flatten()
-}
-
-fn native_id(window: &freya::winit::window::Window) -> Option<i64> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    match window.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as i64),
-        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as i64),
-        RawWindowHandle::Xlib(h) => Some(h.window as i64),
-        RawWindowHandle::Xcb(h) => Some(h.window.get() as i64),
-        // Wayland has no foreign-window embedding; mpv opens its own window there.
-        _ => None,
-    }
 }
 
 /// Whether `exe` is the single-file portable build (libmpv appended), which keeps its data next to itself.
@@ -237,6 +206,9 @@ pub struct Ctx {
     pub sync_status: State<String>,
     /// The running player, while something plays.
     pub player: State<Option<std::sync::mpsc::Sender<player::ToPlayer>>>,
+    /// The playing video, drawn full-window, and a counter that changes with each new frame.
+    pub video: State<Option<Rc<video::VideoRenderer>>>,
+    pub video_frame: State<u64>,
     pub fullscreen: State<bool>,
     /// Netflix or Stremio look (synced setting).
     pub look: State<Look>,
@@ -301,6 +273,21 @@ impl Ctx {
         });
     }
 
+    /// Shows a player's video full-window; called with the mpv the player hands over.
+    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut frame = self.video_frame;
+        spawn(async move {
+            while rx.recv().await.is_some() {
+                *frame.write() += 1;
+            }
+        });
+        let mut video = self.video;
+        video.set(Some(Rc::new(video::VideoRenderer::new(mpv, move || {
+            let _ = tx.send(());
+        }))));
+    }
+
     /// Esc while playing: leave fullscreen first, then stop.
     pub fn player_escape(&self) {
         if *self.fullscreen.peek() {
@@ -351,6 +338,8 @@ fn app() -> impl IntoElement {
     let autoplay_title = use_state(|| None);
     let sync_status = use_state(String::new);
     let player = use_state(|| None);
+    let video = use_state(|| None);
+    let video_frame = use_state(|| 0);
     let fullscreen = use_state(|| false);
     let admin_addons = use_state(|| {
         let cached = store.meta("admin_addons").ok().flatten();
@@ -371,6 +360,8 @@ fn app() -> impl IntoElement {
         sync: Arc::default(),
         sync_status,
         player,
+        video,
+        video_frame,
         fullscreen,
         look,
         widgets,
@@ -522,10 +513,12 @@ impl Component for Shell {
                     ctx.toggle_fullscreen();
                     return;
                 }
-                // While video plays, Relix's keys only stop it (mpv's controls take the rest).
+                // While video plays, Esc stops it and the rest go to mpv's controls.
                 if ctx.player.peek().is_some() {
                     if e.key == Key::Named(NamedKey::Escape) {
                         ctx.player_escape();
+                    } else if let (Some(v), Some(name)) = (ctx.video.peek().as_ref(), mpv_key(&e.key)) {
+                        v.key(&name);
                     }
                     return;
                 }
@@ -570,42 +563,44 @@ impl Component for Shell {
             })
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
-            .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::OverlayLevel(3))))
+            .maybe(playing, |el| el.child(player_layer(&ctx).layer(Layer::OverlayLevel(3))))
     }
 }
 
-#[derive(PartialEq)]
-struct VideoSpike {
-    url: String,
+/// The playing video over everything, passing the mouse to mpv's controls.
+fn player_layer(ctx: &Ctx) -> Rect {
+    let layer = home::layer().background((0, 0, 0));
+    let Some(r) = ctx.video.read().clone() else { return layer };
+    let (moved, down, up) = (r.clone(), r.clone(), r.clone());
+    layer.child(
+        video::video(r, *ctx.video_frame.read())
+            .width(Size::fill())
+            .height(Size::fill())
+            .on_mouse_move(move |e: Event<MouseEventData>| moved.mouse_move(e.element_location.x, e.element_location.y))
+            .on_mouse_down(move |e: Event<MouseEventData>| {
+                if e.button == Some(MouseButton::Left) {
+                    down.mouse_button(true);
+                }
+            })
+            .on_mouse_up(move |e: Event<MouseEventData>| {
+                if e.button == Some(MouseButton::Left) {
+                    up.mouse_button(false);
+                }
+            }),
+    )
 }
 
-impl Component for VideoSpike {
-    fn render(&self) -> impl IntoElement {
-        let mut frame = use_state(|| 0u64);
-        let renderer = use_hook({
-            let url = self.url.clone();
-            move || {
-                let mpv = libmpv2::Mpv::with_initializer(|init| {
-                    init.set_option("vo", "libmpv")?;
-                    init.set_option("hwdec", "auto-safe")?;
-                    if test_offscreen() {
-                        init.set_option("mute", "yes")?;
-                    }
-                    Ok(())
-                })
-                .expect("mpv");
-                mpv.command("loadfile", &[&url]).expect("loadfile");
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                spawn(async move {
-                    while rx.recv().await.is_some() {
-                        *frame.write() += 1;
-                    }
-                });
-                Rc::new(video::VideoRenderer::new(std::sync::Arc::new(mpv), move || {
-                    let _ = tx.send(());
-                }))
-            }
-        });
-        rect().expanded().background((0, 0, 0)).child(video::video(renderer, *frame.read()).width(Size::fill()).height(Size::fill()))
-    }
+/// mpv's name for a key Relix passes to the player controls.
+fn mpv_key(key: &Key) -> Option<String> {
+    Some(match key {
+        Key::Character(c) if c == " " => "SPACE".into(),
+        Key::Named(NamedKey::ArrowLeft) => "LEFT".into(),
+        Key::Named(NamedKey::ArrowRight) => "RIGHT".into(),
+        Key::Named(NamedKey::ArrowUp) => "UP".into(),
+        Key::Named(NamedKey::ArrowDown) => "DOWN".into(),
+        Key::Named(NamedKey::Enter) => "ENTER".into(),
+        Key::Character(c) if c.chars().count() == 1 => c.to_string(),
+        _ => return None,
+    })
 }
+

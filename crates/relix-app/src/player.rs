@@ -1,6 +1,7 @@
 //! Playback with mpv drawing inside Relix's window (ADR 0002).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use libmpv2::{Format, Mpv, events::Event, events::PropertyData};
@@ -93,8 +94,9 @@ pub fn sub_add_args(subs: &[Subtitle], addon: &str) -> Vec<[String; 4]> {
 
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
-/// With `window` (a native window id) mpv draws inside that window; without one (Linux Wayland,
-/// the `--play` check) it opens its own. `headers` are an addon stream's `proxyHeaders.request`.
+/// With `video`, mpv renders for Relix to draw in its own window (video.rs): it's handed the
+/// player as soon as it exists. Without it (the `--play` check) mpv opens its own window.
+/// `headers` are an addon stream's `proxyHeaders.request`.
 /// `inbox` brings subtitles (attached once the file loads, so they never delay playback) and stop
 /// requests; requests from the controls that the app handles go out through `outbox`.
 pub fn play(
@@ -102,7 +104,7 @@ pub fn play(
     headers: &HashMap<String, String>,
     start: f64,
     overlay: &Overlay,
-    window: Option<i64>,
+    video: Option<Box<dyn FnOnce(Arc<Mpv>) + Send>>,
     inbox: Receiver<ToPlayer>,
     outbox: impl Fn(Message),
 ) -> libmpv2::Result<(Progress, Option<Ended>)> {
@@ -112,20 +114,22 @@ pub fn play(
     {
         eprintln!("writing player controls: {e}");
     }
-    let mpv = Mpv::with_initializer(|init| {
-        init.set_option("vo", "gpu-next")?;
+    let embedded = video.is_some();
+    let mpv = Arc::new(Mpv::with_initializer(|init| {
         init.set_option("hwdec", "auto-safe")?;
-        init.set_option("force-window", "immediate")?;
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
         }
-        if let Some(id) = window {
-            init.set_option("wid", id)?;
+        if embedded {
+            init.set_option("vo", "libmpv")?;
+        } else {
+            init.set_option("vo", "gpu-next")?;
+            init.set_option("force-window", "immediate")?;
         }
         if crate::test_offscreen() {
             init.set_option("mute", "yes")?;
-            // A separate mpv window (no `wid`) also stays out of sight.
+            // mpv's own window (the `--play` check) also stays out of sight.
             init.set_option("geometry", "1280x720+-20000+-20000")?;
             init.set_option("focus-on", "never")?;
         }
@@ -133,7 +137,7 @@ pub fn play(
         init.set_option("osc", "no")?;
         init.set_option("osd-bar", "no")?;
         init.set_option("scripts", skin.to_string_lossy().as_ref())?;
-        init.set_option("script-opts", skin_opts(overlay, window.is_some()).as_str())?;
+        init.set_option("script-opts", skin_opts(overlay, embedded).as_str())?;
         init.set_option("input-default-bindings", "yes")?;
         init.set_option("input-vo-keyboard", "yes")?;
         init.set_option("title", if overlay.title.is_empty() { "Relix".to_owned() } else { format!("{} · Relix", overlay.title) }.as_str())?;
@@ -146,7 +150,10 @@ pub fn play(
             init.set_option("http-header-fields", fields.join(",").as_str())?;
         }
         Ok(())
-    })?;
+    })?);
+    if let Some(hand_over) = video {
+        hand_over(mpv.clone());
+    }
 
     let played = run(&mpv, url, &inbox, &outbox);
     // Dropping our handle only detaches it; the controls script keeps the core alive. Quit it.

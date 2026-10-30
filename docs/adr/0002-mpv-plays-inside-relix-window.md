@@ -1,16 +1,19 @@
-# mpv draws inside Relix's window
+# mpv renders into Relix's own picture
 
-Video plays inside Relix's own window: Relix hands mpv its native window (`wid`: HWND on Windows, NSView on macOS, X11 window on Linux) and mpv renders as a child surface there, with gpu-next, hardware decoding and HDR intact. Relix's Netflix-style controls are a Lua script drawn on mpv's OSD; fullscreen and Esc are forwarded to Relix (`script-message`) because embedded mpv can't go fullscreen itself.
+Video plays inside Relix's window on every platform, Wayland included. mpv renders each frame through its render API (`vo=libmpv`) into an OpenGL framebuffer owned by Skia, and a custom Freya element (`video.rs`) draws it like any image. Freya is told to use its OpenGL renderer for this. Relix's Netflix-style controls are still the Lua script drawn on mpv's OSD; Relix forwards the mouse (`mouse`, `keydown/keyup MBTN_LEFT`) and keys (`keypress`) to mpv, and handles Esc, fullscreen and next episode itself (`script-message`).
 
-Changed 2026-10-30: this replaced a separate mpv window, which users found jarring. Wayland has no foreign-window embedding, so there mpv still opens its own window.
+Changed 2026-10-30: this replaced a separate mpv window, which users found jarring.
+Changed 2026-10-31: this replaced window embedding (`wid`), which Wayland doesn't allow (mpv opened its own window there, and Back crashed on Linux).
 
 ## Considered Options
 
 - Separate mpv window (the original choice): simplest, but playback "leaves" the app.
-- CPU frames drawn by Freya/Skia: works on Wayland and allows Freya-drawn controls, but copies every frame through the CPU (heavy at 4K, no HDR).
-- Shared GL texture: forces Freya onto OpenGL, impossible on macOS (Metal).
+- Window embedding (`wid`): native mpv output with HDR, but no Wayland support.
+- CPU frames drawn by Freya/Skia: works everywhere, but copies every frame through the CPU (heavy at 4K, no HDR).
 
 ## Consequences
 
-- Relix's UI can't draw over the video; player controls live in the Lua script.
-- libmpv's handle drop only detaches; the player sends `quit` explicitly or the core (kept alive by the script) plays on.
+- Freya renders with OpenGL everywhere (no Vulkan/Metal). macOS's OpenGL is deprecated but still present.
+- HDR output and hardware-decode zero-copy depend on the GL interop mpv finds; check 4K/HDR when it matters.
+- Linux finds GL functions through EGL (Freya's default there); a macOS build needs a CGL lookup in `video.rs`.
+- The render context must be freed before mpv is destroyed: `VideoRenderer` owns both in that order.

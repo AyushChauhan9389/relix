@@ -4120,7 +4120,6 @@ dependencies = [
  "freya-core",
  "freya-skia-safe",
  "libmpv2",
- "raw-window-handle",
  "relix-proto",
  "reqwest 0.13.5",
  "rusqlite",

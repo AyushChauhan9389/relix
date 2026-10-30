@@ -115,9 +115,20 @@ impl Component for Detail {
                             accent: crate::theme::accent_bgr(),
 };
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
+                        // The player hands its mpv over from its thread; the video is drawn here.
+                        let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
+                        spawn({
+                            let ctx = ctx.clone();
+                            async move {
+                                if let Some(mpv) = mpv_rx.recv().await {
+                                    ctx.show_video(mpv);
+                                }
+                            }
+                        });
                         // mpv blocks until playback stops, so it gets its own thread.
                         std::thread::spawn(move || {
-                            let played = player::play(&url, &headers, start, &overlay, crate::native_window(), inbox, |msg| {
+                            let video = Box::new(move |mpv| drop(to_ui.send(mpv)));
+                            let played = player::play(&url, &headers, start, &overlay, Some(video), inbox, |msg| {
                                 let _ = to_app.send(msg);
                             });
                             let _ = tx.send(played);
@@ -164,6 +175,8 @@ impl Component for Detail {
                     }
                     .await;
                     playing.set(None);
+                    let mut video = ctx.video;
+                    video.set(None);
                     starting.set(false);
                 });
             }
