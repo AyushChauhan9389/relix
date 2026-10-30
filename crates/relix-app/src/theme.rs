@@ -113,9 +113,3 @@ pub fn widgets(look: Look) -> Theme {
     t.colors.background = p.bg.into();
     t
 }
-
-/// The accent as mpv's ASS colour (BGR hex), for the player controls.
-pub fn accent_bgr() -> String {
-    let (r, g, b) = theme().accent;
-    format!("{b:02X}{g:02X}{r:02X}")
-}

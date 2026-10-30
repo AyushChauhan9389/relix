@@ -4,7 +4,7 @@
 
 use std::any::Any;
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::ffi::{CString, c_void};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,8 +23,6 @@ pub struct VideoRenderer {
     gl: RefCell<Option<Gl>>,
     mpv: Arc<Mpv>,
     on_frame: Arc<dyn Fn() + Send + Sync>,
-    /// Whether the left button is held, so a release outside still reaches mpv once.
-    pressed: Cell<bool>,
 }
 
 struct Gl {
@@ -36,25 +34,12 @@ impl VideoRenderer {
     /// `mpv` must be created with `vo=libmpv`. `on_frame` runs on mpv's thread whenever a new frame
     /// is ready; it should make the UI repaint the video element.
     pub fn new(mpv: Arc<Mpv>, on_frame: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { gl: RefCell::new(None), mpv, on_frame: Arc::new(on_frame), pressed: Cell::new(false) }
+        Self { gl: RefCell::new(None), mpv, on_frame: Arc::new(on_frame) }
     }
 
-    /// The pointer moved to `(x, y)` pixels inside the video: mpv's controls show and track it.
-    pub fn mouse_move(&self, x: f64, y: f64) {
-        let _ = self.mpv.command("mouse", &[&(x as i64).to_string(), &(y as i64).to_string()]);
-    }
-
-    /// The left button went down or up over the video (the controls' clicks, double-click fullscreen).
-    pub fn mouse_button(&self, down: bool) {
-        if down == self.pressed.replace(down) {
-            return;
-        }
-        let _ = self.mpv.command(if down { "keydown" } else { "keyup" }, &["MBTN_LEFT"]);
-    }
-
-    /// A key pressed while video plays, in mpv's key names ("SPACE", "LEFT", "n").
-    pub fn key(&self, name: &str) {
-        let _ = self.mpv.command("keypress", &[name]);
+    /// The player, for the controls (pause, seek, volume, tracks).
+    pub fn mpv(&self) -> &Mpv {
+        &self.mpv
     }
 
     /// Renders the current frame at `size` pixels and returns it as a Skia image.
@@ -129,7 +114,13 @@ fn gl_proc(_: &(), name: &str) -> *mut c_void {
 pub fn video(renderer: Rc<VideoRenderer>, frame: u64) -> Video {
     Video {
         key: DiffKey::None,
-        element: VideoElement { renderer, frame, layout: LayoutData::default(), event_handlers: Default::default() },
+        element: VideoElement {
+            renderer,
+            frame,
+            layout: LayoutData::default(),
+            event_handlers: Default::default(),
+            accessibility: AccessibilityData::default(),
+        },
     }
 }
 
@@ -152,6 +143,12 @@ impl LayoutExt for Video {
 
 impl ContainerExt for Video {}
 
+impl AccessibilityExt for Video {
+    fn accessibility_data_mut(&mut self) -> &mut AccessibilityData {
+        &mut self.element.accessibility
+    }
+}
+
 impl EventHandlersExt for Video {
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
         &mut self.element.event_handlers
@@ -164,6 +161,7 @@ pub struct VideoElement {
     frame: u64,
     layout: LayoutData,
     event_handlers: EventHandlers,
+    accessibility: AccessibilityData,
 }
 
 impl PartialEq for VideoElement {
@@ -209,7 +207,7 @@ impl ElementExt for VideoElement {
     }
 
     fn accessibility(&'_ self) -> Cow<'_, AccessibilityData> {
-        Cow::Owned(AccessibilityData::default())
+        Cow::Borrowed(&self.accessibility)
     }
 
     fn events_handlers(&'_ self) -> Option<Cow<'_, EventHandlers>> {

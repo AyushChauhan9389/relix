@@ -1,4 +1,4 @@
-//! Playback with mpv drawing inside Relix's window (ADR 0002).
+//! Playback with mpv; Relix draws the video (video.rs) and the controls (player_ui.rs). ADR 0002.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,32 +14,13 @@ pub struct Progress {
     pub duration: f64,
 }
 
-/// How playback ended, beyond the file simply finishing or the window closing.
+/// How playback ended, beyond the file simply finishing or the player stopping.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ended {
-    /// The "Next episode" button in the player controls.
+    /// "Next episode" in the controls.
     NextRequested,
     /// mpv couldn't open or decode the stream (dead link, unsupported format).
     Failed,
-}
-
-/// What the player's Lua controls ask for with `script-message`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Message {
-    Next,
-    /// Embedded mpv can't go fullscreen itself; Relix's window does.
-    ToggleFullscreen,
-    /// Leave fullscreen if Relix is fullscreen, else stop playing.
-    Escape,
-}
-
-pub fn client_message(args: &[&str]) -> Option<Message> {
-    match args {
-        ["relix-next", ..] => Some(Message::Next),
-        ["relix-fullscreen", ..] => Some(Message::ToggleFullscreen),
-        ["relix-escape", ..] => Some(Message::Escape),
-        _ => None,
-    }
 }
 
 /// What the app sends a running player.
@@ -47,9 +28,10 @@ pub enum ToPlayer {
     /// `sub-add` arguments for one addon's subtitles.
     Subtitles(Vec<[String; 4]>),
     Stop,
+    Next,
 }
 
-/// What the player shows around the video.
+/// What the controls show around the video.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Overlay {
     pub title: String,
@@ -57,25 +39,48 @@ pub struct Overlay {
     pub episode: String,
     /// Shows "Next episode" and the countdown card.
     pub has_next: bool,
-    /// The look's accent in ASS's BGR hex (the player thread can't read the UI's look).
-    pub accent: String,
 }
 
-/// The Netflix-style controls (player.lua), embedded so there's nothing extra to ship.
-const SKIN: &str = include_str!("player.lua");
+/// A subtitle or audio track mpv knows about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Track {
+    pub id: i64,
+    pub title: String,
+}
 
-/// mpv `script-opts` for the skin; `%len%` quoting keeps commas and `=` in titles intact.
-fn skin_opts(o: &Overlay, embedded: bool) -> String {
-    let q = |v: &str| format!("%{}%{v}", v.len());
-    let yes = |b: bool| if b { "yes" } else { "no" };
-    format!(
-        "relix-title={},relix-episode={},relix-has_next={},relix-embedded={},relix-accent={}",
-        q(&o.title),
-        q(&o.episode),
-        yes(o.has_next),
-        yes(embedded),
-        q(&o.accent)
-    )
+/// The player's state for the controls; a fresh copy arrives whenever it changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Status {
+    pub loaded: bool,
+    pub position: f64,
+    pub duration: f64,
+    pub paused: bool,
+    pub volume: f64,
+    pub muted: bool,
+    pub speed: f64,
+    pub subs: Vec<Track>,
+    pub audio: Vec<Track>,
+    /// The selected subtitle/audio track; `None` is off.
+    pub sid: Option<i64>,
+    pub aid: Option<i64>,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            loaded: false,
+            position: 0.,
+            duration: 0.,
+            paused: false,
+            volume: 100.,
+            muted: false,
+            speed: 1.,
+            subs: vec![],
+            audio: vec![],
+            sid: None,
+            aid: None,
+        }
+    }
 }
 
 /// `sub-add` arguments for an addon's subtitles: added unselected, titled by language and addon,
@@ -95,25 +100,19 @@ pub fn sub_add_args(subs: &[Subtitle], addon: &str) -> Vec<[String; 4]> {
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
 /// With `video`, mpv renders for Relix to draw in its own window (video.rs): it's handed the
-/// player as soon as it exists. Without it (the `--play` check) mpv opens its own window.
-/// `headers` are an addon stream's `proxyHeaders.request`.
-/// `inbox` brings subtitles (attached once the file loads, so they never delay playback) and stop
-/// requests; requests from the controls that the app handles go out through `outbox`.
+/// player as soon as it exists. Without it (the `--play` check) mpv opens its own window with its
+/// own controls. `headers` are an addon stream's `proxyHeaders.request`. `inbox` brings subtitles
+/// (attached once the file loads, so they never delay playback), stop and next requests; `status`
+/// gets the player's state whenever it changes.
 pub fn play(
     url: &str,
     headers: &HashMap<String, String>,
     start: f64,
-    overlay: &Overlay,
+    title: &str,
     video: Option<Box<dyn FnOnce(Arc<Mpv>) + Send>>,
     inbox: Receiver<ToPlayer>,
-    outbox: impl Fn(Message),
+    status: impl Fn(Status),
 ) -> libmpv2::Result<(Progress, Option<Ended>)> {
-    let skin = std::env::temp_dir().join("relix-player.lua");
-    if std::fs::read_to_string(&skin).ok().as_deref() != Some(SKIN)
-        && let Err(e) = std::fs::write(&skin, SKIN)
-    {
-        eprintln!("writing player controls: {e}");
-    }
     let embedded = video.is_some();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         init.set_option("hwdec", "auto-safe")?;
@@ -123,9 +122,14 @@ pub fn play(
         }
         if embedded {
             init.set_option("vo", "libmpv")?;
+            // Relix draws the controls; mpv draws only the video and subtitles.
+            init.set_option("osc", "no")?;
+            init.set_option("osd-level", 0)?;
         } else {
             init.set_option("vo", "gpu-next")?;
             init.set_option("force-window", "immediate")?;
+            init.set_option("input-default-bindings", "yes")?;
+            init.set_option("input-vo-keyboard", "yes")?;
         }
         if crate::test_offscreen() {
             init.set_option("mute", "yes")?;
@@ -133,14 +137,7 @@ pub fn play(
             init.set_option("geometry", "1280x720+-20000+-20000")?;
             init.set_option("focus-on", "never")?;
         }
-        // Our controls instead of mpv's.
-        init.set_option("osc", "no")?;
-        init.set_option("osd-bar", "no")?;
-        init.set_option("scripts", skin.to_string_lossy().as_ref())?;
-        init.set_option("script-opts", skin_opts(overlay, embedded).as_str())?;
-        init.set_option("input-default-bindings", "yes")?;
-        init.set_option("input-vo-keyboard", "yes")?;
-        init.set_option("title", if overlay.title.is_empty() { "Relix".to_owned() } else { format!("{} · Relix", overlay.title) }.as_str())?;
+        init.set_option("title", if title.is_empty() { "Relix".to_owned() } else { format!("{title} · Relix") }.as_str())?;
         if start > 0. {
             init.set_option("start", start.to_string().as_str())?;
         }
@@ -155,29 +152,45 @@ pub fn play(
         hand_over(mpv.clone());
     }
 
-    let played = run(&mpv, url, &inbox, &outbox);
-    // Dropping our handle only detaches it; the controls script keeps the core alive. Quit it.
+    let played = run(&mpv, url, &inbox, &status);
+    // Make sure the core stops even if something else still holds it.
     let _ = mpv.command("quit", &[]);
     played
 }
 
-fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, outbox: &impl Fn(Message)) -> libmpv2::Result<(Progress, Option<Ended>)> {
-    mpv.observe_property("time-pos", Format::Double, 0)?;
-    mpv.observe_property("duration", Format::Double, 1)?;
+fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status)) -> libmpv2::Result<(Progress, Option<Ended>)> {
+    for (id, (name, format)) in [
+        ("time-pos", Format::Double),
+        ("duration", Format::Double),
+        ("pause", Format::Flag),
+        ("volume", Format::Double),
+        ("mute", Format::Flag),
+        ("speed", Format::Double),
+        ("track-list/count", Format::Int64),
+        ("sid", Format::String),
+        ("aid", Format::String),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        mpv.observe_property(name, format, id as u64)?;
+    }
     mpv.command("loadfile", &[url])?;
 
-    let mut progress = Progress::default();
-    let mut loaded = false;
+    let mut status = Status::default();
+    // The position changes every frame; the controls get it a few times a second.
+    let mut sent_position = f64::MIN;
     // Subtitles wait here until the file has loaded.
     let mut pending: Vec<[String; 4]> = vec![];
     loop {
         for msg in inbox.try_iter() {
             match msg {
                 ToPlayer::Subtitles(subs) => pending.extend(subs),
-                ToPlayer::Stop => return Ok((progress, None)),
+                ToPlayer::Stop => return Ok((progress(&status), None)),
+                ToPlayer::Next => return Ok((progress(&status), Some(Ended::NextRequested))),
             }
         }
-        if loaded {
+        if status.loaded {
             for args in pending.drain(..) {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if let Err(e) = mpv.command("sub-add", &args) {
@@ -185,26 +198,53 @@ fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, outbox: &impl Fn(Messag
                 }
             }
         }
-        // Wakes now and then to pick up subtitles and stop requests that arrived meanwhile.
+        // Wakes now and then to pick up subtitles and requests that arrived meanwhile.
+        let before = status.clone();
         match mpv.wait_event(0.25) {
-            Some(Ok(Event::FileLoaded)) => loaded = true,
-            Some(Ok(Event::PropertyChange { change: PropertyData::Double(v), reply_userdata, .. })) => {
-                match reply_userdata {
-                    0 => progress.position = v,
-                    _ => progress.duration = v,
-                }
-            }
-            Some(Ok(Event::ClientMessage(args))) => match client_message(&args) {
-                Some(Message::Next) => return Ok((progress, Some(Ended::NextRequested))),
-                Some(other) => outbox(other),
-                None => {}
+            Some(Ok(Event::FileLoaded)) => status.loaded = true,
+            Some(Ok(Event::PropertyChange { change, reply_userdata, .. })) => match (reply_userdata, change) {
+                (0, PropertyData::Double(v)) => status.position = v,
+                (1, PropertyData::Double(v)) => status.duration = v,
+                (2, PropertyData::Flag(v)) => status.paused = v,
+                (3, PropertyData::Double(v)) => status.volume = v,
+                (4, PropertyData::Flag(v)) => status.muted = v,
+                (5, PropertyData::Double(v)) => status.speed = v,
+                (6, PropertyData::Int64(n)) => (status.subs, status.audio) = tracks(mpv, n),
+                (7, PropertyData::Str(v)) => status.sid = v.parse().ok(),
+                (8, PropertyData::Str(v)) => status.aid = v.parse().ok(),
+                _ => {}
             },
-            Some(Ok(Event::EndFile(libmpv2::mpv_end_file_reason::Error))) => return Ok((progress, Some(Ended::Failed))),
-            Some(Ok(Event::EndFile(_) | Event::Shutdown)) => return Ok((progress, None)),
+            Some(Ok(Event::EndFile(libmpv2::mpv_end_file_reason::Error))) => return Ok((progress(&status), Some(Ended::Failed))),
+            Some(Ok(Event::EndFile(_) | Event::Shutdown)) => return Ok((progress(&status), None)),
             Some(Err(e)) => return Err(e),
             _ => {}
         }
+        let only_position = Status { position: before.position, ..status.clone() } == before;
+        if status != before && (!only_position || (status.position - sent_position).abs() >= 0.25) {
+            sent_position = status.position;
+            send(status.clone());
+        }
     }
+}
+
+fn progress(s: &Status) -> Progress {
+    Progress { position: s.position, duration: s.duration }
+}
+
+/// The file's subtitle and audio tracks.
+fn tracks(mpv: &Mpv, count: i64) -> (Vec<Track>, Vec<Track>) {
+    let (mut subs, mut audio) = (vec![], vec![]);
+    for i in 0..count {
+        let text = |field: &str| mpv.get_property::<String>(&format!("track-list/{i}/{field}")).ok().filter(|s| !s.is_empty());
+        let Ok(id) = mpv.get_property::<i64>(&format!("track-list/{i}/id")) else { continue };
+        let title = text("title").or_else(|| text("lang")).unwrap_or_else(|| format!("Track {id}"));
+        match text("type").as_deref() {
+            Some("sub") => subs.push(Track { id, title }),
+            Some("audio") => audio.push(Track { id, title }),
+            _ => {}
+        }
+    }
+    (subs, audio)
 }
 
 #[cfg(test)]
@@ -226,19 +266,5 @@ mod tests {
                 ["b", "auto", "eng · OpenSubtitles v3 2", "eng"],
             ]
         );
-    }
-}
-
-#[cfg(test)]
-mod next_tests {
-    use super::*;
-
-    #[test]
-    fn control_messages_map_to_player_requests() {
-        assert_eq!(client_message(&["relix-next"]), Some(Message::Next));
-        assert_eq!(client_message(&["relix-fullscreen"]), Some(Message::ToggleFullscreen));
-        assert_eq!(client_message(&["relix-escape"]), Some(Message::Escape));
-        assert_eq!(client_message(&["something-else"]), None);
-        assert_eq!(client_message(&[]), None);
     }
 }

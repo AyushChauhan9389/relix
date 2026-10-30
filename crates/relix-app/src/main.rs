@@ -14,6 +14,7 @@ mod library;
 mod motion;
 mod my_list;
 mod player;
+mod player_ui;
 mod search;
 mod settings;
 mod store;
@@ -81,7 +82,7 @@ fn main() {
     }
 
     // ponytail: playback check without the UI:
-    // `--play <url> [--subs movie/<imdb id>] [--title T] [--episode E] [--has-next] [--start secs]`.
+    // `--play <url> [--subs movie/<imdb id>] [--title T] [--start secs]`, in mpv's own window.
     if let Some(url) = std::env::args().skip_while(|a| a != "--play").nth(1) {
         let (tx, rx) = std::sync::mpsc::channel();
         if let Some(target) = std::env::args().skip_while(|a| a != "--subs").nth(1) {
@@ -97,12 +98,7 @@ fn main() {
                 }
             });
         }
-        let overlay = player::Overlay {
-            title: std::env::args().skip_while(|a| a != "--title").nth(1).unwrap_or_default(),
-            episode: std::env::args().skip_while(|a| a != "--episode").nth(1).unwrap_or_default(),
-            has_next: std::env::args().any(|a| a == "--has-next"),
-            accent: crate::theme::accent_bgr(),
-};
+        let title = std::env::args().skip_while(|a| a != "--title").nth(1).unwrap_or_default();
         let start = std::env::args().skip_while(|a| a != "--start").nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.);
         let inbox = {
             let (to_player, inbox) = std::sync::mpsc::channel();
@@ -113,7 +109,7 @@ fn main() {
             });
             inbox
         };
-        match player::play(&url, &Default::default(), start, &overlay, None, inbox, |_| {}) {
+        match player::play(&url, &Default::default(), start, &title, None, inbox, |_| {}) {
             Ok((p, ended)) => println!("stopped at {:.1}s of {:.1}s ({ended:?})", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }
@@ -206,8 +202,10 @@ pub struct Ctx {
     pub sync_status: State<String>,
     /// The running player, while something plays.
     pub player: State<Option<std::sync::mpsc::Sender<player::ToPlayer>>>,
-    /// The playing video, drawn full-window, and a counter that changes with each new frame.
-    pub video: State<Option<Rc<video::VideoRenderer>>>,
+    /// What's playing (its video and titles), the player's state, and a counter that changes with
+    /// each new video frame.
+    pub now_playing: State<Option<NowPlaying>>,
+    pub player_status: State<player::Status>,
     pub video_frame: State<u64>,
     pub fullscreen: State<bool>,
     /// Netflix or Stremio look (synced setting).
@@ -273,8 +271,8 @@ impl Ctx {
         });
     }
 
-    /// Shows a player's video full-window; called with the mpv the player hands over.
-    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>) {
+    /// Shows a player full-window; called with the mpv the player hands over.
+    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>, overlay: player::Overlay) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut frame = self.video_frame;
         spawn(async move {
@@ -282,10 +280,12 @@ impl Ctx {
                 *frame.write() += 1;
             }
         });
-        let mut video = self.video;
-        video.set(Some(Rc::new(video::VideoRenderer::new(mpv, move || {
+        let video = Rc::new(video::VideoRenderer::new(mpv, move || {
             let _ = tx.send(());
-        }))));
+        }));
+        let (mut now, mut status) = (self.now_playing, self.player_status);
+        status.set(player::Status::default());
+        now.set(Some(NowPlaying { video, title: overlay.title, episode: overlay.episode, has_next: overlay.has_next }));
     }
 
     /// Esc while playing: leave fullscreen first, then stop.
@@ -338,7 +338,8 @@ fn app() -> impl IntoElement {
     let autoplay_title = use_state(|| None);
     let sync_status = use_state(String::new);
     let player = use_state(|| None);
-    let video = use_state(|| None);
+    let now_playing = use_state(|| None);
+    let player_status = use_state(player::Status::default);
     let video_frame = use_state(|| 0);
     let fullscreen = use_state(|| false);
     let admin_addons = use_state(|| {
@@ -360,7 +361,8 @@ fn app() -> impl IntoElement {
         sync: Arc::default(),
         sync_status,
         player,
-        video,
+        now_playing,
+        player_status,
         video_frame,
         fullscreen,
         look,
@@ -517,8 +519,8 @@ impl Component for Shell {
                 if ctx.player.peek().is_some() {
                     if e.key == Key::Named(NamedKey::Escape) {
                         ctx.player_escape();
-                    } else if let (Some(v), Some(name)) = (ctx.video.peek().as_ref(), mpv_key(&e.key)) {
-                        v.key(&name);
+                    } else {
+                        player_ui::key(ctx, &e.key);
                     }
                     return;
                 }
@@ -563,44 +565,21 @@ impl Component for Shell {
             })
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
-            .maybe(playing, |el| el.child(player_layer(&ctx).layer(Layer::OverlayLevel(3))))
+            .maybe(playing, |el| el.child(rect().position(Position::new_absolute().top(0.).left(0.)).width(Size::percent(100.)).height(Size::percent(100.)).layer(Layer::OverlayLevel(3)).child(player_ui::Player)))
     }
 }
 
-/// The playing video over everything, passing the mouse to mpv's controls.
-fn player_layer(ctx: &Ctx) -> Rect {
-    let layer = home::layer().background((0, 0, 0));
-    let Some(r) = ctx.video.read().clone() else { return layer };
-    let (moved, down, up) = (r.clone(), r.clone(), r.clone());
-    layer.child(
-        video::video(r, *ctx.video_frame.read())
-            .width(Size::fill())
-            .height(Size::fill())
-            .on_mouse_move(move |e: Event<MouseEventData>| moved.mouse_move(e.element_location.x, e.element_location.y))
-            .on_mouse_down(move |e: Event<MouseEventData>| {
-                if e.button == Some(MouseButton::Left) {
-                    down.mouse_button(true);
-                }
-            })
-            .on_mouse_up(move |e: Event<MouseEventData>| {
-                if e.button == Some(MouseButton::Left) {
-                    up.mouse_button(false);
-                }
-            }),
-    )
+/// The player on screen: its video and what the controls show.
+#[derive(Clone)]
+pub struct NowPlaying {
+    pub video: Rc<video::VideoRenderer>,
+    pub title: String,
+    pub episode: String,
+    pub has_next: bool,
 }
 
-/// mpv's name for a key Relix passes to the player controls.
-fn mpv_key(key: &Key) -> Option<String> {
-    Some(match key {
-        Key::Character(c) if c == " " => "SPACE".into(),
-        Key::Named(NamedKey::ArrowLeft) => "LEFT".into(),
-        Key::Named(NamedKey::ArrowRight) => "RIGHT".into(),
-        Key::Named(NamedKey::ArrowUp) => "UP".into(),
-        Key::Named(NamedKey::ArrowDown) => "DOWN".into(),
-        Key::Named(NamedKey::Enter) => "ENTER".into(),
-        Key::Character(c) if c.chars().count() == 1 => c.to_string(),
-        _ => return None,
-    })
+impl PartialEq for NowPlaying {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.video, &other.video)
+    }
 }
-

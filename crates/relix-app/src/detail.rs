@@ -85,12 +85,9 @@ impl Component for Detail {
                     spawn({
                         let ctx = ctx.clone();
                         async move {
-                            while let Some(msg) = from_player.recv().await {
-                                match msg {
-                                    player::Message::ToggleFullscreen => ctx.toggle_fullscreen(),
-                                    player::Message::Escape => ctx.player_escape(),
-                                    player::Message::Next => {}
-                                }
+                            let mut status = ctx.player_status;
+                            while let Some(s) = from_player.recv().await {
+                                status.set(s);
                             }
                         }
                     });
@@ -112,23 +109,22 @@ impl Component for Detail {
                             title: m.name.clone(),
                             episode: m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default(),
                             has_next: next.is_some(),
-                            accent: crate::theme::accent_bgr(),
 };
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // The player hands its mpv over from its thread; the video is drawn here.
                         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
                         spawn({
-                            let ctx = ctx.clone();
+                            let (ctx, overlay) = (ctx.clone(), overlay.clone());
                             async move {
                                 if let Some(mpv) = mpv_rx.recv().await {
-                                    ctx.show_video(mpv);
+                                    ctx.show_video(mpv, overlay);
                                 }
                             }
                         });
                         // mpv blocks until playback stops, so it gets its own thread.
                         std::thread::spawn(move || {
                             let video = Box::new(move |mpv| drop(to_ui.send(mpv)));
-                            let played = player::play(&url, &headers, start, &overlay, Some(video), inbox, |msg| {
+                            let played = player::play(&url, &headers, start, &overlay.title, Some(video), inbox, |msg| {
                                 let _ = to_app.send(msg);
                             });
                             let _ = tx.send(played);
@@ -175,8 +171,8 @@ impl Component for Detail {
                     }
                     .await;
                     playing.set(None);
-                    let mut video = ctx.video;
-                    video.set(None);
+                    let mut now = ctx.now_playing;
+                    now.set(None);
                     starting.set(false);
                 });
             }
