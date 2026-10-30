@@ -1,11 +1,11 @@
-//! Relix sync and account server (ADR 0003, 0004, 0005). Stores only login hashes,
-//! wrapped keys and opaque record values; hands out sequence numbers; notifies devices over SSE.
+//! Relix sync and account server (ADR 0003, 0004, 0005). Checks Argon2-hashed passwords, stores
+//! each account's records, hands out sequence numbers and notifies devices over SSE.
 
 pub mod cli;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
@@ -13,15 +13,16 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::{Json, Router};
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures_util::Stream;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox};
 use relix_proto::addon::Addon;
 use relix_proto::sync::{
-    AddedAdminAddon, AdminAddon, Login, Prelogin, PreloginResponse, PullResponse, Push, PushResponse, Session, Signup, SignupResponse, SyncedRecord,
-    Verify,
+    AddedAdminAddon, AdminAddon, Login, PullResponse, Push, PushResponse, Session, Signup, SignupResponse, SyncedRecord, Verify,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -32,6 +33,7 @@ use tokio_stream::wrappers::BroadcastStream;
 const MAX_LOGIN_FAILURES: u32 = 10;
 const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_CODE_TRIES: i64 = 5;
+const MIN_PASSWORD: usize = 8;
 
 pub struct Config {
     /// Require an emailed code before an account can sign in (the official server does; self-hosters may not).
@@ -78,8 +80,6 @@ struct AppState {
     config: Arc<Config>,
     /// (account, event data) after every change; `None` addresses every account.
     events: broadcast::Sender<(Option<i64>, String)>,
-    /// Seeds fake salts for unknown emails.
-    secret: Arc<Vec<u8>>,
     // ponytail: in-memory throttle, resets on restart and isn't shared between instances; fine for one box.
     failures: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
 }
@@ -116,10 +116,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
          CREATE TABLE IF NOT EXISTS accounts (
              id INTEGER PRIMARY KEY,
              email TEXT NOT NULL UNIQUE,
-             salt TEXT NOT NULL,
-             login_hash TEXT NOT NULL,
-             wrapped_key TEXT NOT NULL,
-             recovery_wrapped_key TEXT NOT NULL,
+             password_hash TEXT NOT NULL,
              verified INTEGER NOT NULL,
              code TEXT,
              code_tries INTEGER NOT NULL DEFAULT 0
@@ -137,28 +134,15 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS admin_addons (id INTEGER PRIMARY KEY, addon TEXT NOT NULL);",
     )?;
-    let secret: Option<Vec<u8>> = db.query_row("SELECT value FROM meta WHERE key = 'secret'", [], |r| r.get(0)).optional()?;
-    let secret = match secret {
-        Some(s) => s,
-        None => {
-            let mut s = vec![0u8; 32];
-            rand::fill(&mut s[..]);
-            db.execute("INSERT INTO meta (key, value) VALUES ('secret', ?1)", params![s])?;
-            s
-        }
-    };
-
     let state = AppState {
         db: Arc::new(Mutex::new(db)),
         config: Arc::new(config),
         events: broadcast::channel(256).0,
-        secret: Arc::new(secret),
         failures: Arc::default(),
     };
     Ok(Router::new()
         .route("/signup", post(signup))
         .route("/verify", post(verify))
-        .route("/prelogin", post(prelogin))
         .route("/login", post(login))
         .route("/sync/push", post(push))
         .route("/sync/pull", get(pull))
@@ -169,18 +153,33 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .with_state(state))
 }
 
-/// Creates a session for `account` and returns it with the account's wrapped keys.
 fn new_session(db: &Connection, account: i64) -> Result<Session, ApiError> {
     let mut raw = [0u8; 32];
     rand::fill(&mut raw);
     let token = URL_SAFE_NO_PAD.encode(raw);
     db.execute("INSERT INTO sessions (token_hash, account) VALUES (?1, ?2)", params![sha256_hex(token.as_bytes()), account])?;
-    let (wrapped_key, recovery_wrapped_key) = db.query_row(
-        "SELECT wrapped_key, recovery_wrapped_key FROM accounts WHERE id = ?1",
-        params![account],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    Ok(Session { token, wrapped_key, recovery_wrapped_key })
+    Ok(Session { token })
+}
+
+/// Argon2 is deliberately slow, so it runs off the async workers.
+async fn hash_password(password: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || Argon2::default().hash_password(password.as_bytes()).map(|h| h.to_string()))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "couldn't store the password"))
+}
+
+/// Unknown emails (`hash: None`) are checked against a throwaway hash, so they take as long as real ones.
+async fn password_matches(password: String, hash: Option<String>) -> bool {
+    static DUMMY: OnceLock<String> = OnceLock::new();
+    tokio::task::spawn_blocking(move || {
+        let dummy = || DUMMY.get_or_init(|| Argon2::default().hash_password(b"relix").map(|h| h.to_string()).unwrap_or_default()).clone();
+        let checked = hash.clone().unwrap_or_else(dummy);
+        Argon2::default().verify_password(password.as_bytes(), checked.as_str()).is_ok() && hash.is_some()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn six_digit_code() -> String {
@@ -194,6 +193,10 @@ async fn signup(State(s): State<AppState>, Json(req): Json<Signup>) -> ApiResult
     if !email.contains('@') {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid email address"));
     }
+    if req.password.chars().count() < MIN_PASSWORD {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "use a password of at least 8 characters"));
+    }
+    let password_hash = hash_password(req.password).await?;
     let code = s.config.verify_email.then(six_digit_code);
     let session = {
         let db = s.db.lock().unwrap();
@@ -202,9 +205,8 @@ async fn signup(State(s): State<AppState>, Json(req): Json<Signup>) -> ApiResult
             return Err(ApiError(StatusCode::CONFLICT, "an account with this email already exists"));
         }
         db.execute(
-            "INSERT INTO accounts (email, salt, login_hash, wrapped_key, recovery_wrapped_key, verified, code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![email, req.salt, sha256_hex(req.login_hash.as_bytes()), req.wrapped_key, req.recovery_wrapped_key, code.is_none(), code],
+            "INSERT INTO accounts (email, password_hash, verified, code) VALUES (?1, ?2, ?3, ?4)",
+            params![email, password_hash, code.is_none(), code],
         )?;
         match code {
             None => Some(new_session(&db, db.last_insert_rowid())?),
@@ -238,15 +240,6 @@ async fn verify(State(s): State<AppState>, Json(req): Json<Verify>) -> ApiResult
     Ok(Json(new_session(&db, id)?))
 }
 
-async fn prelogin(State(s): State<AppState>, Json(req): Json<Prelogin>) -> ApiResult<PreloginResponse> {
-    let email = normalize(&req.email);
-    let salt: Option<String> =
-        s.db.lock().unwrap().query_row("SELECT salt FROM accounts WHERE email = ?1", params![email], |r| r.get(0)).optional()?;
-    // Unknown emails get a stable made-up salt, so the answer doesn't reveal who has an account.
-    let salt = salt.unwrap_or_else(|| B64.encode(&Sha256::digest([s.secret.as_slice(), email.as_bytes()].concat())[..16]));
-    Ok(Json(PreloginResponse { salt }))
-}
-
 async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<Session> {
     let email = normalize(&req.email);
     {
@@ -259,19 +252,22 @@ async fn login(State(s): State<AppState>, Json(req): Json<Login>) -> ApiResult<S
             }
         }
     }
-    let db = s.db.lock().unwrap();
-    let row: Option<(i64, String, bool)> = db
-        .query_row("SELECT id, login_hash, verified FROM accounts WHERE email = ?1", params![email], |r| {
+    let row: Option<(i64, String, bool)> = s
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT id, password_hash, verified FROM accounts WHERE email = ?1", params![email], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .optional()?;
+    let matches = password_matches(req.password, row.as_ref().map(|r| r.1.clone())).await;
     match row {
-        Some((id, hash, verified)) if hash == sha256_hex(req.login_hash.as_bytes()) => {
+        Some((id, _, verified)) if matches => {
             s.failures.lock().unwrap().remove(&email);
             if !verified {
                 return Err(ApiError(StatusCode::FORBIDDEN, "verify your email first"));
             }
-            Ok(Json(new_session(&db, id)?))
+            Ok(Json(new_session(&s.db.lock().unwrap(), id)?))
         }
         _ => {
             let mut failures = s.failures.lock().unwrap();

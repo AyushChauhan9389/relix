@@ -39,8 +39,7 @@ async fn send(app: &Router, method: &str, path: &str, token: Option<&str>, body:
 }
 
 fn signup_body(email: &str) -> Value {
-    json!({ "email": email, "salt": "c2FsdHNhbHRzYWx0c2FsdA==", "login_hash": "right-hash",
-            "wrapped_key": "wk", "recovery_wrapped_key": "rk" })
+    json!({ "email": email, "password": "right password" })
 }
 
 /// Signs up on a server without email verification and returns the session token.
@@ -57,7 +56,7 @@ async fn signup_verify_and_login() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["session"].is_null(), "no session before the email is verified");
 
-    let login = json!({ "email": "a@x.com", "login_hash": "right-hash" });
+    let login = json!({ "email": "a@x.com", "password": "right password" });
     assert_eq!(call(&app, "/login", None, Some(login.clone())).await.0, StatusCode::FORBIDDEN);
 
     let code = {
@@ -68,28 +67,31 @@ async fn signup_verify_and_login() {
     assert_eq!(call(&app, "/verify", None, Some(json!({ "email": "a@x.com", "code": "000000x" }))).await.0, StatusCode::UNAUTHORIZED);
     let (status, session) = call(&app, "/verify", None, Some(json!({ "email": "a@x.com", "code": code }))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(session["wrapped_key"], "wk");
+    assert!(session["token"].is_string());
 
     let (status, session) = call(&app, "/login", None, Some(login)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(session["recovery_wrapped_key"], "rk");
-    let bad = json!({ "email": "a@x.com", "login_hash": "wrong-hash" });
+    assert!(session["token"].is_string());
+    let bad = json!({ "email": "a@x.com", "password": "wrong password" });
     assert_eq!(call(&app, "/login", None, Some(bad)).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(call(&app, "/signup", None, Some(signup_body("a@x.com"))).await.0, StatusCode::CONFLICT);
 }
 
 #[tokio::test]
-async fn prelogin_hides_which_emails_exist() {
+async fn unknown_email_and_wrong_password_look_the_same() {
     let (app, _) = server(false);
     account(&app, "a@x.com").await;
-    let salt = |email: &'static str| {
-        let app = app.clone();
-        async move { call(&app, "/prelogin", None, Some(json!({ "email": email }))).await.1["salt"].clone() }
-    };
-    assert_eq!(salt("a@x.com").await, "c2FsdHNhbHRzYWx0c2FsdA==");
-    let fake = salt("nobody@x.com").await;
-    assert!(fake.is_string() && fake != "c2FsdHNhbHRzYWx0c2FsdA==");
-    assert_eq!(fake, salt("nobody@x.com").await, "same answer every time, so it looks real");
+    let wrong = call(&app, "/login", None, Some(json!({ "email": "a@x.com", "password": "nope" }))).await;
+    let unknown = call(&app, "/login", None, Some(json!({ "email": "nobody@x.com", "password": "nope" }))).await;
+    assert_eq!(wrong, unknown);
+    assert_eq!(wrong.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn short_passwords_are_refused() {
+    let (app, _) = server(false);
+    let (status, _) = call(&app, "/signup", None, Some(json!({ "email": "a@x.com", "password": "short" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -157,12 +159,12 @@ async fn a_push_notifies_the_accounts_other_devices_over_sse() {
 async fn repeated_wrong_logins_are_throttled() {
     let (app, _) = server(false);
     account(&app, "a@x.com").await;
-    let bad = json!({ "email": "a@x.com", "login_hash": "nope" });
+    let bad = json!({ "email": "a@x.com", "password": "nope" });
     for _ in 0..10 {
         assert_eq!(call(&app, "/login", None, Some(bad.clone())).await.0, StatusCode::UNAUTHORIZED);
     }
     assert_eq!(call(&app, "/login", None, Some(bad)).await.0, StatusCode::TOO_MANY_REQUESTS);
-    let good = json!({ "email": "a@x.com", "login_hash": "right-hash" });
+    let good = json!({ "email": "a@x.com", "password": "right password" });
     assert_eq!(call(&app, "/login", None, Some(good)).await.0, StatusCode::TOO_MANY_REQUESTS, "even the right password waits");
 }
 

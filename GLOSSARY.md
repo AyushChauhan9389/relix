@@ -52,8 +52,4 @@ The mark that a profile has finished an episode or movie.
 **Record**:
 The unit of sync. One piece of profile data, identified by profile, kind and key.
 
-**Data key**:
-The random key that encrypts a profile's addon list. Only the account's devices hold it, never the server.
 
-**Recovery key**:
-A key shown once at signup that can unlock the data key if the password is lost.

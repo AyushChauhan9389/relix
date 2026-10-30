@@ -1,17 +1,12 @@
 //! Account and sync wire types shared by the app and relix-server (ADR 0004, 0005).
+//! Like Stremio's, the server checks the password and stores records readable (ADR 0005).
 
 use serde::{Deserialize, Serialize};
 
-/// Signup sends only what the server may know: the login hash and wrapped keys, never the password.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signup {
     pub email: String,
-    pub salt: String,
-    pub login_hash: String,
-    /// The data key wrapped by the password-derived key.
-    pub wrapped_key: String,
-    /// The data key wrapped by the recovery key.
-    pub recovery_wrapped_key: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,26 +22,14 @@ pub struct Verify {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Prelogin {
-    pub email: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreloginResponse {
-    pub salt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Login {
     pub email: String,
-    pub login_hash: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub token: String,
-    pub wrapped_key: String,
-    pub recovery_wrapped_key: String,
 }
 
 /// A record as the client sends it; the server assigns its sequence number.
@@ -54,7 +37,7 @@ pub struct Session {
 pub struct PushRecord {
     pub kind: String,
     pub key: String,
-    /// JSON text, or ciphertext for encrypted kinds. Opaque to the server.
+    /// JSON text.
     pub value: String,
 }
 
@@ -82,9 +65,6 @@ pub struct PullResponse {
     /// Records changed after the requested sequence number, oldest first.
     pub records: Vec<SyncedRecord>,
 }
-
-/// Record kinds whose values are encrypted with the data key before they leave the device.
-pub const ENCRYPTED_KINDS: [&str; 1] = ["addons"];
 
 /// An addon the server admin publishes to every signed-in account; users can switch them off.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -32,7 +32,8 @@ powershell -ExecutionPolicy Bypass -File packaging\portable.ps1
 
 Produces `dist\Relix-<version>-windows-x64-portable.zip`: `relix-app.exe`, `libmpv-2.dll`, `relix-server.exe` and a
 `portable` marker. With the marker next to the exe, Relix keeps its data in a `data` folder beside it instead of
-`%APPDATA%elix`, so the folder can be carried around. Release builds open without a console window.
+`%APPDATA%
+elix`, so the folder can be carried around. Release builds open without a console window.
 
 ## Sync server
 
@@ -43,8 +44,11 @@ cargo run -p relix-server        # listens on 0.0.0.0:8787, prints verification 
 ```
 
 Configure with environment variables: `RELIX_DB`, `RELIX_ADDR`, `RELIX_SMTP_URL` + `RELIX_SMTP_FROM` (emailed codes),
-`RELIX_VERIFY_EMAIL=true|false`. In the app, open **Account** and point it at the server URL.
-The addon list is encrypted on the device before upload; the server never sees addon URLs or debrid keys.
+`RELIX_VERIFY_EMAIL=true|false`. Like Stremio, the server stores each account's addons, library, progress and
+settings readable (debrid keys included), so run it behind HTTPS.
+
+The app has no server field: build it against your server with `RELIX_SERVER=https://api.example.com` set
+(`cargo build --release`, or the portable script). Without it, builds talk to `http://localhost:8787`.
 
 ### Admin addons
 
