@@ -1,0 +1,29 @@
+name: Backup
+
+# Saves the server's newest nightly database backup as a workflow artifact (kept 30 days).
+# The SSH key can only read that one file (forced command on the server).
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch
+        env:
+          KEY: ${{ secrets.BACKUP_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BACKUP_KNOWN_HOSTS }}
+        run: |
+          install -m 600 /dev/null key
+          printf '%s\n' "$KEY" > key
+          printf '%s\n' "$KNOWN_HOSTS" > known_hosts
+          ssh -i key -o UserKnownHostsFile=known_hosts root@relix.carbonkit.tech > "relix-$(date +%F).db.gz"
+          rm key
+          gzip -t relix-*.db.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relix-db
+          path: relix-*.db.gz
+          retention-days: 30

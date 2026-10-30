@@ -92,21 +92,32 @@ pub fn apply(ready: &Ready) -> std::io::Result<()> {
         std::process::Command::new(&exe).spawn()?;
         std::process::exit(0);
     }
-    for entry in std::fs::read_dir(&ready.files)?.flatten().filter(|e| e.path().is_file()) {
+    swap_files(&ready.files, install, |from, to| std::fs::copy(from, to).map(drop))?;
+    std::process::Command::new(install.join(app_exe_name())).spawn()?;
+    std::process::exit(0);
+}
+
+/// Copies every file in `from` over `install`, all or nothing: replaced files are kept as `.old`
+/// (a running exe can be renamed, not overwritten) and every one goes back if any copy fails.
+fn swap_files(from: &Path, install: &Path, copy: impl Fn(&Path, &Path) -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut done: Vec<(PathBuf, bool)> = vec![];
+    for entry in std::fs::read_dir(from)?.flatten().filter(|e| e.path().is_file()) {
         let target = install.join(entry.file_name());
         let old = old_name(&target);
         let _ = std::fs::remove_file(&old);
         let moved = target.exists() && std::fs::rename(&target, &old).is_ok();
-        if let Err(e) = std::fs::copy(entry.path(), &target) {
-            // Put the old file back so this install keeps working.
-            if moved {
-                let _ = std::fs::rename(&old, &target);
+        done.push((target.clone(), moved));
+        if let Err(e) = copy(&entry.path(), &target) {
+            for (target, moved) in done.iter().rev() {
+                let _ = std::fs::remove_file(target);
+                if *moved {
+                    let _ = std::fs::rename(old_name(target), target);
+                }
             }
             return Err(e);
         }
     }
-    std::process::Command::new(install.join(app_exe_name())).spawn()?;
-    std::process::exit(0);
+    Ok(())
 }
 
 fn old_name(path: &Path) -> PathBuf {
@@ -128,6 +139,40 @@ pub fn cleanup() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_swap_puts_every_old_file_back() {
+        let root = std::env::temp_dir().join(format!("relix-swap-{}", std::process::id()));
+        let (new, install) = (root.join("new"), root.join("install"));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in [&new, &install] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for name in ["a", "b", "c"] {
+            std::fs::write(install.join(name), "old").unwrap();
+            std::fs::write(new.join(name), "new").unwrap();
+        }
+        std::fs::write(new.join("added"), "new").unwrap();
+
+        // The third copy fails, whatever order the folder lists in.
+        let copies = std::cell::Cell::new(0);
+        let failing = |from: &std::path::Path, to: &std::path::Path| {
+            copies.set(copies.get() + 1);
+            if copies.get() == 3 { Err(std::io::ErrorKind::Other.into()) } else { std::fs::copy(from, to).map(drop) }
+        };
+        assert!(super::swap_files(&new, &install, failing).is_err());
+        for name in ["a", "b", "c"] {
+            assert_eq!(std::fs::read_to_string(install.join(name)).unwrap(), "old", "{name}");
+            assert!(!install.join(format!("{name}.old")).exists());
+        }
+        assert!(!install.join("added").exists(), "files the update added are gone too");
+
+        super::swap_files(&new, &install, |from, to| std::fs::copy(from, to).map(drop)).unwrap();
+        for name in ["a", "b", "c", "added"] {
+            assert_eq!(std::fs::read_to_string(install.join(name)).unwrap(), "new");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     use super::*;
 
     #[test]

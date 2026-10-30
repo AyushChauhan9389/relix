@@ -1,6 +1,6 @@
 relix.carbonkit.tech {
 	# The sync server's paths; everything else is the website.
-	@api path /signup /verify /login /sync/* /addons/admin /admin/* /update/*
+	@api path /signup /verify /login /logout /logout/* /password/* /account /sync/* /addons/admin /admin/* /update/*
 	handle @api {
 		reverse_proxy 127.0.0.1:8787
 	}

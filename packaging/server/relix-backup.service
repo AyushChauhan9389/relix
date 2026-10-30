@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up the Relix account database
+
+[Service]
+Type=oneshot
+User=relix
+ExecStart=/usr/local/bin/relix-backup
