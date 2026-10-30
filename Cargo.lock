@@ -4136,6 +4136,7 @@ version = "0.1.0"
 dependencies = [
  "freya",
  "libmpv2",
+ "raw-window-handle",
  "relix-proto",
  "reqwest 0.13.5",
  "rusqlite",

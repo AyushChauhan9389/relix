@@ -16,7 +16,7 @@ mod stremio;
 mod sync;
 
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use freya::prelude::*;
 use freya::router::*;
@@ -61,7 +61,16 @@ fn main() {
             has_next: std::env::args().any(|a| a == "--has-next"),
         };
         let start = std::env::args().skip_while(|a| a != "--start").nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.);
-        match player::play(&url, &Default::default(), start, rx, &overlay) {
+        let inbox = {
+            let (to_player, inbox) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for subs in rx {
+                    let _ = to_player.send(player::ToPlayer::Subtitles(subs));
+                }
+            });
+            inbox
+        };
+        match player::play(&url, &Default::default(), start, &overlay, None, inbox, |_| {}) {
             Ok((p, ended)) => println!("stopped at {:.1}s of {:.1}s ({ended:?})", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }
@@ -70,7 +79,52 @@ fn main() {
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let _rt = rt.enter();
-    launch(LaunchConfig::new().with_window(WindowConfig::new(app).with_title("Relix").with_size(1440., 900.)))
+    launch(
+        LaunchConfig::new().with_window(
+            WindowConfig::new(app)
+                .with_title("Relix")
+                .with_size(1440., 900.)
+                .with_window_handle(|window| {
+                    let _ = NATIVE_WINDOW.set(native_id(window));
+                })
+                .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs }),
+        ),
+    )
+}
+
+/// `RELIX_TEST_OFFSCREEN=1`: for automated checks on a developer's machine. The window opens
+/// off-screen, unfocused and off the taskbar, and playback is muted, so nothing interrupts them.
+pub fn test_offscreen() -> bool {
+    std::env::var_os("RELIX_TEST_OFFSCREEN").is_some()
+}
+
+fn offscreen(attrs: freya::winit::window::WindowAttributes) -> freya::winit::window::WindowAttributes {
+    let attrs = attrs.with_position(freya::winit::dpi::PhysicalPosition::new(-20000, -20000)).with_active(false);
+    #[cfg(windows)]
+    let attrs = {
+        use freya::winit::platform::windows::WindowAttributesExtWindows;
+        attrs.with_skip_taskbar(true)
+    };
+    attrs
+}
+
+/// Relix's own window as mpv's `wid`, so video plays inside it. `None` where mpv can't embed.
+static NATIVE_WINDOW: OnceLock<Option<i64>> = OnceLock::new();
+
+pub fn native_window() -> Option<i64> {
+    NATIVE_WINDOW.get().copied().flatten()
+}
+
+fn native_id(window: &freya::winit::window::Window) -> Option<i64> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as i64),
+        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as i64),
+        RawWindowHandle::Xlib(h) => Some(h.window as i64),
+        RawWindowHandle::Xcb(h) => Some(h.window.get() as i64),
+        // Wayland has no foreign-window embedding; mpv opens its own window there.
+        _ => None,
+    }
 }
 
 /// Where Relix keeps its database: `data` next to the executable for a portable copy (a file
@@ -109,6 +163,9 @@ pub struct Ctx {
     pub sync: Arc<tokio::sync::Notify>,
     /// Last sync outcome, for the Account screen.
     pub sync_status: State<String>,
+    /// The running player, while something plays.
+    pub player: State<Option<std::sync::mpsc::Sender<player::ToPlayer>>>,
+    pub fullscreen: State<bool>,
 }
 
 impl Ctx {
@@ -134,6 +191,26 @@ impl Ctx {
         enabled.set(on);
         spawn(load_rows(self.clone()));
         self.sync_soon();
+    }
+
+    /// Makes Relix's window fullscreen, or back.
+    pub fn toggle_fullscreen(&self) {
+        use freya::winit::window::Fullscreen;
+        let mut fullscreen = self.fullscreen;
+        let on = !*fullscreen.peek();
+        fullscreen.set(on);
+        Platform::get().with_window(Platform::window_id(), move |w| {
+            w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+        });
+    }
+
+    /// Esc while playing: leave fullscreen first, then stop.
+    pub fn player_escape(&self) {
+        if *self.fullscreen.peek() {
+            self.toggle_fullscreen();
+        } else if let Some(p) = self.player.peek().as_ref() {
+            let _ = p.send(player::ToPlayer::Stop);
+        }
     }
 
     /// Asks the sync loop to run soon (no-op when signed out).
@@ -168,6 +245,8 @@ fn app() -> impl IntoElement {
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
     let sync_status = use_state(String::new);
+    let player = use_state(|| None);
+    let fullscreen = use_state(|| false);
     let admin_addons = use_state(|| {
         let cached = store.meta("admin_addons").ok().flatten();
         cached.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default()
@@ -184,6 +263,8 @@ fn app() -> impl IntoElement {
         rows,
         sync: Arc::default(),
         sync_status,
+        player,
+        fullscreen,
     });
 
     use_hook({
@@ -279,9 +360,18 @@ struct Shell;
 impl Component for Shell {
     fn render(&self) -> impl IntoElement {
         let registry = use_provide_context(Registry::default);
+        let ctx = use_consume::<Ctx>();
+        let playing = ctx.player.read().is_some();
         rect()
             .expanded()
             .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                // While video plays, Relix's keys only stop it (mpv's controls take the rest).
+                if ctx.player.peek().is_some() {
+                    if e.key == Key::Named(NamedKey::Escape) {
+                        ctx.player_escape();
+                    }
+                    return;
+                }
                 let dir = match e.key {
                     Key::Named(NamedKey::ArrowUp) => Dir::Up,
                     Key::Named(NamedKey::ArrowDown) => Dir::Down,
@@ -301,6 +391,10 @@ impl Component for Shell {
             .background(home::BG)
             .color(Color::WHITE)
             .child(Outlet::<Route>::new())
-            .child(home::nav(home::active_link(&RouterContext::get().current::<Route>())).layer(Layer::Overlay))
+            .maybe(!playing, |el| {
+                el.child(home::nav(home::active_link(&RouterContext::get().current::<Route>())).layer(Layer::Overlay))
+            })
+            // mpv draws over this; black keeps the page from flashing through while it starts and stops.
+            .maybe(playing, |el| el.child(home::layer().background((0, 0, 0)).layer(Layer::Overlay)))
     }
 }

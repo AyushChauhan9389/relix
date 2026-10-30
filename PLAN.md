@@ -9,7 +9,7 @@ Vocabulary is in [GLOSSARY.md](./GLOSSARY.md). Decisions that are hard to revers
 |---|---|
 | UI | `freya = "=0.5.0-rc.13"` (router, radio, remote-asset, sdk-tokio) |
 | Addons | own client in `relix-proto` + `relix-app`, reqwest (rustls) + serde_json |
-| Player | libmpv2, mpv owns its window, Relix's own Netflix-style Lua controls (embedded) |
+| Player | libmpv2 drawing inside Relix's window (`wid`), Relix's own Netflix-style Lua controls (embedded) |
 | Local data | SQLite via rusqlite (bundled), `records(profile, kind, key, value, seq, dirty)` |
 | Server | axum + SQLite (WAL), single binary, Server-Sent Events push |
 
@@ -27,7 +27,7 @@ Workspace crates: `relix-app` (Freya client), `relix-server` (sync/account), `re
 - **Profiles:** deferred (removed 2026-10-29). The app runs as one implicit profile; records still carry a profile id so profiles (and kids mode) can return without a migration.
 - **Navigation:** spatial focus from phase 1. Arrow keys, Enter and Esc work on every screen.
 - **Look:** dark, Netflix-like. All colours, spacing and type live in one theme module so a designed theme can drop in later.
-- **Player:** fullscreen mpv window with Relix's own Netflix-style controls (`player.lua`, embedded in the app): back + title, centre play/pause and ±10s, red timeline, subtitles & audio panel, speed, next episode and a countdown card near the end. Finishing an episode (or pressing Next) auto-plays the next one from the same release (`bingeGroup`). Progress comes back from libmpv events.
+- **Player:** plays inside Relix's window (separate window only on Wayland), not forced fullscreen, with Relix's own Netflix-style controls (`player.lua`, embedded in the app): back + title, centre play/pause and ±10s, red timeline, subtitles & audio panel, speed, next episode and a countdown card near the end. Finishing an episode (or pressing Next) auto-plays the next one from the same release (`bingeGroup`). Progress comes back from libmpv events.
 - **Defaults:** Cinemeta and OpenSubtitles v3 come preinstalled.
 
 ## Accounts and sync

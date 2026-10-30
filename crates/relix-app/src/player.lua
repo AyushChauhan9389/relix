@@ -2,7 +2,7 @@
 -- Talks to the app through `script-message relix-next`; everything else is plain mpv commands.
 
 local options = require "mp.options"
-local opts = { title = "", episode = "", has_next = false }
+local opts = { title = "", episode = "", has_next = false, embedded = false }
 options.read_options(opts, "relix")
 
 local RED = "1409E5" -- #E50914 in ASS's BGR order
@@ -86,6 +86,11 @@ end
 
 local function next_episode()
     mp.commandv("script-message", "relix-next")
+end
+
+-- Inside Relix's window, fullscreen belongs to Relix; on its own window, to mpv.
+local function toggle_fullscreen()
+    if opts.embedded then mp.commandv("script-message", "relix-fullscreen") else mp.command("cycle fullscreen") end
 end
 
 local function shown()
@@ -184,7 +189,7 @@ local function render()
             button(out, x1, by, x1 + width, by + s, fn, function(c) return draw(x1, c) end)
             rx = rx - 40 * u
         end
-        right(s, function() mp.command("cycle fullscreen") end, function(x1, c) return icon("fullscreen", x1, by, s, c) end)
+        right(s, toggle_fullscreen, function(x1, c) return icon("fullscreen", x1, by, s, c) end)
         right(s * 1.4, function()
             local speeds = { 0.5, 0.75, 1, 1.25, 1.5 }
             local nexts = 1
@@ -297,8 +302,11 @@ mp.add_forced_key_binding("LEFT", "relix-back10", function() mp.commandv("seek",
 mp.add_forced_key_binding("RIGHT", "relix-fwd10", function() mp.commandv("seek", "10", "relative") end, { repeatable = true })
 mp.add_forced_key_binding("ESC", "relix-esc", function()
     if state.panel then state.panel = false; render()
+    elseif opts.embedded then mp.commandv("script-message", "relix-escape")
     elseif state.fullscreen then mp.set_property_bool("fullscreen", false)
     else mp.command("quit") end
 end)
+mp.add_forced_key_binding("f", "relix-fullscreen", toggle_fullscreen)
+mp.add_forced_key_binding("MBTN_LEFT_DBL", "relix-dbl", toggle_fullscreen)
 mp.add_forced_key_binding("n", "relix-next", function() if opts.has_next then next_episode() end end)
 mp.add_forced_key_binding("c", "relix-cc", function() state.panel = not state.panel; render() end)

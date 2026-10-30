@@ -58,23 +58,43 @@ impl Component for Detail {
                 let (Some(m), Some(first_vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
                 let ctx = ctx.clone();
                 spawn(async move {
+                    let mut playing = ctx.player;
+                    // Requests from the player's controls that Relix handles (fullscreen, Esc).
+                    let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
+                    spawn({
+                        let ctx = ctx.clone();
+                        async move {
+                            while let Some(msg) = from_player.recv().await {
+                                match msg {
+                                    player::Message::ToggleFullscreen => ctx.toggle_fullscreen(),
+                                    player::Message::Escape => ctx.player_escape(),
+                                    player::Message::Next => {}
+                                }
+                            }
+                        }
+                    });
                     let (mut req, mut vid) = (first, first_vid);
+                    async {
                     loop {
                         let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
                         let next = next_video(&m.videos, &vid);
-                        let (subs_tx, subs_rx) = std::sync::mpsc::channel();
+                        let (to_player, inbox) = std::sync::mpsc::channel();
+                        playing.set(Some(to_player.clone()));
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let overlay = player::Overlay {
                             title: m.name.clone(),
                             episode: m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default(),
                             has_next: next.is_some(),
                         };
-                        let (url, headers) = (req.url.clone(), req.headers.clone());
-                        // mpv blocks until its window closes, so it gets its own thread.
+                        let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
+                        // mpv blocks until playback stops, so it gets its own thread.
                         std::thread::spawn(move || {
-                            let _ = tx.send(player::play(&url, &headers, start, subs_rx, &overlay));
+                            let played = player::play(&url, &headers, start, &overlay, crate::native_window(), inbox, |msg| {
+                                let _ = to_app.send(msg);
+                            });
+                            let _ = tx.send(played);
                         });
-                        fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), subs_tx);
+                        fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), to_player);
 
                         let (mut p, ended) = match rx.await {
                             Ok(Ok(played)) => played,
@@ -109,6 +129,9 @@ impl Component for Detail {
                         let Some(next_req) = binge_stream(&ctx, &m.r#type, &next_id, req.addon, &group).await else { return };
                         (req, vid) = (next_req, next_id);
                     }
+                    }
+                    .await;
+                    playing.set(None);
                 });
             }
         });
@@ -354,14 +377,14 @@ fn episode_label(v: &Video) -> String {
 }
 
 /// Asks every subtitle addon for `video_id`; each addon's tracks reach mpv as they arrive.
-fn fetch_subtitles(ctx: &Ctx, kind: &str, video_id: &str, filename: Option<&str>, to_mpv: std::sync::mpsc::Sender<Vec<[String; 4]>>) {
+fn fetch_subtitles(ctx: &Ctx, kind: &str, video_id: &str, filename: Option<&str>, to_mpv: std::sync::mpsc::Sender<player::ToPlayer>) {
     let addons = ctx.all_addons();
     for (i, req) in subtitle_requests(&addons, kind, video_id, filename) {
         let (http, url, addon, to_mpv) = (ctx.http.clone(), req.url(&addons[i]), addons[i].manifest.name.clone(), to_mpv.clone());
         spawn(async move {
             match get::<SubtitlesResponse>(http, url).await {
                 Ok(r) => {
-                    let _ = to_mpv.send(player::sub_add_args(&r.subtitles, &addon));
+                    let _ = to_mpv.send(player::ToPlayer::Subtitles(player::sub_add_args(&r.subtitles, &addon)));
                 }
                 Err(e) => eprintln!("subtitles from {addon}: {e}"),
             }

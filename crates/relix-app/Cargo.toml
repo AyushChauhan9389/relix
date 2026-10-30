@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 freya = { version = "=0.5.0-rc.13", features = ["remote-asset", "sdk-tokio", "router"] }
 libmpv2 = { version = "6", default-features = false }
+raw-window-handle = "0.6"
 relix-proto = { version = "0.1.0", path = "../relix-proto" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "charset"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
