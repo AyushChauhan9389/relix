@@ -12,7 +12,8 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
   prompt="Write the GitHub release notes for Relix $version, a desktop streaming app compatible with Stremio addons.
 Use these commits (since ${prev:-the first commit}). Output Markdown only: a one-line summary, then short sections
 'New', 'Improved' and 'Fixed' with plain-English bullets a user understands (skip internal refactors, CI and docs).
-Don't invent anything that isn't in the commits.
+Leave out any section with nothing in it. Don't invent anything that isn't in the commits, and keep every condition
+the commits state: a feature that is off, needs setup, or only works somewhere is either left out or says so.
 
 $commits"
   body=$(jq -n --arg p "$prompt" '{contents: [{parts: [{text: $p}]}]}')
