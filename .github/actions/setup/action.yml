@@ -20,7 +20,7 @@ runs:
     - name: libmpv cache
       if: runner.os == 'Windows'
       id: mpv
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: vendor/mpv
         key: mpv-${{ hashFiles('packaging/ci/windows-mpv.ps1') }}

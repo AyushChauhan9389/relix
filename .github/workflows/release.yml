@@ -19,7 +19,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         name: Version is new
         run: |
@@ -43,13 +43,13 @@ jobs:
     env:
       V: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-packager
       # NSIS and WiX, which cargo-packager downloads on first use.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~\AppData\Local\.cargo-packager
           key: packager-tools-windows-v1
@@ -81,9 +81,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
           Move-Item "dist/relix-app_${env:V}_x64-setup.exe" "dist/Relix-$env:V-windows-x64-setup.exe"
           Move-Item "dist/relix-app_${env:V}_x64_en-US.msi" "dist/Relix-$env:V-windows-x64.msi"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
+          # Already compressed (zip, exe, msi): store them instead of zipping again.
+          compression-level: 0
           path: |
             dist/Relix-*.zip
             dist/Relix-*.exe
@@ -95,7 +97,7 @@ jobs:
     env:
       V: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: taiki-e/install-action@v2
         with:
@@ -116,14 +118,15 @@ jobs:
         run: |
           cargo packager -p relix-app --release -f deb
           mv dist/relix-app_${V}_amd64.deb "dist/Relix-$V-linux-amd64.deb"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
+          compression-level: 0
           path: |
             dist/Relix-*.tar.gz
             dist/Relix-*.deb
       # The publish job signs with relix-server's `update sign`.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signer
           path: target/release/relix-server
@@ -134,11 +137,11 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history and tags, for the commits since the last release.
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
