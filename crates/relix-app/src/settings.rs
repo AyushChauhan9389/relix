@@ -1,10 +1,12 @@
 use freya::prelude::*;
 
-use crate::Ctx;
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
+use crate::home::button;
+use crate::motion::busy;
+use crate::{Ctx, update};
 use crate::theme::{Look, theme};
 
-/// App settings; for now the look (Netflix or Stremio), synced with the account.
+/// App settings: the look (Netflix or Stremio, synced with the account) and updates.
 #[derive(PartialEq)]
 pub struct Settings;
 
@@ -14,6 +16,23 @@ impl Component for Settings {
         let page = use_scroller();
         use_page_scroller(page);
         let current = *ctx.look.read();
+        let mut checking = use_state(|| false);
+        let mut found = use_state(|| None::<String>);
+        let ready = ctx.update.read().clone();
+        let check = {
+            let ctx = ctx.clone();
+            move |()| {
+                if *checking.peek() {
+                    return;
+                }
+                checking.set(true);
+                let ctx = ctx.clone();
+                spawn(async move {
+                    found.set(Some(update::check_now(ctx).await));
+                    checking.set(false);
+                });
+            }
+        };
         let option = |look: Look, name: &'static str| {
             let (ctx, on) = (ctx.clone(), look == current);
             Focusable {
@@ -64,6 +83,43 @@ impl Component for Settings {
                                     .child(option(Look::Netflix, "Netflix"))
                                     .child(option(Look::Stremio, "Stremio")),
                             ),
+                    )
+                    .child(label().text("UPDATES").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
+                    .child(
+                        rect()
+                            .width(Size::px(720.))
+                            .padding(Gaps::new_all(18.))
+                            .horizontal()
+                            .content(Content::Flex)
+                            .cross_align(Alignment::Center)
+                            .spacing(12.)
+                            .corner_radius(theme().radius)
+                            .background(theme().surface)
+                            .child(
+                                rect()
+                                    .width(Size::flex(1.))
+                                    .spacing(4.)
+                                    .child(label().text(format!("Relix {}", env!("CARGO_PKG_VERSION"))).font_size(16.).font_weight(FontWeight::BOLD))
+                                    .child(if *checking.read() {
+                                        busy("Checking…").into_element()
+                                    } else {
+                                        label()
+                                            .text(found.read().clone().unwrap_or_else(|| "Relix checks for updates when it starts.".into()))
+                                            .font_size(13.)
+                                            .color(theme().muted)
+                                            .into_element()
+                                    }),
+                            )
+                            .child(match ready {
+                                // Same as the banner's Restart: swap in the new files and reopen.
+                                Some(ready) => Focusable::new(button("Restart to update", theme().primary.0, theme().primary.1), move |()| {
+                                    if let Err(e) = update::apply(&ready) {
+                                        found.set(Some(format!("Couldn't install the update: {e}")));
+                                    }
+                                })
+                                .into_element(),
+                                None => Focusable::new(button("Check for updates", theme().raised, (255, 255, 255)), check).into_element(),
+                            }),
                     ),
             ),
         )

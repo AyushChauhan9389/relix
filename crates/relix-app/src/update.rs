@@ -32,6 +32,23 @@ pub async fn check(ctx: Ctx) {
     }
 }
 
+/// The "Check for updates" button in Settings: checks now and says what it found.
+pub async fn check_now(ctx: Ctx) -> String {
+    let (Some(key), false) = (PUBLIC_KEY, cfg!(debug_assertions)) else {
+        return "Updates are off in development builds.".into();
+    };
+    match prepare(&ctx, key).await {
+        Ok(Some(ready)) => {
+            let version = ready.version.clone();
+            let mut update = ctx.update;
+            update.set(Some(ready));
+            format!("Relix {version} is ready.")
+        }
+        Ok(None) => format!("You're up to date (Relix {}).", env!("CARGO_PKG_VERSION")),
+        Err(e) => format!("Couldn't check for updates: {e}"),
+    }
+}
+
 async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
     let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url(&format!("/update/latest?os={}", std::env::consts::OS))).await.map_err(|e| e.to_string())?;
     if !is_newer(&latest.version, env!("CARGO_PKG_VERSION")) {
