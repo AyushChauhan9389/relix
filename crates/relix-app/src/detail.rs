@@ -86,18 +86,20 @@ impl Component for Detail {
                         let (ctx, title) = (ctx.clone(), preview(&m));
                         async move {
                             let mut status = ctx.player_status;
-                            // Saved every 15s while playing too, so closing the window or a crash
-                            // doesn't lose what was watched (the save when playback stops does the rest).
-                            let mut saved_at = std::time::Instant::now();
+                            // Saved every 5s while playing (sent to the server every 30s), so closing
+                            // the window or a crash doesn't lose what was watched.
+                            let (mut saved_at, mut synced_at) = (std::time::Instant::now(), std::time::Instant::now());
                             while let Some::<player::Status>(s) = from_player.recv().await {
                                 let p = Progress { position: s.position, duration: s.duration };
-                                if s.loaded && p.position > 0. && !is_finished(p) && saved_at.elapsed().as_secs() >= 15 {
+                                if s.loaded && p.position > 0. && !is_finished(p) && saved_at.elapsed().as_secs() >= 5 {
                                     saved_at = std::time::Instant::now();
                                     if let Some(vid) = video.peek().clone() {
                                         let state = record_playback(title.clone(), &vid, p, None, now());
-                                        match ctx.store.put(&ctx.profile, "progress", &title.id, &state) {
-                                            Ok(()) => ctx.sync_soon(),
-                                            Err(e) => eprintln!("saving progress: {e}"),
+                                        if let Err(e) = ctx.store.put(&ctx.profile, "progress", &title.id, &state) {
+                                            eprintln!("saving progress: {e}");
+                                        } else if synced_at.elapsed().as_secs() >= 30 {
+                                            synced_at = std::time::Instant::now();
+                                            ctx.sync_soon();
                                         }
                                     }
                                 }
