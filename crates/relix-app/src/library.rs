@@ -124,9 +124,77 @@ pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
     rows
 }
 
+/// Looks up the series in Continue Watching (one details request each, at most 30) and marks the
+/// ones with a new episode, for the "New episode" badge.
+pub async fn find_new_episodes(ctx: crate::Ctx) {
+    use freya::prelude::WritableUtils;
+    use relix_proto::addon::{MetaResponse, ResourceRequest, route};
+    let states: Vec<WatchState> = ctx.store.list::<Option<WatchState>>(&ctx.profile, "progress").unwrap_or_default().into_iter().filter_map(|(_, s)| s).collect();
+    let watched: std::collections::HashSet<String> =
+        ctx.store.list::<bool>(&ctx.profile, "watched").unwrap_or_default().into_iter().filter(|(_, w)| *w).map(|(id, _)| id).collect();
+    let addons = ctx.all_addons();
+    let mut found = std::collections::HashSet::new();
+    for state in states.iter().filter(|s| s.title.r#type == "series").take(30) {
+        let req = ResourceRequest::new("meta", "series", &state.title.id);
+        for (_, url) in route(&addons, &req) {
+            if let Ok(r) = crate::get::<MetaResponse>(ctx.http.clone(), url).await {
+                if has_new_episode(&r.meta.videos, &watched, state.updated, now()) {
+                    found.insert(state.title.id.clone());
+                }
+                break;
+            }
+        }
+    }
+    let mut new_episodes = ctx.new_episodes;
+    new_episodes.set(found);
+}
+
+/// Whether a series has a new episode for the viewer: its latest aired episode (specials aside)
+/// came out after they last watched (`last_watched`, Unix seconds) and isn't watched yet.
+pub fn has_new_episode(videos: &[Video], watched: &std::collections::HashSet<String>, last_watched: u64, now: u64) -> bool {
+    let day = |secs: u64| (secs / 86_400) as i64;
+    let latest = videos
+        .iter()
+        .filter(|v| v.season.is_some_and(|s| s > 0))
+        .filter_map(|v| Some((days_from_iso(v.released.as_deref()?)?, v)))
+        .filter(|(d, _)| *d <= day(now))
+        .max_by_key(|(d, v)| (*d, v.season, v.episode));
+    latest.is_some_and(|(d, v)| d > day(last_watched) && !watched.contains(&v.id))
+}
+
+/// Days since 1970-01-01 for an ISO date such as "2008-01-21T05:00:00.000Z".
+fn days_from_iso(iso: &str) -> Option<i64> {
+    let mut parts = iso.get(..10)?.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    // Howard Hinnant's days_from_civil.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_episode_when_the_latest_aired_after_last_watch_and_is_unwatched() {
+        let v = |id: &str, s: u32, e: u32, released: &str| -> Video {
+            serde_json::from_value(serde_json::json!({ "id": id, "season": s, "episode": e, "released": released })).unwrap()
+        };
+        let day = |iso: &str| days_from_iso(iso).unwrap() as u64 * 86_400;
+        let videos = [v("e1", 1, 1, "2026-10-01T00:00:00Z"), v("e2", 1, 2, "2026-10-08T00:00:00Z"), v("e3", 1, 3, "2026-10-15T00:00:00Z")];
+        let watched: std::collections::HashSet<String> = ["e1".into()].into();
+        let now = day("2026-10-10");
+        assert!(has_new_episode(&videos, &watched, day("2026-10-02"), now), "e2 aired after the last watch");
+        assert!(!has_new_episode(&videos, &watched, day("2026-10-09"), now), "watched since e2 aired");
+        let both: std::collections::HashSet<String> = ["e1".into(), "e2".into()].into();
+        assert!(!has_new_episode(&videos, &both, day("2026-10-02"), now), "e2 already watched; e3 hasn't aired");
+        assert_eq!(days_from_iso("1970-01-01"), Some(0));
+        assert_eq!(days_from_iso("2000-03-01"), Some(11_017));
+    }
 
     #[test]
     fn next_episode_crosses_seasons_and_skips_specials() {

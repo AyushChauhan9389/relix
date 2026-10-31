@@ -194,6 +194,8 @@ pub struct Ctx {
     /// The user's switch for admin addons; on unless they turned it off (synced setting).
     pub admin_enabled: State<bool>,
     pub rows: State<Vec<Row>>,
+    /// Series with an episode out since the viewer last watched (library::find_new_episodes).
+    pub new_episodes: State<std::collections::HashSet<String>>,
     /// While Home's catalogs are being fetched.
     pub rows_loading: State<bool>,
     /// A title Home's Play asked to start; its page plays it once loaded.
@@ -359,6 +361,7 @@ fn app() -> impl IntoElement {
     let saved = store.get::<Vec<Addon>>(&profile, "addons", "list").ok().flatten();
     let addons = use_state(|| saved.clone().unwrap_or_default());
     let rows = use_state(Vec::<Row>::new);
+    let new_episodes = use_state(std::collections::HashSet::new);
     let rows_loading = use_state(|| true);
     let autoplay_title = use_state(|| None);
     let sync_status = use_state(String::new);
@@ -382,6 +385,7 @@ fn app() -> impl IntoElement {
         admin_addons,
         admin_enabled,
         rows,
+        new_episodes,
         rows_loading,
         autoplay_title,
         sync: Arc::default(),
@@ -401,6 +405,7 @@ fn app() -> impl IntoElement {
         let ctx = ctx.clone();
         move || {
             spawn(update::check(ctx.clone()));
+            spawn(library::find_new_episodes(ctx.clone()));
             spawn(sync::run(ctx));
         }
     });

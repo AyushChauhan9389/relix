@@ -131,7 +131,7 @@ impl Component for Browse {
                 rect().spacing(8.).child(Placeholder::new(Size::px(POSTER_W), POSTER_H)).into_element()
             }))
         } else {
-            rect().horizontal().content(Content::wrap_spacing(16.)).spacing(8.).children(shown.iter().map(|m| poster(m, None, None)))
+            rect().horizontal().content(Content::wrap_spacing(16.)).spacing(8.).children(shown.iter().map(|m| poster(m, None, false, None)))
         };
 
         page.wrap(

@@ -386,6 +386,7 @@ pub struct PosterRow {
 impl Component for PosterRow {
     fn render(&self) -> impl IntoElement {
         let row = use_scroller();
+        let new = use_consume::<Ctx>().new_episodes.read().clone();
         let metas = self.row.metas.clone();
         let progress = self.row.progress.clone();
         let len = if self.row.loading { 8 } else { metas.len() };
@@ -402,12 +403,13 @@ impl Component for PosterRow {
             .child(
                 row.wrap(
                     VirtualScrollView::new_with_data_controlled(
-                        (metas, progress, row, loading),
-                        |item, (metas, progress, row, loading): &(Vec<MetaPreview>, Vec<f32>, Scroller, bool)| {
+                        (metas, progress, row, loading, new),
+                        |item, (metas, progress, row, loading, new): &(Vec<MetaPreview>, Vec<f32>, Scroller, bool, std::collections::HashSet<String>)| {
                             let card: Element = if *loading {
                                 Placeholder::new(Size::px(POSTER_W), POSTER_H).into()
                             } else {
-                                poster(&metas[item.index], progress.get(item.index).copied(), Some(*row))
+                                let m = &metas[item.index];
+                                poster(m, progress.get(item.index).copied(), new.contains(&m.id), Some(*row))
                             };
                             rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(card).into()
                         },
@@ -423,7 +425,7 @@ impl Component for PosterRow {
 }
 
 /// A poster that opens its title; `row` is the horizontal row it scrolls within, if any.
-pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) -> Element {
+pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row: Option<Scroller>) -> Element {
     // Shown when there's no poster or it fails to load.
     let blank = |name: String| -> Element {
         rect()
@@ -463,6 +465,17 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, row: Option<Scroller>) 
                 .corner_radius(2.)
                 .background(theme().track)
                 .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background(theme().accent)),
+        )
+    });
+    let art = art.maybe(new_episode, |el| {
+        el.child(
+            rect()
+                .position(Position::new_absolute().left(8.).top(8.))
+                .layer(Layer::OverlayLevel(1))
+                .padding(Gaps::new(3., 7., 3., 7.))
+                .corner_radius(4.)
+                .background(theme().accent)
+                .child(label().text("NEW EPISODE").font_size(11.).font_weight(FontWeight::BOLD)),
         )
     });
     let card = Focusable { row, radius: theme().radius, grow: 1.08, ..Focusable::new(art, open_title(meta)) };

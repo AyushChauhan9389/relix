@@ -17,6 +17,7 @@ impl Component for MyList {
         use_page_scroller(page);
         // Re-read whenever Home's local rows change (adds, removals, sync).
         let _ = ctx.rows.read();
+        let new = ctx.new_episodes.read().clone();
         let titles: Vec<MetaPreview> = ctx
             .store
             .list::<Option<MetaPreview>>(&ctx.profile, "library")
@@ -40,7 +41,7 @@ impl Component for MyList {
                             .horizontal()
                             .content(Content::wrap_spacing(16.))
                             .spacing(8.)
-                            .children(titles.iter().map(|m| poster(m, None, None))),
+                            .children(titles.iter().map(|m| poster(m, None, new.contains(&m.id), None))),
                     ),
             ),
         )
