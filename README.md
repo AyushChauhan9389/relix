@@ -37,7 +37,7 @@ From the [latest release](https://github.com/AyushChauhan9389/relix/releases/lat
 | | File | |
 |---|---|---|
 | **Windows** | `Relix-<version>-windows-x64-setup.exe` | Installer, no admin needed. Updates itself. |
-| | `Relix-<version>-windows-x64.msi` | Installer for managed PCs (all users). |
+| | `Relix-<version>-windows-x64.msi` | Installer for managed PCs (all users). Updates through its installer (asks for admin once). |
 | | `Relix-<version>-windows-x64-portable.exe` | One file, no install, data next to it. Updates itself. |
 | | `Relix-<version>-windows-x64-portable.zip` | The same as a folder. Updates itself. |
 | **Linux** | `Relix-<version>-linux-amd64.deb` | Debian/Ubuntu package. |

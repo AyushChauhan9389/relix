@@ -10,3 +10,10 @@ The server, not GitHub, hosts updates because the repository is private. The sig
 - Releases are built, signed and published only by the Release workflow in GitHub Actions (2026-10-30).
 - Losing the private key means installed copies can't be updated until users download a build with a new key by hand.
 - If copying fails halfway, the files done so far stay new; each failed file is put back from `*.old`.
+
+## Update (2026-10-31): Program Files installs
+
+An `.msi` install lives in Program Files, which Relix can't write to. Releases also publish a signed
+`.msi` (`latest-msi.json`); such a copy downloads and verifies it in the background and, on Restart,
+runs it as an in-place upgrade. Windows asks for admin once, then Relix reopens. The `.deb` is left
+to apt.

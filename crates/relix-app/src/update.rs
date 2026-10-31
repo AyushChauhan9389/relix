@@ -11,12 +11,29 @@ use crate::{Ctx, data_dir, get};
 /// The release signing key's public half, set when building releases; no key, no updates.
 const PUBLIC_KEY: Option<&str> = option_env!("RELIX_UPDATE_PUBKEY");
 
-/// A downloaded, verified update unpacked and waiting for a restart.
+/// A newer version, downloaded and verified, waiting for a restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ready {
     pub version: String,
-    /// Folder holding the new relix-app.exe and its files.
-    pub files: PathBuf,
+    pub install: Install,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Install {
+    /// Folder holding the new relix-app.exe and its files, swapped in on restart.
+    Files(PathBuf),
+    /// The new .msi: a Program Files install can't replace its own files, so the installer
+    /// upgrades it on restart (Windows asks for admin once).
+    Msi(PathBuf),
+}
+
+/// Whether this copy can write to its own folder (not, say, Program Files without admin).
+fn can_install() -> bool {
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) else { return false };
+    let probe = dir.join(".relix-write-test");
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(probe);
+    ok
 }
 
 /// Checks for and prepares an update; sets `ctx.update` when one is ready.
@@ -50,19 +67,38 @@ pub async fn check_now(ctx: Ctx) -> String {
 }
 
 async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
-    let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url(&format!("/update/latest?os={}", std::env::consts::OS))).await.map_err(|e| e.to_string())?;
+    // A copy that can't write to its own folder is a Program Files (.msi) install on Windows; on
+    // Linux that's the .deb, which apt updates.
+    let msi = !can_install();
+    if msi && !cfg!(windows) {
+        return Ok(None);
+    }
+    let os = if msi { "msi" } else { std::env::consts::OS };
+    let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url(&format!("/update/latest?os={os}"))).await.map_err(|e| e.to_string())?;
     if !is_newer(&latest.version, env!("CARGO_PKG_VERSION")) {
         return Ok(None);
     }
     let url = crate::sync::server_url(&format!("/update/files/{}", latest.file));
     let res = ctx.http.get(url).send().await.and_then(reqwest::Response::error_for_status).map_err(|e| e.to_string())?;
-    let zip = res.bytes().await.map_err(|e| e.to_string())?;
-    if !verify(key, &signed_message(&latest.version, &zip), &latest.signature) {
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    if !verify(key, &signed_message(&latest.version, &bytes), &latest.signature) {
         return Err(format!("{} isn't signed by Relix; ignoring it", latest.file));
     }
     let dir = data_dir().join("update");
-    let files = tokio::task::spawn_blocking(move || unpack(&dir, &zip)).await.map_err(|e| e.to_string())??;
-    Ok(Some(Ready { version: latest.version, files }))
+    let install = if msi {
+        let path = dir.join(&latest.file);
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &bytes)).map(|()| path)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+        .map(Install::Msi)?
+    } else {
+        Install::Files(tokio::task::spawn_blocking(move || unpack(&dir, &bytes)).await.map_err(|e| e.to_string())??)
+    };
+    Ok(Some(Ready { version: latest.version, install }))
 }
 
 /// Unpacks the zip into a fresh `dir` and returns the folder that holds relix-app.exe.
@@ -95,13 +131,30 @@ fn app_exe_name() -> String {
 pub fn apply(ready: &Ready) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let install = exe.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    let files = match &ready.install {
+        Install::Files(files) => files,
+        Install::Msi(msi) => {
+            // msiexec asks for admin itself and upgrades in place; Relix reopens unelevated after.
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                std::process::Command::new("cmd")
+                    .raw_arg(format!("/C msiexec /i \"{}\" /passive && start \"\" \"{}\"", msi.display(), exe.display()))
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                    .spawn()?;
+                std::process::exit(0);
+            }
+            #[cfg(not(windows))]
+            return Err(std::io::Error::other(format!("{} can only install on Windows", msi.display())));
+        }
+    };
     // The single-file portable build stays one file: rebuild it from the update's exe and libmpv.
     #[cfg(windows)]
     if crate::bundled::appended_len(&exe).is_some() {
         let old = old_name(&exe);
         let _ = std::fs::remove_file(&old);
         std::fs::rename(&exe, &old)?;
-        let new = (ready.files.join(app_exe_name()), ready.files.join("libmpv-2.dll"));
+        let new = (files.join(app_exe_name()), files.join("libmpv-2.dll"));
         if let Err(e) = crate::bundled::write(&exe, &new.0, &new.1) {
             let _ = std::fs::rename(&old, &exe);
             return Err(e);
@@ -109,7 +162,7 @@ pub fn apply(ready: &Ready) -> std::io::Result<()> {
         std::process::Command::new(&exe).spawn()?;
         std::process::exit(0);
     }
-    swap_files(&ready.files, install, |from, to| std::fs::copy(from, to).map(drop))?;
+    swap_files(files, install, |from, to| std::fs::copy(from, to).map(drop))?;
     std::process::Command::new(install.join(app_exe_name())).spawn()?;
     std::process::exit(0);
 }

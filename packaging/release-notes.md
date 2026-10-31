@@ -7,7 +7,7 @@ A Netflix-style desktop app for Stremio addons. Website: https://relix.carbonkit
 | | File | |
 |---|---|---|
 | **Windows** | `…-windows-x64-setup.exe` | Installer (no admin needed). Updates itself. |
-| | `…-windows-x64.msi` | Installer for IT-managed PCs (installs for all users). |
+| | `…-windows-x64.msi` | Installer for IT-managed PCs (installs for all users). Updates itself; Windows asks for admin. |
 | | `…-windows-x64-portable.exe` | One file, no install. Keeps its data next to itself. Updates itself. |
 | | `…-windows-x64-portable.zip` | The same as a folder. Updates itself. |
 | **Linux** | `…-linux-amd64.deb` | Debian/Ubuntu package (`sudo apt install ./Relix-…deb`). |

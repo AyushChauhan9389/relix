@@ -151,6 +151,8 @@ jobs:
           trap 'rm -f signing.key' EXIT
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/latest-windows.json
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/latest-linux.json
+          # Program Files (.msi) installs upgrade through the new .msi.
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/latest-msi.json
           # Builds before per-OS manifests ask for latest.json; it's the Windows one.
           cp dist/latest-windows.json dist/latest.json
       - name: Release notes
@@ -171,7 +173,9 @@ jobs:
           up() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/update/$1"; }
           up "Relix-$VERSION-windows-x64-portable.zip"
           up "Relix-$VERSION-linux-x64.tar.gz"
+          up "Relix-$VERSION-windows-x64.msi"
           # Manifests last, so no client sees a version whose file isn't there yet.
           up latest-windows.json
           up latest-linux.json
+          up latest-msi.json
           up latest.json
