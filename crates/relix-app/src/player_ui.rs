@@ -19,6 +19,8 @@ const HIDE_AFTER: Duration = Duration::from_secs(3);
 /// The Next Episode card shows this many seconds before the end.
 const NEXT_CARD: f64 = 20.;
 const SPEEDS: [f64; 6] = [0.5, 0.75, 1., 1.25, 1.5, 2.];
+/// The volume goes past 100% (mpv's volume-max matches, player.rs).
+pub const MAX_VOLUME: f64 = 150.;
 
 const ICON_BACK: &[u8] = include_bytes!("../assets/icons/arrow-left.svg");
 const ICON_PLAY: &[u8] = include_bytes!("../assets/icons/play.svg");
@@ -215,12 +217,13 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         .child(icon_button(ICON_FWD10, 30., false, Some("10"), move |()| drop(fwd.mpv().command("seek", &["10", "relative"]))))
         .child(icon_button(volume_icon, 28., false, None, move |()| drop(mute.mpv().set_property("mute", !muted))))
         .child(
-            rect().width(Size::px(110.)).child(
+            // Freya's slider runs 0-100; it maps onto 0-150% volume.
+            rect().width(Size::px(160.)).child(
                 Slider::new(move |v: f64| {
-                    let _ = vol.mpv().set_property("volume", v);
+                    let _ = vol.mpv().set_property("volume", v / 100. * MAX_VOLUME);
                     let _ = vol.mpv().set_property("mute", false);
                 })
-                .value(if muted { 0. } else { s.volume.min(100.) })
+                .value(if muted { 0. } else { s.volume.min(MAX_VOLUME) / MAX_VOLUME * 100. })
                 .size(Size::fill()),
             ),
         );
@@ -452,7 +455,7 @@ pub fn key(ctx: &Ctx, key: &Key) -> bool {
         Key::Character(c) if c == " " => drop(mpv.set_property("pause", !s.paused)),
         Key::Named(NamedKey::ArrowLeft) => drop(mpv.command("seek", &["-10", "relative"])),
         Key::Named(NamedKey::ArrowRight) => drop(mpv.command("seek", &["10", "relative"])),
-        Key::Named(NamedKey::ArrowUp) => drop(mpv.set_property("volume", (s.volume + 5.).min(100.))),
+        Key::Named(NamedKey::ArrowUp) => drop(mpv.set_property("volume", (s.volume + 5.).min(MAX_VOLUME))),
         Key::Named(NamedKey::ArrowDown) => drop(mpv.set_property("volume", (s.volume - 5.).max(0.))),
         Key::Character(c) if c.eq_ignore_ascii_case("f") => ctx.toggle_fullscreen(),
         Key::Character(c) if c.eq_ignore_ascii_case("m") => drop(mpv.set_property("mute", !s.muted)),

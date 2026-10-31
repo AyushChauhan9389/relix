@@ -136,6 +136,7 @@ pub fn play(
     let embedded = video.is_some();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         init.set_option("hwdec", "auto-safe")?;
+        init.set_option("volume-max", crate::player_ui::MAX_VOLUME)?;
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
