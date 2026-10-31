@@ -1,9 +1,12 @@
 name: CI
 
+# Docs, the website and images don't need a build.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'website/**', 'public/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'website/**', 'public/**']
 
 # A newer push to the same branch replaces the run in progress.
 concurrency:
@@ -26,5 +29,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Lints are the same on both systems; Windows only builds and runs the tests.
+      - if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
