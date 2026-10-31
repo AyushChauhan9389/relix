@@ -181,7 +181,7 @@ fn action(ctx: &Ctx, addons: &[Addon], text: &'static str, edit: impl Fn(&mut Ve
 }
 
 /// Opens `url` in the system browser.
-fn open_in_browser(url: &str) {
+pub fn open_in_browser(url: &str) {
     let mut cmd = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
         // `start` treats the first quoted arg as a window title, hence the empty "".

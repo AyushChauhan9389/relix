@@ -426,6 +426,31 @@ impl Component for Detail {
                 .expanded()
                 .spacing(12.)
                 .child(season_switcher(&all_seasons, current_season, season))
+                .child({
+                    // Marks every episode of the shown season watched, or clears them all if they already are.
+                    let ids: Vec<String> = episodes.iter().map(|e| e.id.clone()).collect();
+                    let all_done = !ids.is_empty() && ids.iter().all(|id| watched_now.contains(id));
+                    let ctx = ctx.clone();
+                    rect().width(Size::fill()).main_align(Alignment::End).child(Focusable::new(
+                        label()
+                            .text(if all_done { "Mark season unwatched" } else { "Mark season watched" })
+                            .font_size(14.)
+                            .color(theme().muted),
+                        move |()| {
+                            for id in &ids {
+                                if let Err(e) = ctx.store.put(&ctx.profile, "watched", id, &!all_done) {
+                                    eprintln!("saving watched: {e}");
+                                    return;
+                                }
+                            }
+                            let mut set = watched.write();
+                            for id in &ids {
+                                if all_done { set.remove(id) } else { set.insert(id.clone()) };
+                            }
+                            ctx.sync_soon();
+                        },
+                    ))
+                })
                 .child(page.wrap(
                     ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
                         rect().width(Size::fill()).spacing(6.).children(episodes.iter().map(|ep| {
@@ -575,7 +600,12 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
                 .child(Focusable::new(
                     button(if in_list { "✓ My List" } else { "+ My List" }, theme().secondary, (255, 255, 255)),
                     toggle_list,
-                )),
+                ))
+                // YouTube needs a downloader to play in mpv, so trailers open in the browser.
+                .maybe_child(meta.trailer_streams.first().map(|t| {
+                    let url = format!("https://www.youtube.com/watch?v={}", t.yt_id);
+                    Focusable::new(button("Trailer", theme().secondary, (255, 255, 255)), move |()| crate::addons::open_in_browser(&url))
+                })),
         )
 }
 

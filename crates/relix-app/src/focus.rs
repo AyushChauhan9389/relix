@@ -87,11 +87,13 @@ impl Scroller {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Entry {
     area: Area,
     /// The horizontal row this focusable scrolls within, if any.
     row: Option<Scroller>,
+    /// What Enter does, so a gamepad's A button can press it too.
+    on_press: EventHandler<()>,
 }
 
 /// Every mounted focusable and the current page's vertical scroller.
@@ -120,7 +122,7 @@ impl Registry {
             None => None,
         };
         let Some(target) = target else { return false };
-        let entry = entries[&target];
+        let entry = entries[&target].clone();
         drop(entries);
         target.request_focus();
         if let Some(row) = entry.row {
@@ -130,6 +132,13 @@ impl Registry {
             page.reveal(entry.area, Direction::Vertical, TOP_INSET);
         }
         true
+    }
+
+    /// Presses the focused item (a gamepad's A button); returns whether something was focused.
+    pub fn press(&self) -> bool {
+        let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+        let on_press = self.entries.borrow().get(&focused).map(|e| e.on_press.clone());
+        on_press.map(|f| f.call(())).is_some()
     }
 }
 
@@ -172,6 +181,7 @@ impl Component for Focusable {
             }
         });
         let (on_press, row) = (self.on_press.clone(), self.row);
+        let pressed = self.on_press.clone();
         let mut hovered = use_state(|| false);
         // Hover or focus lifts it a little, eased both ways.
         let lifted = *hovered.read() || focus().is_focused();
@@ -189,7 +199,7 @@ impl Component for Focusable {
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set(false))
             .on_sized(move |e: Event<SizedEventData>| {
-                registry.entries.borrow_mut().insert(id, Entry { area: e.area, row });
+                registry.entries.borrow_mut().insert(id, Entry { area: e.area, row, on_press: pressed.clone() });
             })
             .on_press(move |_| on_press.call(()))
             .border(

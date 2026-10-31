@@ -7,7 +7,9 @@ mod browse;
 #[cfg(windows)]
 mod bundled;
 mod detail;
+mod discord;
 mod filter;
+mod gamepad;
 mod focus;
 mod home;
 mod library;
@@ -503,6 +505,45 @@ fn update_banner(ready: &update::Ready) -> Rect {
 #[derive(PartialEq)]
 struct Shell;
 
+/// What a key does: F11 fullscreen, arrows move focus, Esc backs out; while video plays they go
+/// to the player. Gamepads (gamepad.rs) send the same keys.
+fn handle_key(ctx: &Ctx, registry: &Registry, key: &Key) {
+    // F11 toggles fullscreen anywhere, like Stremio.
+    if *key == Key::Named(NamedKey::F11) {
+        ctx.toggle_fullscreen();
+        return;
+    }
+    // While video plays, Esc stops it and the rest go to mpv's controls.
+    if ctx.player.peek().is_some() {
+        if *key == Key::Named(NamedKey::Escape) {
+            ctx.player_escape();
+        } else {
+            player_ui::key(ctx, key);
+        }
+        return;
+    }
+    let dir = match *key {
+        Key::Named(NamedKey::ArrowUp) => Dir::Up,
+        Key::Named(NamedKey::ArrowDown) => Dir::Down,
+        Key::Named(NamedKey::ArrowLeft) => Dir::Left,
+        Key::Named(NamedKey::ArrowRight) => Dir::Right,
+        // Esc leaves fullscreen first, then goes back.
+        Key::Named(NamedKey::Escape) if *ctx.fullscreen.peek() => {
+            ctx.toggle_fullscreen();
+            return;
+        }
+        Key::Named(NamedKey::Escape) => {
+            let router = RouterContext::get();
+            if router.can_go_back() {
+                router.go_back();
+            }
+            return;
+        }
+        _ => return,
+    };
+    registry.navigate(dir);
+}
+
 impl Component for Shell {
     fn render(&self) -> impl IntoElement {
         let registry = use_provide_context(Registry::default);
@@ -513,44 +554,42 @@ impl Component for Shell {
         let sidebar = theme::theme().sidebar;
         let route = RouterContext::get().current::<Route>().to_string();
         let keys = ctx.clone();
+        // Discord "Now watching" follows what plays (only when the build has a Discord app id).
+        let presence = use_hook(discord::start);
+        use_side_effect({
+            let ctx = ctx.clone();
+            move || {
+                let watching = ctx.now_playing.read().clone().map(|np| discord::Watching {
+                    title: np.title,
+                    episode: np.episode,
+                    image: np.logo.or(np.background),
+                });
+                if let Some(tx) = &presence {
+                    let _ = tx.send(watching);
+                }
+            }
+        });
+        use_hook({
+            let (ctx, registry) = (ctx.clone(), registry.clone());
+            move || {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                std::thread::spawn(move || gamepad::run(tx));
+                spawn(async move {
+                    while let Some(pad) = rx.recv().await {
+                        match pad {
+                            gamepad::Pad::Key(key) => handle_key(&ctx, &registry, &key),
+                            gamepad::Pad::Press if ctx.player.peek().is_some() => handle_key(&ctx, &registry, &Key::Character(" ".into())),
+                            gamepad::Pad::Press => drop(registry.press()),
+                        }
+                    }
+                });
+            }
+        });
         rect()
             .expanded()
-            .on_global_key_down(move |e: Event<KeyboardEventData>| {
-                let ctx = &keys;
-                // F11 toggles fullscreen anywhere, like Stremio.
-                if e.key == Key::Named(NamedKey::F11) {
-                    ctx.toggle_fullscreen();
-                    return;
-                }
-                // While video plays, Esc stops it and the rest go to mpv's controls.
-                if ctx.player.peek().is_some() {
-                    if e.key == Key::Named(NamedKey::Escape) {
-                        ctx.player_escape();
-                    } else {
-                        player_ui::key(ctx, &e.key);
-                    }
-                    return;
-                }
-                let dir = match e.key {
-                    Key::Named(NamedKey::ArrowUp) => Dir::Up,
-                    Key::Named(NamedKey::ArrowDown) => Dir::Down,
-                    Key::Named(NamedKey::ArrowLeft) => Dir::Left,
-                    Key::Named(NamedKey::ArrowRight) => Dir::Right,
-                    // Esc leaves fullscreen first, then goes back.
-                    Key::Named(NamedKey::Escape) if *ctx.fullscreen.peek() => {
-                        ctx.toggle_fullscreen();
-                        return;
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        let router = RouterContext::get();
-                        if router.can_go_back() {
-                            router.go_back();
-                        }
-                        return;
-                    }
-                    _ => return,
-                };
-                registry.navigate(dir);
+            .on_global_key_down({
+                let registry = registry.clone();
+                move |e: Event<KeyboardEventData>| handle_key(&keys, &registry, &e.key)
             })
             .background(theme::theme().bg)
             .color(Color::WHITE)

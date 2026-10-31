@@ -23,6 +23,7 @@ fn series_meta_with_episodes() {
     let ep = &r.meta.videos[0];
     assert_eq!((ep.id.as_str(), ep.season, ep.episode), ("tt0903747:1:1", Some(1), Some(1)));
     assert_eq!(ep.title(), "Pilot");
+    assert_eq!(r.meta.trailer_streams[0].yt_id, "VFkjBy2b50Q");
 }
 
 #[test]

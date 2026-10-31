@@ -330,6 +330,15 @@ pub struct Meta {
     pub writer: Option<serde_json::Value>,
     #[serde(default)]
     pub links: Vec<MetaLink>,
+    #[serde(default)]
+    pub trailer_streams: Vec<TrailerStream>,
+}
+
+/// A trailer on YouTube.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrailerStream {
+    pub yt_id: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
