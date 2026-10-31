@@ -153,9 +153,10 @@ impl Component for Detail {
                             }
                         });
                         // mpv blocks until playback stops, so it gets its own thread.
+                        let prefs = ctx.player_prefs();
                         std::thread::spawn(move || {
                             let video = Box::new(move |mpv| drop(to_ui.send(mpv)));
-                            let played = player::play(&url, &headers, start, &overlay.title, Some(video), inbox, |msg| {
+                            let played = player::play(&url, &headers, start, &overlay.title, &prefs, Some(video), inbox, |msg| {
                                 let _ = to_app.send(msg);
                             });
                             let _ = tx.send(played);

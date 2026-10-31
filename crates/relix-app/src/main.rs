@@ -111,7 +111,7 @@ fn main() {
             });
             inbox
         };
-        match player::play(&url, &Default::default(), start, &title, None, inbox, |_| {}) {
+        match player::play(&url, &Default::default(), start, &title, &Default::default(), None, inbox, |_| {}) {
             Ok((p, ended)) => println!("stopped at {:.1}s of {:.1}s ({ended:?})", p.position, p.duration),
             Err(e) => eprintln!("mpv: {e}"),
         }
@@ -208,6 +208,8 @@ pub struct Ctx {
     /// each new video frame.
     pub now_playing: State<Option<NowPlaying>>,
     pub player_status: State<player::Status>,
+    /// Gain on top of mpv's 100% volume (player_ui::set_volume), 1 when not boosted.
+    pub volume_boost: State<f64>,
     pub video_frame: State<u64>,
     pub fullscreen: State<bool>,
     /// Netflix or Stremio look (synced setting).
@@ -287,6 +289,8 @@ impl Ctx {
         }));
         let (mut now, mut status) = (self.now_playing, self.player_status);
         status.set(player::Status::default());
+        let mut boost = self.volume_boost;
+        boost.set(1.);
         now.set(Some(NowPlaying {
             video,
             title: overlay.title,
@@ -307,6 +311,18 @@ impl Ctx {
     }
 
     /// Asks the sync loop to run soon (no-op when signed out).
+    /// The viewer's playback preferences (a synced setting).
+    pub fn player_prefs(&self) -> player::Prefs {
+        self.store.get(&self.profile, "settings", "player").ok().flatten().unwrap_or_default()
+    }
+
+    pub fn save_player_prefs(&self, prefs: &player::Prefs) {
+        match self.store.put(&self.profile, "settings", "player", prefs) {
+            Ok(()) => self.sync_soon(),
+            Err(e) => eprintln!("saving player settings: {e}"),
+        }
+    }
+
     pub fn sync_soon(&self) {
         self.sync.notify_one();
     }
@@ -349,6 +365,7 @@ fn app() -> impl IntoElement {
     let player = use_state(|| None);
     let now_playing = use_state(|| None);
     let player_status = use_state(player::Status::default);
+    let volume_boost = use_state(|| 1.);
     let video_frame = use_state(|| 0);
     let fullscreen = use_state(|| false);
     let admin_addons = use_state(|| {
@@ -372,6 +389,7 @@ fn app() -> impl IntoElement {
         player,
         now_playing,
         player_status,
+        volume_boost,
         video_frame,
         fullscreen,
         look,

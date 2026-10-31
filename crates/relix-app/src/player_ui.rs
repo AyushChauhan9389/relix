@@ -10,7 +10,7 @@ use freya::prelude::*;
 use crate::Ctx;
 use crate::home::{backdrop, title_art};
 use crate::motion::{FadeIn, HOVER_MS};
-use crate::player::{Status, ToPlayer};
+use crate::player::{Status, ToPlayer, Track};
 use crate::theme::theme;
 use crate::video::{VideoRenderer, video};
 
@@ -19,8 +19,23 @@ const HIDE_AFTER: Duration = Duration::from_secs(3);
 /// The Next Episode card shows this many seconds before the end.
 const NEXT_CARD: f64 = 20.;
 const SPEEDS: [f64; 6] = [0.5, 0.75, 1., 1.25, 1.5, 2.];
-/// The volume goes past 100% (mpv's volume-max matches, player.rs).
+/// The volume goes up to 150% (set_volume).
 pub const MAX_VOLUME: f64 = 150.;
+
+/// Sets the volume, 0-150%. mpv's own volume covers 0-100; above that a gain filter boosts it with a
+/// limiter right after, so loud scenes don't crackle (mpv applies its volume after the filters, so
+/// a limiter alone wouldn't see the boost).
+pub fn set_volume(ctx: &Ctx, mpv: &libmpv2::Mpv, v: f64) {
+    let v = v.clamp(0., MAX_VOLUME);
+    let _ = mpv.set_property("volume", v.min(100.));
+    let gain = (v / 100.).max(1.);
+    let mut boost = ctx.volume_boost;
+    if (gain - *boost.peek()).abs() > 0.001 {
+        let af = if gain > 1. { format!("lavfi=[volume={gain:.2},alimiter=limit=0.95]") } else { String::new() };
+        let _ = mpv.set_property("af", af);
+        boost.set(gain);
+    }
+}
 
 const ICON_BACK: &[u8] = include_bytes!("../assets/icons/arrow-left.svg");
 const ICON_PLAY: &[u8] = include_bytes!("../assets/icons/play.svg");
@@ -118,7 +133,7 @@ impl Component for Player {
                 // Own layers above the video: Freya doesn't order siblings on one layer.
                 el.child(top_bar(&ctx, &np.title, &np.episode).opacity(o).layer(1))
                     .child(bottom_bar(&ctx, &r, &status, np.has_next, menu).opacity(o).layer(1))
-                    .maybe_child((*menu.read()).map(|m| menu_panel(m, &r, &status, menu).opacity(o).layer(2)))
+                    .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu).opacity(o).layer(2)))
             })
             .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
                 el.child(next_card(&ctx, status.duration - status.position))
@@ -219,11 +234,14 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         .child(
             // Freya's slider runs 0-100; it maps onto 0-150% volume.
             rect().width(Size::px(160.)).child(
-                Slider::new(move |v: f64| {
-                    let _ = vol.mpv().set_property("volume", v / 100. * MAX_VOLUME);
-                    let _ = vol.mpv().set_property("mute", false);
+                Slider::new({
+                    let ctx = ctx.clone();
+                    move |v: f64| {
+                        set_volume(&ctx, vol.mpv(), v / 100. * MAX_VOLUME);
+                        let _ = vol.mpv().set_property("mute", false);
+                    }
                 })
-                .value(if muted { 0. } else { s.volume.min(MAX_VOLUME) / MAX_VOLUME * 100. })
+                .value(if muted { 0. } else { (s.volume * *ctx.volume_boost.read()).min(MAX_VOLUME) / MAX_VOLUME * 100. })
                 .size(Size::fill()),
             ),
         );
@@ -276,14 +294,19 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
 }
 
 /// Subtitles and audio, or playback speed, above the bottom-right buttons.
-fn menu_panel(m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Menu>>) -> Rect {
+fn menu_panel(ctx: &Ctx, m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Menu>>) -> Rect {
     // A fixed height (Freya paints backgrounds on sized boxes); long lists scroll inside it.
     let rows = match m {
-        Menu::Tracks => (s.subs.len() + 1).max(s.audio.len()),
+        // The subtitle style column has 3 rows.
+        Menu::Tracks => (s.subs.len() + 1).max(s.audio.len()).max(3),
         Menu::Speed => SPEEDS.len(),
     };
     let list_h = (rows as f32 * 38.).min(380.);
-    let columns = if matches!(m, Menu::Tracks) && s.audio.len() > 1 { 2. } else { 1. };
+    let columns = match m {
+        Menu::Tracks if s.audio.len() > 1 => 3.,
+        Menu::Tracks => 2.,
+        Menu::Speed => 1.,
+    };
     let panel = rect()
         .position(Position::new_absolute().bottom(110.).right(40.))
         .width(Size::px(columns * 300. + (columns - 1.) * 24. + 32.))
@@ -306,22 +329,35 @@ fn menu_panel(m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Men
     };
     match m {
         Menu::Tracks => {
-            let pick = |prop: &'static str, id: Option<i64>| {
-                let r = r.clone();
+            // Picking a track also remembers its language for the next stream ("Off" remembers no subtitles).
+            let pick = |prop: &'static str, track: Option<&Track>| {
+                let (r, ctx) = (r.clone(), ctx.clone());
+                let (id, lang) = (track.map(|t| t.id), track.and_then(|t| t.lang.clone()));
                 Box::new(move || {
                     let _ = match id {
                         Some(id) => r.mpv().set_property(prop, id),
                         None => r.mpv().set_property(prop, "no"),
                     };
+                    let mut prefs = ctx.player_prefs();
+                    match (prop, id) {
+                        ("sid", None) => prefs.sub_lang = Some("off".into()),
+                        ("sid", Some(_)) if lang.is_some() => prefs.sub_lang = lang.clone(),
+                        ("aid", Some(_)) if lang.is_some() => prefs.audio_lang = lang.clone(),
+                        _ => {}
+                    }
+                    ctx.save_player_prefs(&prefs);
                     let mut menu = menu;
                     menu.set(None);
                 }) as Box<dyn Fn()>
             };
             let subs = std::iter::once(option("Off".into(), s.sid.is_none(), pick("sid", None)))
-                .chain(s.subs.iter().map(|t| option(t.title.clone(), s.sid == Some(t.id), pick("sid", Some(t.id)))))
+                .chain(s.subs.iter().map(|t| option(t.title.clone(), s.sid == Some(t.id), pick("sid", Some(t)))))
                 .collect();
-            let audio = s.audio.iter().map(|t| option(t.title.clone(), s.aid == Some(t.id), pick("aid", Some(t.id)))).collect();
-            panel.child(column("Subtitles", subs)).maybe(s.audio.len() > 1, |el| el.child(column("Audio", audio)))
+            let audio = s.audio.iter().map(|t| option(t.title.clone(), s.aid == Some(t.id), pick("aid", Some(t)))).collect();
+            panel
+                .child(column("Subtitles", subs))
+                .maybe(s.audio.len() > 1, |el| el.child(column("Audio", audio)))
+                .child(column("Subtitle style", subtitle_style(ctx, r)))
         }
         Menu::Speed => panel.child(column("Speed", SPEEDS.iter().map(|&v| {
             let r = r.clone();
@@ -332,6 +368,70 @@ fn menu_panel(m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Men
             }))
         }).collect())),
     }
+}
+
+/// Size and background (remembered) and delay (this stream only), changed live.
+fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
+    let mpv = r.mpv();
+    let prefs = ctx.player_prefs();
+    let delay = mpv.get_property::<f64>("sub-delay").unwrap_or(0.);
+    let scale = |step: f64| {
+        let (ctx, r) = (ctx.clone(), r.clone());
+        move || {
+            let mut prefs = ctx.player_prefs();
+            prefs.sub_scale = ((prefs.sub_scale + step) * 10.).round().clamp(5., 25.) / 10.;
+            let _ = r.mpv().set_property("sub-scale", prefs.sub_scale);
+            ctx.save_player_prefs(&prefs);
+        }
+    };
+    let shift = |step: f64| {
+        let r = r.clone();
+        move || drop(r.mpv().command("add", &["sub-delay", &step.to_string()]))
+    };
+    let background = {
+        let (ctx, r) = (ctx.clone(), r.clone());
+        move || {
+            let mut prefs = ctx.player_prefs();
+            prefs.sub_background = !prefs.sub_background;
+            let _ = r.mpv().set_property("sub-border-style", prefs.border_style());
+            ctx.save_player_prefs(&prefs);
+        }
+    };
+    vec![
+        stepper("Size", format!("{:.0}%", prefs.sub_scale * 100.), scale(-0.1), scale(0.1)),
+        stepper("Delay", format!("{delay:+.1}s"), shift(-0.5), shift(0.5)),
+        MenuOption {
+            text: "Background box".into(),
+            selected: prefs.sub_background,
+            on_press: EventHandler::new(move |()| background()),
+        }
+        .into_element(),
+    ]
+}
+
+/// "Size  − 100% +": a value with buttons either side.
+fn stepper(name: &str, value: String, minus: impl Fn() + 'static, plus: impl Fn() + 'static) -> Element {
+    let button = |glyph: &'static str, f: Box<dyn Fn()>| {
+        rect()
+            .width(Size::px(30.))
+            .height(Size::px(30.))
+            .corner_radius(15.)
+            .center()
+            .background((255, 255, 255, 0.10))
+            .on_press(move |_| f())
+            .child(label().text(glyph).font_size(17.))
+    };
+    rect()
+        .width(Size::fill())
+        .horizontal()
+        .content(Content::Flex)
+        .cross_align(Alignment::Center)
+        .padding(Gaps::new(4., 10., 4., 38.))
+        .child(label().width(Size::flex(1.)).text(name.to_owned()).font_size(15.))
+        .child(button("−", Box::new(minus)))
+        .child(label().width(Size::px(64.)).text_align(TextAlign::Center).text(value).font_size(14.))
+        .child(button("+", Box::new(plus)))
+        .into_element()
 }
 
 /// A menu row with a hover highlight and a check when selected.
@@ -455,8 +555,8 @@ pub fn key(ctx: &Ctx, key: &Key) -> bool {
         Key::Character(c) if c == " " => drop(mpv.set_property("pause", !s.paused)),
         Key::Named(NamedKey::ArrowLeft) => drop(mpv.command("seek", &["-10", "relative"])),
         Key::Named(NamedKey::ArrowRight) => drop(mpv.command("seek", &["10", "relative"])),
-        Key::Named(NamedKey::ArrowUp) => drop(mpv.set_property("volume", (s.volume + 5.).min(MAX_VOLUME))),
-        Key::Named(NamedKey::ArrowDown) => drop(mpv.set_property("volume", (s.volume - 5.).max(0.))),
+        Key::Named(NamedKey::ArrowUp) => set_volume(ctx, mpv, s.volume * *ctx.volume_boost.peek() + 5.),
+        Key::Named(NamedKey::ArrowDown) => set_volume(ctx, mpv, s.volume * *ctx.volume_boost.peek() - 5.),
         Key::Character(c) if c.eq_ignore_ascii_case("f") => ctx.toggle_fullscreen(),
         Key::Character(c) if c.eq_ignore_ascii_case("m") => drop(mpv.set_property("mute", !s.muted)),
         Key::Character(c) if c.eq_ignore_ascii_case("n") && np.has_next => {

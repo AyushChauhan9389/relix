@@ -49,6 +49,35 @@ pub struct Overlay {
 pub struct Track {
     pub id: i64,
     pub title: String,
+    /// ISO 639 code, when the track has one.
+    pub lang: Option<String>,
+}
+
+/// How the viewer likes playback, applied when a stream starts. Picking tracks and subtitle
+/// settings in the player update it; it's a synced setting.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// Audio language (ISO 639-2, e.g. "eng"); `None` keeps the stream's default.
+    pub audio_lang: Option<String>,
+    /// Subtitle language, "off", or `None` for the stream's default.
+    pub sub_lang: Option<String>,
+    pub sub_scale: f64,
+    /// A dark box behind subtitles.
+    pub sub_background: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { audio_lang: None, sub_lang: None, sub_scale: 1., sub_background: false }
+    }
+}
+
+impl Prefs {
+    /// The subtitle background as mpv options.
+    pub fn border_style(&self) -> &'static str {
+        if self.sub_background { "background-box" } else { "outline-and-shadow" }
+    }
 }
 
 /// The player's state for the controls; a fresh copy arrives whenever it changes.
@@ -124,11 +153,14 @@ fn lang_name(code: &str) -> String {
 /// own controls. `headers` are an addon stream's `proxyHeaders.request`. `inbox` brings subtitles
 /// (attached once the file loads, so they never delay playback), stop and next requests; `status`
 /// gets the player's state whenever it changes.
+// Each argument is a separate input of one playback; a struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 pub fn play(
     url: &str,
     headers: &HashMap<String, String>,
     start: f64,
     title: &str,
+    prefs: &Prefs,
     video: Option<Box<dyn FnOnce(Arc<Mpv>) + Send>>,
     inbox: Receiver<ToPlayer>,
     status: impl Fn(Status),
@@ -136,7 +168,17 @@ pub fn play(
     let embedded = video.is_some();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         init.set_option("hwdec", "auto-safe")?;
-        init.set_option("volume-max", crate::player_ui::MAX_VOLUME)?;
+        if let Some(lang) = &prefs.audio_lang {
+            init.set_option("alang", lang.as_str())?;
+        }
+        match prefs.sub_lang.as_deref() {
+            Some("off") => init.set_option("sid", "no")?,
+            Some(lang) => init.set_option("slang", lang)?,
+            None => {}
+        }
+        init.set_option("sub-scale", prefs.sub_scale)?;
+        init.set_option("sub-border-style", prefs.border_style())?;
+        init.set_option("sub-back-color", "#B0000000")?;
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
@@ -173,13 +215,13 @@ pub fn play(
         hand_over(mpv.clone());
     }
 
-    let played = run(&mpv, url, &inbox, &status);
+    let played = run(&mpv, url, prefs, &inbox, &status);
     // Make sure the core stops even if something else still holds it.
     let _ = mpv.command("quit", &[]);
     played
 }
 
-fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status)) -> libmpv2::Result<(Progress, Option<Ended>)> {
+fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status)) -> libmpv2::Result<(Progress, Option<Ended>)> {
     for (id, (name, format)) in [
         ("time-pos", Format::Double),
         ("duration", Format::Double),
@@ -203,6 +245,8 @@ fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status))
     let mut sent_position = f64::MIN;
     // Subtitles wait here until the file has loaded.
     let mut pending: Vec<[String; 4]> = vec![];
+    // The first addon subtitle in the preferred language is selected, unless one already is.
+    let mut want_sub = prefs.sub_lang.clone().filter(|l| l != "off");
     loop {
         for msg in inbox.try_iter() {
             match msg {
@@ -212,7 +256,11 @@ fn run(mpv: &Mpv, url: &str, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status))
             }
         }
         if status.loaded {
-            for args in pending.drain(..) {
+            for mut args in pending.drain(..) {
+                if status.sid.is_none() && want_sub.as_deref() == Some(args[3].as_str()) {
+                    args[1] = "select".into();
+                    want_sub = None;
+                }
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if let Err(e) = mpv.command("sub-add", &args) {
                     eprintln!("sub-add {}: {e}", args[0]);
@@ -260,8 +308,8 @@ fn tracks(mpv: &Mpv, count: i64) -> (Vec<Track>, Vec<Track>) {
         let Ok(id) = mpv.get_property::<i64>(&format!("track-list/{i}/id")) else { continue };
         let title = text("title").or_else(|| text("lang")).unwrap_or_else(|| format!("Track {id}"));
         match text("type").as_deref() {
-            Some("sub") => subs.push(Track { id, title }),
-            Some("audio") => audio.push(Track { id, title }),
+            Some("sub") => subs.push(Track { id, title, lang: text("lang") }),
+            Some("audio") => audio.push(Track { id, title, lang: text("lang") }),
             _ => {}
         }
     }
