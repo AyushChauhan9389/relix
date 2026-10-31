@@ -285,7 +285,14 @@ impl Ctx {
         }));
         let (mut now, mut status) = (self.now_playing, self.player_status);
         status.set(player::Status::default());
-        now.set(Some(NowPlaying { video, title: overlay.title, episode: overlay.episode, has_next: overlay.has_next }));
+        now.set(Some(NowPlaying {
+            video,
+            title: overlay.title,
+            episode: overlay.episode,
+            has_next: overlay.has_next,
+            logo: overlay.logo,
+            background: overlay.background,
+        }));
     }
 
     /// Esc while playing: leave fullscreen first, then stop.
@@ -576,6 +583,8 @@ pub struct NowPlaying {
     pub title: String,
     pub episode: String,
     pub has_next: bool,
+    pub logo: Option<String>,
+    pub background: Option<String>,
 }
 
 impl PartialEq for NowPlaying {

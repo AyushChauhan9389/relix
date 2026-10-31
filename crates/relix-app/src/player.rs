@@ -39,6 +39,9 @@ pub struct Overlay {
     pub episode: String,
     /// Shows "Next episode" and the countdown card.
     pub has_next: bool,
+    /// Art for the loading screen.
+    pub logo: Option<String>,
+    pub background: Option<String>,
 }
 
 /// A subtitle or audio track mpv knows about.
@@ -91,10 +94,27 @@ pub fn sub_add_args(subs: &[Subtitle], addon: &str) -> Vec<[String; 4]> {
         .map(|s| {
             let total = subs.iter().filter(|o| o.lang == s.lang).count();
             let n = seen.entry(&s.lang).and_modify(|n| *n += 1).or_insert(1);
-            let title = if total > 1 { format!("{} · {addon} {n}", s.lang) } else { format!("{} · {addon}", s.lang) };
+            let name = lang_name(&s.lang);
+            let title = if total > 1 { format!("{name} · {addon} {n}") } else { format!("{name} · {addon}") };
             [s.url.clone(), "auto".into(), title, s.lang.clone()]
         })
         .collect()
+}
+
+/// A subtitle language code (ISO 639-2, as addons send them) as a name people read.
+fn lang_name(code: &str) -> String {
+    // shortcut: the common languages only, others show their code; add names as people ask.
+    let name = match code {
+        "eng" => "English", "spa" => "Spanish", "fre" | "fra" => "French", "ger" | "deu" => "German",
+        "ita" => "Italian", "por" => "Portuguese", "pob" => "Portuguese (Brazil)", "dut" | "nld" => "Dutch",
+        "pol" => "Polish", "rus" => "Russian", "tur" => "Turkish", "ara" => "Arabic", "hin" => "Hindi",
+        "jpn" => "Japanese", "kor" => "Korean", "chi" | "zho" => "Chinese", "swe" => "Swedish",
+        "dan" => "Danish", "nor" => "Norwegian", "fin" => "Finnish", "est" => "Estonian", "gre" | "ell" => "Greek",
+        "heb" => "Hebrew", "hun" => "Hungarian", "cze" | "ces" => "Czech", "rum" | "ron" => "Romanian",
+        "ukr" => "Ukrainian", "vie" => "Vietnamese", "ind" => "Indonesian", "tha" => "Thai",
+        _ => return code.to_uppercase(),
+    };
+    name.into()
 }
 
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
@@ -261,9 +281,9 @@ mod tests {
         assert_eq!(
             args,
             [
-                ["a", "auto", "eng · OpenSubtitles v3 1", "eng"],
-                ["c", "auto", "fre · OpenSubtitles v3", "fre"],
-                ["b", "auto", "eng · OpenSubtitles v3 2", "eng"],
+                ["a", "auto", "English · OpenSubtitles v3 1", "eng"],
+                ["c", "auto", "French · OpenSubtitles v3", "fre"],
+                ["b", "auto", "English · OpenSubtitles v3 2", "eng"],
             ]
         );
     }

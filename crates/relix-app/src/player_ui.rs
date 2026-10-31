@@ -8,7 +8,8 @@ use freya::animation::*;
 use freya::prelude::*;
 
 use crate::Ctx;
-use crate::motion::{FadeIn, HOVER_MS, busy};
+use crate::home::{backdrop, title_art};
+use crate::motion::{FadeIn, HOVER_MS};
 use crate::player::{Status, ToPlayer};
 use crate::theme::theme;
 use crate::video::{VideoRenderer, video};
@@ -104,22 +105,49 @@ impl Component for Player {
                         }
                     }),
             )
-            .maybe(!status.loaded, |el| el.child(layer_center().child(busy("Loading…"))))
+            .maybe(!status.loaded, |el| el.child(Loading { logo: np.logo.clone(), background: np.background.clone(), title: np.title.clone() }.into_element()))
             .maybe(status.loaded && status.paused, |el| {
-                el.child(layer_center().child(icon_button(ICON_PLAY, 64., true, None, {
+                el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
                     let r = r.clone();
                     move |()| drop(r.mpv().set_property("pause", false))
                 })))
             })
             .maybe(o > 0.01, |el| {
-                el.child(top_bar(&ctx, &np.title, &np.episode).opacity(o))
-                    .child(bottom_bar(&ctx, &r, &status, np.has_next, menu).opacity(o))
-                    .maybe_child((*menu.read()).map(|m| menu_panel(m, &r, &status, menu).opacity(o)))
+                // Own layers above the video: Freya doesn't order siblings on one layer.
+                el.child(top_bar(&ctx, &np.title, &np.episode).opacity(o).layer(1))
+                    .child(bottom_bar(&ctx, &r, &status, np.has_next, menu).opacity(o).layer(1))
+                    .maybe_child((*menu.read()).map(|m| menu_panel(m, &r, &status, menu).opacity(o).layer(2)))
             })
             .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
                 el.child(next_card(&ctx, status.duration - status.position))
             })
             .into_element()
+    }
+}
+
+/// While the stream opens: the title's backdrop with its logo breathing in the middle, like Stremio.
+#[derive(PartialEq)]
+struct Loading {
+    logo: Option<String>,
+    background: Option<String>,
+    title: String,
+}
+
+impl Component for Loading {
+    fn render(&self) -> impl IntoElement {
+        let pulse = use_animation(|conf| {
+            conf.on_creation(OnCreation::Run);
+            conf.on_finish(OnFinish::Reverse { delay: Duration::ZERO });
+            AnimNum::new(0.35, 1.).time(1100).ease(Ease::InOut).function(Function::Sine)
+        });
+        rect()
+            .position(Position::new_absolute().top(0.).left(0.))
+            .width(Size::percent(100.))
+            .height(Size::percent(100.))
+            .background((0, 0, 0))
+            .layer(1)
+            .child(backdrop(self.background.as_deref()).opacity(0.35))
+            .child(layer_center().child(rect().opacity(pulse.get().value()).child(title_art(self.logo.as_deref(), &self.title))))
     }
 }
 
@@ -246,15 +274,30 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
 
 /// Subtitles and audio, or playback speed, above the bottom-right buttons.
 fn menu_panel(m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Menu>>) -> Rect {
+    // A fixed height (Freya paints backgrounds on sized boxes); long lists scroll inside it.
+    let rows = match m {
+        Menu::Tracks => (s.subs.len() + 1).max(s.audio.len()),
+        Menu::Speed => SPEEDS.len(),
+    };
+    let list_h = (rows as f32 * 38.).min(380.);
+    let columns = if matches!(m, Menu::Tracks) && s.audio.len() > 1 { 2. } else { 1. };
     let panel = rect()
         .position(Position::new_absolute().bottom(110.).right(40.))
+        .width(Size::px(columns * 300. + (columns - 1.) * 24. + 32.))
+        .height(Size::px(list_h + 64.))
         .padding(Gaps::new_all(16.))
         .corner_radius(12.)
         .background((20, 20, 20, 0.96))
         .border(Border::new().fill((255, 255, 255, 0.08)).width(1.))
         .horizontal()
-        .spacing(32.);
-    let column = |title: &'static str| rect().width(Size::px(240.)).spacing(4.).child(label().text(title).font_size(13.).color(theme().muted));
+        .spacing(24.);
+    let column = |title: &'static str, items: Vec<Element>| {
+        rect()
+            .width(Size::px(300.))
+            .spacing(8.)
+            .child(label().text(title).font_size(13.).color(theme().muted))
+            .child(ScrollView::new().height(Size::px(list_h)).children(items))
+    };
     let option = |text: String, selected: bool, on: Box<dyn Fn()>| {
         MenuOption { text, selected, on_press: EventHandler::new(move |()| on()) }.into_element()
     };
@@ -271,20 +314,20 @@ fn menu_panel(m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Men
                     menu.set(None);
                 }) as Box<dyn Fn()>
             };
-            let subs = column("Subtitles")
-                .child(option("Off".into(), s.sid.is_none(), pick("sid", None)))
-                .children(s.subs.iter().map(|t| option(t.title.clone(), s.sid == Some(t.id), pick("sid", Some(t.id)))));
-            let audio = column("Audio").children(s.audio.iter().map(|t| option(t.title.clone(), s.aid == Some(t.id), pick("aid", Some(t.id)))));
-            panel.child(subs).maybe(s.audio.len() > 1, |el| el.child(audio))
+            let subs = std::iter::once(option("Off".into(), s.sid.is_none(), pick("sid", None)))
+                .chain(s.subs.iter().map(|t| option(t.title.clone(), s.sid == Some(t.id), pick("sid", Some(t.id)))))
+                .collect();
+            let audio = s.audio.iter().map(|t| option(t.title.clone(), s.aid == Some(t.id), pick("aid", Some(t.id)))).collect();
+            panel.child(column("Subtitles", subs)).maybe(s.audio.len() > 1, |el| el.child(column("Audio", audio)))
         }
-        Menu::Speed => panel.child(column("Speed").children(SPEEDS.iter().map(|&v| {
+        Menu::Speed => panel.child(column("Speed", SPEEDS.iter().map(|&v| {
             let r = r.clone();
             option(if v == 1. { "Normal".into() } else { format!("{v}x") }, s.speed == v, Box::new(move || {
                 let _ = r.mpv().set_property("speed", v);
                 let mut menu = menu;
                 menu.set(None);
             }))
-        }))),
+        }).collect())),
     }
 }
 
@@ -320,6 +363,7 @@ fn next_card(ctx: &Ctx, left: f64) -> Rect {
     let ctx = ctx.clone();
     rect()
         .position(Position::new_absolute().bottom(140.).right(40.))
+        .layer(2)
         .child(FadeIn::page(
             rect()
                 .horizontal()

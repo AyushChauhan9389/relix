@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, Placeholder, busy};
 use crate::home::{backdrop, button, layer, play_button, title_art};
-use crate::library::{WatchState, is_finished, next_video, now, preview, record_playback};
+use crate::library::{Progress, WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
 use crate::theme::theme;
@@ -83,10 +83,24 @@ impl Component for Detail {
                     // Requests from the player's controls that Relix handles (fullscreen, Esc).
                     let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
                     spawn({
-                        let ctx = ctx.clone();
+                        let (ctx, title) = (ctx.clone(), preview(&m));
                         async move {
                             let mut status = ctx.player_status;
-                            while let Some(s) = from_player.recv().await {
+                            // Saved every 15s while playing too, so closing the window or a crash
+                            // doesn't lose what was watched (the save when playback stops does the rest).
+                            let mut saved_at = std::time::Instant::now();
+                            while let Some::<player::Status>(s) = from_player.recv().await {
+                                let p = Progress { position: s.position, duration: s.duration };
+                                if s.loaded && p.position > 0. && !is_finished(p) && saved_at.elapsed().as_secs() >= 15 {
+                                    saved_at = std::time::Instant::now();
+                                    if let Some(vid) = video.peek().clone() {
+                                        let state = record_playback(title.clone(), &vid, p, None, now());
+                                        match ctx.store.put(&ctx.profile, "progress", &title.id, &state) {
+                                            Ok(()) => ctx.sync_soon(),
+                                            Err(e) => eprintln!("saving progress: {e}"),
+                                        }
+                                    }
+                                }
                                 status.set(s);
                             }
                         }
@@ -109,7 +123,9 @@ impl Component for Detail {
                             title: m.name.clone(),
                             episode: m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default(),
                             has_next: next.is_some(),
-};
+                            logo: m.logo.clone(),
+                            background: m.background.clone(),
+                        };
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // The player hands its mpv over from its thread; the video is drawn here.
                         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
