@@ -24,6 +24,9 @@ pub struct WatchState {
     pub up_next: bool,
     /// Seconds since the Unix epoch.
     pub updated: u64,
+    /// The stream last played, marked "Last played" in the stream list.
+    #[serde(default)]
+    pub stream_url: Option<String>,
 }
 
 /// Whether playback stopped in the credits or later.
@@ -49,7 +52,7 @@ impl WatchState {
 /// The progress record after mpv stops playing `video_id`.
 /// A finished episode with a `next_video` becomes "up next" for that episode.
 pub fn record_playback(title: MetaPreview, video_id: &str, p: Progress, next_video: Option<String>, now: u64) -> WatchState {
-    let state = WatchState { title, video_id: video_id.into(), position: p.position, duration: p.duration, up_next: false, updated: now };
+    let state = WatchState { title, video_id: video_id.into(), position: p.position, duration: p.duration, up_next: false, updated: now, stream_url: None };
     match next_video {
         Some(next) if state.finished() => WatchState { video_id: next, position: 0., duration: 0., up_next: true, ..state },
         _ => state,

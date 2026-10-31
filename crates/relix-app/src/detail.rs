@@ -94,7 +94,8 @@ impl Component for Detail {
                                 if s.loaded && p.position > 0. && !is_finished(p) && saved_at.elapsed().as_secs() >= 5 {
                                     saved_at = std::time::Instant::now();
                                     if let Some(vid) = video.peek().clone() {
-                                        let state = record_playback(title.clone(), &vid, p, None, now());
+                                        let mut state = record_playback(title.clone(), &vid, p, None, now());
+                                        state.stream_url = watch.peek().as_ref().and_then(|w| w.stream_url.clone());
                                         if let Err(e) = ctx.store.put(&ctx.profile, "progress", &title.id, &state) {
                                             eprintln!("saving progress: {e}");
                                         } else if synced_at.elapsed().as_secs() >= 30 {
@@ -119,7 +120,8 @@ impl Component for Detail {
                         let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
                         // Marked as watching the moment Play is pressed, before the stream even opens.
                         let duration = watch.peek().as_ref().filter(|w| w.video_id == vid).map_or(0., |w| w.duration);
-                        let state = record_playback(preview(&m), &vid, Progress { position: start, duration }, None, now());
+                        let mut state = record_playback(preview(&m), &vid, Progress { position: start, duration }, None, now());
+                        state.stream_url = Some(req.url.clone());
                         match ctx.store.put(&ctx.profile, "progress", &m.id, &state) {
                             Ok(()) => {
                                 watch.set(Some(state));
@@ -173,7 +175,8 @@ impl Component for Detail {
                         if ended == Some(Ended::NextRequested) {
                             p.position = p.duration;
                         }
-                        let state = record_playback(preview(&m), &vid, p, next.clone(), now());
+                        let mut state = record_playback(preview(&m), &vid, p, next.clone(), now());
+                        state.stream_url = Some(req.url.clone());
                         let saved = ctx.store.put(&ctx.profile, "progress", &m.id, &state).and_then(|()| {
                             if is_finished(p) {
                                 watched.write().insert(vid.clone());
@@ -412,7 +415,10 @@ impl Component for Detail {
                         .maybe_child(play_error.read().clone().map(|e| {
                             paragraph().width(Size::fill()).font_size(15.).color(crate::theme::ERROR).span(e)
                         }))
-                        .child(stream_panel(has_stream_addons, *searching.read(), groups, play)),
+                        .child(stream_panel(has_stream_addons, *searching.read(), groups, play, {
+                            let shown = video.read().clone();
+                            watch.read().as_ref().filter(|w| Some(&w.video_id) == shown.as_ref()).and_then(|w| w.stream_url.clone())
+                        })),
                 ))
                 .into()
         } else {
@@ -752,7 +758,13 @@ async fn binge_stream(ctx: &Ctx, kind: &str, video_id: &str, prev_addon: usize, 
     Play::of(stream, addon)
 }
 
-fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, String, Vec<Stream>)>, play: EventHandler<Play>) -> Rect {
+fn stream_panel(
+    has_stream_addons: bool,
+    searching: bool,
+    groups: Vec<(usize, String, Vec<Stream>)>,
+    play: EventHandler<Play>,
+    last_played: Option<String>,
+) -> Rect {
     let panel = rect().width(Size::fill()).spacing(10.);
     let note = |text: &'static str| paragraph().width(Size::fill()).font_size(15.).color(theme().muted).span(text);
     if !has_stream_addons {
@@ -772,15 +784,16 @@ fn stream_panel(has_stream_addons: bool, searching: bool, groups: Vec<(usize, St
             rect()
                 .spacing(6.)
                 .child(label().text(addon).font_size(14.).color(theme().muted))
-                .children(streams.into_iter().map(|s| stream_card(s, i, play.clone())))
+                .children(streams.into_iter().map(|s| stream_card(s, i, play.clone(), last_played.as_deref())))
                 .into_element()
         }))
         // Slower addons may still answer below what's shown.
         .maybe(searching, |el| el.child(busy("Asking more addons…")))
 }
 
-fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>) -> Element {
+fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, last_played: Option<&str>) -> Element {
     let request = Play::of(&stream, addon);
+    let last = request.as_ref().is_some_and(|r| Some(r.url.as_str()) == last_played);
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
     let title = stream.title.clone().or(stream.description.clone()).unwrap_or_default();
     let card = rect()
@@ -789,7 +802,17 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>) -> Elemen
         .spacing(4.)
         .corner_radius(6.)
         .background(theme().surface)
+        .maybe(last, |el| el.border(Border::new().fill(theme().accent).width(2.)))
         .maybe(request.is_none(), |el| el.opacity(0.45))
+        .maybe(last, |el| {
+            el.child(
+                rect()
+                    .padding(Gaps::new(2., 8., 2., 8.))
+                    .corner_radius(4.)
+                    .background(theme().accent)
+                    .child(label().text("Last played").font_size(12.).font_weight(FontWeight::BOLD)),
+            )
+        })
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
         .child(paragraph().font_size(13.).color(theme().muted).span(title));
     match request {
