@@ -8,7 +8,6 @@ use crate::home::Row;
 use crate::store::Store;
 
 /// Watched this far and you're "started"; Netflix-style, a peek doesn't count.
-const STARTED_SECS: f64 = 30.;
 /// Past this share of the runtime counts as finished (credits).
 const FINISHED: f64 = 0.95;
 
@@ -59,7 +58,8 @@ pub fn record_playback(title: MetaPreview, video_id: &str, p: Progress, next_vid
 
 /// The Continue Watching row: up-next episodes and started, unfinished titles, newest first.
 pub fn continue_watching(mut states: Vec<WatchState>) -> Vec<WatchState> {
-    states.retain(|s| s.up_next || (s.position >= STARTED_SECS && !s.finished()));
+    // Anything pressed Play on counts, even before a second is watched.
+    states.retain(|s| s.up_next || !s.finished());
     states.sort_by_key(|s| std::cmp::Reverse(s.updated));
     states
 }
@@ -149,11 +149,11 @@ mod tests {
         let states = vec![
             watched("old", "old", 600., 3000., 1),
             watched("new", "new", 900., 3000., 2),
-            watched("barely", "barely", 10., 3000., 3),
+            watched("just-pressed", "just-pressed", 0., 0., 3),
             watched("done", "done", 2950., 3000., 4),
         ];
         let ids: Vec<_> = continue_watching(states).into_iter().map(|s| s.title.id).collect();
-        assert_eq!(ids, ["new", "old"], "barely-started and finished titles stay out");
+        assert_eq!(ids, ["just-pressed", "new", "old"], "finished titles stay out, just-started ones show");
     }
 
     #[test]

@@ -117,6 +117,17 @@ impl Component for Detail {
                             }
                         }
                         let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
+                        // Marked as watching the moment Play is pressed, before the stream even opens.
+                        let duration = watch.peek().as_ref().filter(|w| w.video_id == vid).map_or(0., |w| w.duration);
+                        let state = record_playback(preview(&m), &vid, Progress { position: start, duration }, None, now());
+                        match ctx.store.put(&ctx.profile, "progress", &m.id, &state) {
+                            Ok(()) => {
+                                watch.set(Some(state));
+                                ctx.refresh_local_rows();
+                                ctx.sync_soon();
+                            }
+                            Err(e) => eprintln!("saving progress: {e}"),
+                        }
                         let next = next_video(&m.videos, &vid);
                         let (to_player, inbox) = std::sync::mpsc::channel();
                         playing.set(Some(to_player.clone()));
