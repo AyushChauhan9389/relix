@@ -200,8 +200,12 @@ pub fn play(
             None => {}
         }
         init.set_option("sub-scale", prefs.sub_scale)?;
-        init.set_option("sub-border-style", prefs.border_style())?;
-        init.set_option("sub-back-color", "#B0000000")?;
+        // Looks only: older mpv (0.37, Ubuntu 24.04) lacks `sub-border-style`, which mustn't stop playback.
+        for (name, value) in [("sub-border-style", prefs.border_style()), ("sub-back-color", "#B0000000")] {
+            if let Err(e) = init.set_option(name, value) {
+                eprintln!("mpv option {name}: {e}");
+            }
+        }
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
