@@ -212,7 +212,11 @@ impl Component for Focusable {
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set(false))
             .on_sized(move |e: Event<SizedEventData>| {
-                registry.entries.borrow_mut().insert(id, Entry { area: e.area, row, on_press: pressed.clone() });
+                let moved = registry.entries.borrow_mut().insert(id, Entry { area: e.area, row, on_press: pressed.clone() }).is_some_and(|old| old.area != e.area);
+                // A resize or scroll moves it without a pointer-leave; the next pointer move re-hovers it.
+                if moved && *hovered.peek() {
+                    hovered.set(false);
+                }
             })
             .on_press(move |_| on_press.call(()))
             .border(

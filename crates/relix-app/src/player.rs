@@ -329,12 +329,17 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 (6, PropertyData::Int64(n)) => (status.subs, status.audio) = tracks(mpv, n),
                 (7, PropertyData::Str(v)) => status.sid = v.parse().ok(),
                 (8, PropertyData::Str(v)) => status.aid = v.parse().ok(),
+                // Logged on changes only: mpv also reports each property's starting value.
                 (9, PropertyData::Flag(v)) => {
-                    crate::log!("player: {}", if v { "buffering" } else { "buffered" });
+                    if v != status.buffering {
+                        crate::log!("player: {}", if v { "buffering" } else { "buffered" });
+                    }
                     status.buffering = v;
                 }
                 (10, PropertyData::Flag(v)) => {
-                    crate::log!("player: {}", if v { "seeking" } else { "seeked" });
+                    if v != status.seeking {
+                        crate::log!("player: {}", if v { "seeking" } else { "seeked" });
+                    }
                     status.seeking = v;
                 }
                 _ => {}
