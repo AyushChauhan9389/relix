@@ -23,14 +23,34 @@ pub struct Browse {
 
 impl Component for Browse {
     fn render(&self) -> impl IntoElement {
+        browse(&self.kind, 0)
+    }
+}
+
+/// The same screen opened on one catalog: a Home row's "View all".
+#[derive(PartialEq)]
+pub struct BrowseCatalog {
+    pub kind: String,
+    /// Its index among `discover_catalogs` for `kind`.
+    pub catalog: usize,
+}
+
+impl Component for BrowseCatalog {
+    fn render(&self) -> impl IntoElement {
+        browse(&self.kind, self.catalog)
+    }
+}
+
+fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
+    {
         let ctx = use_consume::<Ctx>();
         let page = use_scroller();
         let (catalog_row, genre_row) = (use_scroller(), use_scroller());
         use_page_scroller(page);
         // Movies <-> Series reuses this component with a new `kind`.
-        let kind = use_reactive(&self.kind);
-        let mut last_kind = use_state(|| self.kind.clone());
-        let mut picked = use_state(|| 0usize);
+        let kind = use_reactive(kind_name);
+        let mut last_kind = use_state(|| kind_name.clone());
+        let mut picked = use_state(|| start);
         let mut filter = use_state(Filter::default);
         let mut items = use_state(Vec::<MetaPreview>::new);
         // Items received per request so far: the next page's `skip` for each.
@@ -119,7 +139,7 @@ impl Component for Browse {
         let watched: HashSet<String> =
             ctx.store.list::<bool>(&ctx.profile, "watched").unwrap_or_default().into_iter().map(|(k, _)| k).collect();
         let shown = apply(&loaded, &f, &watched);
-        let title = match self.kind.as_str() {
+        let title = match kind_name.as_str() {
             "movie" => "Movies".to_owned(),
             "series" => "Series".to_owned(),
             other => other.to_owned(),

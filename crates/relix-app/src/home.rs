@@ -100,14 +100,14 @@ pub enum NavLink {
 pub fn active_link(route: &Route) -> Option<NavLink> {
     match route {
         Route::Home => Some(NavLink::Home),
-        Route::Browse { kind } if kind == "series" => Some(NavLink::Series),
-        Route::Browse { kind } if kind == "movie" => Some(NavLink::Movies),
+        Route::Browse { kind } | Route::BrowseCatalog { kind, .. } if kind == "series" => Some(NavLink::Series),
+        Route::Browse { kind } | Route::BrowseCatalog { kind, .. } if kind == "movie" => Some(NavLink::Movies),
         Route::MyList => Some(NavLink::MyList),
         Route::Addons => Some(NavLink::Addons),
         Route::Search => Some(NavLink::Search),
         Route::Settings => Some(NavLink::Settings),
         Route::Account => Some(NavLink::Account),
-        Route::Browse { .. } | Route::Detail { .. } => None,
+        Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } => None,
     }
 }
 
@@ -403,14 +403,14 @@ impl Component for PosterRow {
         };
         metas.extend(more);
         let load_more = EventHandler::new({
-            let (id, next, received, base) = (self.row.id.clone(), self.row.next.clone(), metas.len(), metas.clone());
+            let (id, next, received, base, http) = (self.row.id.clone(), self.row.next.clone(), metas.len(), metas.clone(), ctx.http.clone());
             move |()| {
                 let Some((addon, req)) = next.clone() else { return };
                 if done || busy.get() {
                     return;
                 }
                 busy.set(true);
-                let (id, http, busy, base) = (id.clone(), ctx.http.clone(), busy.clone(), base.clone());
+                let (id, http, busy, base) = (id.clone(), http.clone(), busy.clone(), base.clone());
                 spawn(async move {
                     let url = req.extra("skip", &received.to_string()).url(&addon);
                     let page = crate::get::<CatalogResponse>(http, url).await.map(|r| r.metas).unwrap_or_default();
@@ -436,7 +436,13 @@ impl Component for PosterRow {
             .child(if self.row.title.is_empty() {
                 Placeholder::new(Size::px(200.), 22.).into_element()
             } else {
-                label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD).into_element()
+                rect()
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(16.)
+                    .child(label().text(self.row.title.clone()).font_size(20.).font_weight(FontWeight::BOLD))
+                    .maybe_child(view_all(&ctx, self.row.next.as_ref()))
+                    .into_element()
             })
             .child(
                 row.wrap(
@@ -463,6 +469,24 @@ impl Component for PosterRow {
                 ),
             )
     }
+}
+
+/// "View all" beside a catalog row's title: its catalog in the Movies/Series grid. Search rows
+/// (their request carries the query) and catalogs the grid can't browse get none.
+fn view_all(ctx: &Ctx, next: Option<&(Addon, ResourceRequest)>) -> Option<Element> {
+    let (addon, req) = next.filter(|(_, r)| r.extra.is_empty())?;
+    let addons = ctx.all_addons();
+    let catalog = relix_proto::addon::discover_catalogs(&addons, &req.r#type)
+        .position(|(i, c)| addons[i].manifest.id == addon.manifest.id && c.id == req.id)?;
+    let route = Route::BrowseCatalog { kind: req.r#type.clone(), catalog };
+    Some(
+        label()
+            .text("View all ›")
+            .font_size(14.)
+            .color(theme().muted)
+            .on_press(move |_| drop(RouterContext::get().push(route.clone())))
+            .into_element(),
+    )
 }
 
 /// A poster that opens its title; `row` is the horizontal row it scrolls within, if any.

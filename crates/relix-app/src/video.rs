@@ -21,8 +21,20 @@ use skia_safe::{ImageInfo, Paint, Rect as SkRect, Surface};
 pub struct VideoRenderer {
     // Declaration order is drop order: the GL objects must go before the mpv core they borrow.
     gl: RefCell<Option<Gl>>,
-    mpv: Arc<Mpv>,
+    /// Only `None` while dropping.
+    mpv: Option<Arc<Mpv>>,
     on_frame: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Drop for VideoRenderer {
+    fn drop(&mut self) {
+        // The GL side goes here, where Freya's GL context is current, and before the core it borrows.
+        self.gl.borrow_mut().take();
+        // Destroying mpv waits for its network and decoder threads to stop: never on the UI thread.
+        if let Some(mpv) = self.mpv.take() {
+            std::thread::spawn(move || drop(mpv));
+        }
+    }
 }
 
 struct Gl {
@@ -34,12 +46,12 @@ impl VideoRenderer {
     /// `mpv` must be created with `vo=libmpv`. `on_frame` runs on mpv's thread whenever a new frame
     /// is ready; it should make the UI repaint the video element.
     pub fn new(mpv: Arc<Mpv>, on_frame: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { gl: RefCell::new(None), mpv, on_frame: Arc::new(on_frame) }
+        Self { gl: RefCell::new(None), mpv: Some(mpv), on_frame: Arc::new(on_frame) }
     }
 
     /// The player, for the controls (pause, seek, volume, tracks).
     pub fn mpv(&self) -> &Mpv {
-        &self.mpv
+        self.mpv.as_deref().expect("mpv is only taken while dropping")
     }
 
     /// Renders the current frame at `size` pixels and returns it as a Skia image.
@@ -50,7 +62,7 @@ impl VideoRenderer {
                 RenderParam::ApiType(RenderParamApiType::OpenGl),
                 RenderParam::InitParams(OpenGLInitParams { get_proc_address: gl_proc, ctx: () }),
             ];
-            let ctx = self.mpv.create_render_context(params).map_err(|e| eprintln!("mpv render context: {e}")).ok()?;
+            let ctx = self.mpv().create_render_context(params).map_err(|e| eprintln!("mpv render context: {e}")).ok()?;
             // SAFETY: `ctx` borrows `self.mpv`, which this struct keeps alive and drops after `gl`.
             let mut ctx: MpvRenderContext<'static> = unsafe { std::mem::transmute(ctx) };
             let on_frame = self.on_frame.clone();

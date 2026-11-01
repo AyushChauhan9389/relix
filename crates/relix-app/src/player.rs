@@ -267,9 +267,9 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 }
             }
         }
-        // Wakes now and then to pick up subtitles and requests that arrived meanwhile.
+        // Wakes often enough that Stop and Next feel instant, and picks up subtitles meanwhile.
         let before = status.clone();
-        match mpv.wait_event(0.25) {
+        match mpv.wait_event(0.05) {
             Some(Ok(Event::FileLoaded)) => status.loaded = true,
             Some(Ok(Event::PropertyChange { change, reply_userdata, .. })) => match (reply_userdata, change) {
                 (0, PropertyData::Double(v)) => status.position = v,

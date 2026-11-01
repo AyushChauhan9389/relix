@@ -12,6 +12,7 @@ mod filter;
 mod gamepad;
 mod focus;
 mod home;
+mod instance;
 mod library;
 mod motion;
 mod my_list;
@@ -36,7 +37,7 @@ use tokio::task::JoinSet;
 
 use account::Account;
 use addons::Addons;
-use browse::Browse;
+use browse::{Browse, BrowseCatalog};
 use detail::Detail;
 use focus::{Dir, Registry};
 use home::{Home, Row};
@@ -117,6 +118,19 @@ fn main() {
         }
         return;
     }
+
+    // One Relix at a time; a second launch brings this one forward. Off-screen tests run alongside.
+    let _lock = match test_offscreen() {
+        true => None,
+        false => match instance::claim(&data_dir(), std::env::args().any(|a| a == "--after-update")) {
+            instance::Claim::Shown => return,
+            instance::Claim::Primary(lock, listener) => {
+                instance::serve(listener);
+                Some(lock)
+            }
+            instance::Claim::Unsure => None,
+        },
+    };
 
     update::cleanup();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -279,6 +293,10 @@ impl Ctx {
 
     /// Shows a player full-window; called with the mpv the player hands over.
     pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>, overlay: player::Overlay) {
+        // A player that already stopped (a dead link fails fast) hands over its mpv too late to show.
+        if self.player.peek().is_none() {
+            return;
+        }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut frame = self.video_frame;
         spawn(async move {
@@ -497,6 +515,8 @@ pub enum Route {
         Search,
         #[route("/browse/:kind")]
         Browse { kind: String },
+        #[route("/browse/:kind/:catalog")]
+        BrowseCatalog { kind: String, catalog: usize },
         #[route("/account")]
         Account,
         #[route("/my-list")]
@@ -581,6 +601,19 @@ impl Component for Shell {
         let keys = ctx.clone();
         // Discord "Now watching" follows what plays (only when the build has a Discord app id).
         let presence = use_hook(discord::start);
+        // Another launch asked for this window: bring it forward (Wayland only flashes it).
+        use_hook(|| {
+            let Some(mut rx) = instance::SHOW.lock().unwrap().take() else { return };
+            spawn(async move {
+                while rx.recv().await.is_some() {
+                    Platform::get().with_window(Platform::window_id(), |w| {
+                        w.set_minimized(false);
+                        w.focus_window();
+                        w.request_user_attention(Some(freya::winit::window::UserAttentionType::Informational));
+                    });
+                }
+            });
+        });
         use_side_effect({
             let ctx = ctx.clone();
             move || {

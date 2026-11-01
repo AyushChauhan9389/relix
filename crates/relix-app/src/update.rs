@@ -159,11 +159,11 @@ pub fn apply(ready: &Ready) -> std::io::Result<()> {
             let _ = std::fs::rename(&old, &exe);
             return Err(e);
         }
-        std::process::Command::new(&exe).spawn()?;
+        std::process::Command::new(&exe).arg("--after-update").spawn()?;
         std::process::exit(0);
     }
     swap_files(files, install, |from, to| std::fs::copy(from, to).map(drop))?;
-    std::process::Command::new(install.join(app_exe_name())).spawn()?;
+    std::process::Command::new(install.join(app_exe_name())).arg("--after-update").spawn()?;
     std::process::exit(0);
 }
 
