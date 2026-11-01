@@ -106,12 +106,42 @@ impl Component for Placeholder {
     }
 }
 
+/// Relix's loader: a bright arc sweeping round a faint ring, readable on any background
+/// (Freya's own is a thin arc in a muted colour that vanishes over video).
+#[derive(PartialEq)]
+pub struct Spinner {
+    pub size: f32,
+}
+
+impl Component for Spinner {
+    fn render(&self) -> impl IntoElement {
+        let spin = use_animation(|conf| {
+            conf.on_creation(OnCreation::Run);
+            conf.on_finish(OnFinish::restart());
+            AnimNum::new(0., 360.).time(900)
+        });
+        SvgViewer::new(
+            br##"<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="9"/>
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#ffffff" stroke-width="9"
+                    stroke-dasharray="75 252" stroke-linecap="round"/>
+            </svg>"##
+                .as_slice(),
+        )
+        .show_loader(false)
+        .a11y_role(AccessibilityRole::ProgressIndicator)
+        .width(Size::px(self.size))
+        .height(Size::px(self.size))
+        .rotation(spin.get().value())
+    }
+}
+
 /// A spinner with a short note, for actions in progress.
 pub fn busy(text: &str) -> Rect {
     rect()
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(10.)
-        .child(CircularLoader::new().size(22.))
+        .child(Spinner { size: 22. })
         .child(label().text(text.to_owned()).font_size(15.).color(crate::theme::theme().muted))
 }

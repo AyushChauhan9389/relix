@@ -1,0 +1,33 @@
+name: Test build
+
+# A private Linux build for trying a change on a real machine before releasing it: it only
+# uploads an artifact (download with `gh run download <id> -n linux-test`). No release, no
+# update server, nothing reaches users.
+on:
+  workflow_dispatch:
+
+env:
+  RELIX_SERVER: https://relix.carbonkit.tech
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: Build
+        run: cargo build --release -p relix-app
+      - name: Portable folder
+        run: |
+          name="Relix-test-$(git rev-parse --short HEAD)-linux-x64"
+          mkdir -p "$name"
+          cp target/release/relix-app "$name/"
+          cp packaging/linux-readme.txt "$name/README.txt"
+          touch "$name/portable"
+          tar -czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-test
+          compression-level: 0
+          retention-days: 7
+          path: Relix-test-*.tar.gz

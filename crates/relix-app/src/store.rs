@@ -165,16 +165,25 @@ impl Store {
         let tx = self.db.unchecked_transaction()?;
         let mut changed: Vec<String> = vec![];
         for r in records {
-            let dirty: bool = self
+            let local: Option<(bool, String)> = self
                 .db
                 .query_row(
-                    "SELECT dirty FROM records WHERE profile = ?1 AND kind = ?2 AND key = ?3",
+                    "SELECT dirty, value FROM records WHERE profile = ?1 AND kind = ?2 AND key = ?3",
                     params![profile, r.kind, r.key],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()?
-                .unwrap_or(false);
+                .optional()?;
+            let dirty = local.as_ref().is_some_and(|(d, _)| *d);
             if dirty && !first {
+                continue;
+            }
+            // Our own push coming back, or nothing new: record its seq, but it changes nothing (a
+            // "settings" change reloads all of Home).
+            if local.as_ref().is_some_and(|(_, v)| *v == r.value) {
+                self.db.execute(
+                    "UPDATE records SET seq = ?4, dirty = 0 WHERE profile = ?1 AND kind = ?2 AND key = ?3",
+                    params![profile, r.kind, r.key, r.seq as i64],
+                )?;
                 continue;
             }
             self.db.execute(
@@ -263,6 +272,16 @@ mod tests {
         assert_eq!(store.get::<String>(&p.id, "library", "tt1").unwrap().as_deref(), Some("x"));
         assert!(store.dirty().unwrap().is_empty());
         assert_eq!(store.last_seq().unwrap(), 7);
+    }
+
+    #[test]
+    fn our_own_push_coming_back_changes_nothing() {
+        let store = Store::in_memory().unwrap();
+        let p = store.create_profile("Me").unwrap();
+        store.apply_pulled(&p.id, &[synced("settings", "look", "\"stremio\"", 3)], false).unwrap();
+        let changed = store.apply_pulled(&p.id, &[synced("settings", "look", "\"stremio\"", 9)], false).unwrap();
+        assert!(changed.is_empty(), "same value pulled again must not count as a change");
+        assert_eq!(store.last_seq().unwrap(), 9);
     }
 
     #[test]

@@ -142,6 +142,8 @@ impl Component for Player {
                 }),
             })
             .maybe(!status.loaded, |el| el.child(Loading { logo: np.logo.clone(), background: np.background.clone(), title: np.title.clone() }.into_element()))
+            // Stalled on the network or seeking past what's downloaded: never just a frozen frame.
+            .maybe(status.loaded && (status.buffering || status.seeking), |el| el.child(layer_center().layer(1).child(spinner())))
             .maybe(status.loaded && status.paused, |el| {
                 el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
                     let r = r.clone();
@@ -183,8 +185,24 @@ impl Component for Loading {
             .background((0, 0, 0))
             .layer(1)
             .child(backdrop(self.background.as_deref()).opacity(0.35))
-            .child(layer_center().child(rect().opacity(pulse.get().value()).child(title_art(self.logo.as_deref(), &self.title))))
+            .child(
+                layer_center()
+                    .spacing(36.)
+                    .child(rect().opacity(pulse.get().value()).child(title_art(self.logo.as_deref(), &self.title)))
+                    .child(spinner()),
+            )
     }
+}
+
+/// The player's loader: a large ring on a soft dark disc, readable over any picture.
+fn spinner() -> Rect {
+    rect()
+        .width(Size::px(88.))
+        .height(Size::px(88.))
+        .corner_radius(44.)
+        .background((0, 0, 0, 0.45))
+        .center()
+        .child(crate::motion::Spinner { size: 56. })
 }
 
 fn layer_center() -> Rect {

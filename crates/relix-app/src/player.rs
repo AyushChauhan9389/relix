@@ -98,6 +98,9 @@ pub struct Status {
     /// The selected subtitle/audio track; `None` is off.
     pub sid: Option<i64>,
     pub aid: Option<i64>,
+    /// Stalled waiting for the network, or seeking: the controls show a spinner.
+    pub buffering: bool,
+    pub seeking: bool,
 }
 
 impl Default for Status {
@@ -114,6 +117,8 @@ impl Default for Status {
             audio: vec![],
             sid: None,
             aid: None,
+            buffering: false,
+            seeking: false,
         }
     }
 }
@@ -266,6 +271,8 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         ("track-list/count", Format::Int64),
         ("sid", Format::String),
         ("aid", Format::String),
+        ("paused-for-cache", Format::Flag),
+        ("seeking", Format::Flag),
     ]
     .into_iter()
     .enumerate()
@@ -297,9 +304,11 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     args[1] = "select".into();
                     want_sub = None;
                 }
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                if let Err(e) = mpv.command("sub-add", &args) {
-                    crate::log!("sub-add {}: {e}", args[0]);
+                // `async`: mpv downloads it on its own thread. A plain `sub-add` downloads inside playback,
+                // freezing the video, and with a hundred subtitles this loop then can't see Stop for minutes.
+                let args: Vec<&str> = std::iter::once("sub-add").chain(args.iter().map(String::as_str)).collect();
+                if let Err(e) = mpv.command("async", &args) {
+                    crate::log!("sub-add {}: {e}", crate::debug::host(args[1]));
                 }
             }
         }
@@ -320,6 +329,11 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 (6, PropertyData::Int64(n)) => (status.subs, status.audio) = tracks(mpv, n),
                 (7, PropertyData::Str(v)) => status.sid = v.parse().ok(),
                 (8, PropertyData::Str(v)) => status.aid = v.parse().ok(),
+                (9, PropertyData::Flag(v)) => {
+                    crate::log!("player: {}", if v { "buffering" } else { "buffered" });
+                    status.buffering = v;
+                }
+                (10, PropertyData::Flag(v)) => status.seeking = v,
                 _ => {}
             },
             // A playlist link expanding into its entries; playback goes on with them.

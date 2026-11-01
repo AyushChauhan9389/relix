@@ -78,8 +78,10 @@ impl VideoRenderer {
             ctx.set_update_callback(move || on_frame());
             *gl = Some(Gl { ctx, target: None });
             // If the player stopped waiting (the window didn't draw in time) the file plays without
-            // video; this brings it back. Before the file opens it just fails, harmlessly.
-            let _ = self.mpv().command("video-reload", &[]);
+            // video; this brings it back. Only once a file is open (before, mpv just logs an error).
+            if self.mpv().get_property::<String>("path").is_ok() {
+                let _ = self.mpv().command("video-reload", &[]);
+            }
             if let Some(ready) = self.ready.borrow_mut().take() {
                 let _ = ready.send(());
             }
