@@ -45,7 +45,7 @@ pub async fn check(ctx: Ctx) {
             update.set(Some(ready));
         }
         Ok(None) => {}
-        Err(e) => eprintln!("update: {e}"),
+        Err(e) => crate::log!("update: {e}"),
     }
 }
 
@@ -132,7 +132,7 @@ fn app_exe_name() -> String {
 pub fn apply_in_background(ready: Ready) {
     std::thread::spawn(move || {
         if let Err(e) = apply(&ready) {
-            eprintln!("update: {e}");
+            crate::log!("update: {e}");
         }
     });
 }

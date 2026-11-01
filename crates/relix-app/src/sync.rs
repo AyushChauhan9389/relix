@@ -148,7 +148,7 @@ pub async fn delete_account(ctx: &Ctx, password: &str) -> Result<(), String> {
 fn forget_account(ctx: &Ctx) {
     for key in ["account", "last_seq", "first_sync", "admin_addons"] {
         if let Err(e) = ctx.store.set_meta(key, None) {
-            eprintln!("sign out: {e}");
+            crate::log!("sign out: {e}");
         }
     }
     let mut status = ctx.sync_status;

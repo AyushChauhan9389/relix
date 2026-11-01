@@ -115,7 +115,7 @@ impl Store {
             // One unreadable record (null, or written by another version) mustn't hide the rest.
             match serde_json::from_str(&value) {
                 Ok(v) => out.push((key, v)),
-                Err(e) => eprintln!("skipping {kind}/{key}: {e}"),
+                Err(e) => crate::log!("skipping {kind}/{key}: {e}"),
             }
         }
         Ok(out)

@@ -3,7 +3,7 @@ use freya::prelude::*;
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::home::button;
 use crate::motion::busy;
-use crate::{Ctx, update};
+use crate::{Ctx, debug, update};
 use crate::theme::{Look, theme};
 
 /// App settings: the look (Netflix or Stremio, synced with the account) and updates.
@@ -18,6 +18,7 @@ impl Component for Settings {
         let current = *ctx.look.read();
         let mut checking = use_state(|| false);
         let mut found = use_state(|| None::<String>);
+        let mut debug_on = use_state(debug::enabled);
         let ready = ctx.update.read().clone();
         let check = {
             let ctx = ctx.clone();
@@ -125,6 +126,42 @@ impl Component for Settings {
                                 .into_element(),
                                 None => Focusable::new(button("Check for updates", theme().raised, (255, 255, 255)), check).into_element(),
                             }),
+                    )
+                    .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
+                    .child(
+                        rect()
+                            .width(Size::px(720.))
+                            .padding(Gaps::new_all(18.))
+                            .horizontal()
+                            .content(Content::Flex)
+                            .cross_align(Alignment::Center)
+                            .spacing(12.)
+                            .corner_radius(theme().radius)
+                            .background(theme().surface)
+                            .child(
+                                rect()
+                                    .width(Size::flex(1.))
+                                    .spacing(4.)
+                                    .child(label().text("Debug mode").font_size(16.).font_weight(FontWeight::BOLD))
+                                    .child(
+                                        label()
+                                            .text(format!(
+                                                "Logs what Relix and the player do to debug.log and mpv.log in {}. The performance overlay (Ctrl+Shift+P) appears after a restart.",
+                                                crate::data_dir().display()
+                                            ))
+                                            .font_size(13.)
+                                            .color(theme().muted),
+                                    ),
+                            )
+                            .maybe(*debug_on.read(), |el| {
+                                el.child(Focusable::new(button("Open folder", theme().raised, (255, 255, 255)), |()| {
+                                    crate::addons::open_in_browser(&crate::data_dir().to_string_lossy())
+                                }))
+                            })
+                            .child(Switch::new(WritableSetter::new(debug_on.into_readable(), move |on| {
+                                debug::set(on);
+                                debug_on.set(on);
+                            }))),
                     ),
             ),
         )

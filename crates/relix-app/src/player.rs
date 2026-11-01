@@ -203,12 +203,14 @@ pub fn play(
         // Looks only: older mpv (0.37, Ubuntu 24.04) lacks `sub-border-style`, which mustn't stop playback.
         for (name, value) in [("sub-border-style", prefs.border_style()), ("sub-back-color", "#B0000000")] {
             if let Err(e) = init.set_option(name, value) {
-                eprintln!("mpv option {name}: {e}");
+                crate::log!("mpv option {name}: {e}");
             }
         }
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
+        } else if crate::debug::enabled() {
+            init.set_option("log-file", crate::debug::mpv_log_path().to_string_lossy().as_ref())?;
         }
         if embedded {
             init.set_option("vo", "libmpv")?;
@@ -246,6 +248,7 @@ pub fn play(
     }
 
     let played = run(&mpv, url, prefs, &inbox, &status);
+    crate::log!("player: playback ended ({:?})", played.as_ref().map(|(_, ended)| ended));
     // Unload the stream now (stops the network reads and sound) and return at once; the core itself
     // is destroyed by its last holder, off the UI thread (video.rs).
     let _ = mpv.command("stop", &[]);
@@ -269,6 +272,8 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
     {
         mpv.observe_property(name, format, id as u64)?;
     }
+    let opened = std::time::Instant::now();
+    crate::log!("player: opening a stream from {}", crate::debug::host(url));
     mpv.command("loadfile", &[url])?;
 
     let mut status = Status::default();
@@ -294,14 +299,17 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 }
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if let Err(e) = mpv.command("sub-add", &args) {
-                    eprintln!("sub-add {}: {e}", args[0]);
+                    crate::log!("sub-add {}: {e}", args[0]);
                 }
             }
         }
         // Wakes often enough that Stop and Next feel instant, and picks up subtitles meanwhile.
         let before = status.clone();
         match mpv.wait_event(0.05) {
-            Some(Ok(Event::FileLoaded)) => status.loaded = true,
+            Some(Ok(Event::FileLoaded)) => {
+                status.loaded = true;
+                crate::log!("player: stream loaded in {} ms", opened.elapsed().as_millis());
+            }
             Some(Ok(Event::PropertyChange { change, reply_userdata, .. })) => match (reply_userdata, change) {
                 (0, PropertyData::Double(v)) => status.position = v,
                 (1, PropertyData::Double(v)) => status.duration = v,

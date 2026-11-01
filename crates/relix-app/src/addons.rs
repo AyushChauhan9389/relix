@@ -193,7 +193,7 @@ pub fn open_in_browser(url: &str) {
         std::process::Command::new("xdg-open")
     };
     if let Err(e) = cmd.arg(url).spawn() {
-        eprintln!("opening {url}: {e}");
+        crate::log!("opening {}: {e}", crate::debug::host(url));
     }
 }
 

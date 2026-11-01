@@ -102,7 +102,7 @@ impl Component for Detail {
                                         let mut state = record_playback(title.clone(), &vid, p, None, now());
                                         state.stream_url = watch.peek().as_ref().and_then(|w| w.stream_url.clone());
                                         if let Err(e) = ctx.store.put(&ctx.profile, "progress", &title.id, &state) {
-                                            eprintln!("saving progress: {e}");
+                                            crate::log!("saving progress: {e}");
                                         } else if synced_at.elapsed().as_secs() >= 30 {
                                             synced_at = std::time::Instant::now();
                                             ctx.sync_soon();
@@ -119,7 +119,7 @@ impl Component for Detail {
                         if let Some(addon) = ctx.all_addons().get(req.addon) {
                             let pref = PreferredStream { addon: addon.manifest.id.clone(), name: req.name.clone().unwrap_or_default() };
                             if let Err(e) = ctx.store.put(&ctx.profile, "settings", "preferred_stream", &pref) {
-                                eprintln!("saving preferred stream: {e}");
+                                crate::log!("saving preferred stream: {e}");
                             }
                         }
                         let start = watch.peek().as_ref().map(|w| w.resume_at(&vid)).unwrap_or(0.);
@@ -133,7 +133,7 @@ impl Component for Detail {
                                 ctx.refresh_local_rows();
                                 ctx.sync_soon();
                             }
-                            Err(e) => eprintln!("saving progress: {e}"),
+                            Err(e) => crate::log!("saving progress: {e}"),
                         }
                         let next = next_video(&m.videos, &vid);
                         let (to_player, inbox) = std::sync::mpsc::channel();
@@ -195,7 +195,7 @@ impl Component for Detail {
                             Ok(())
                         });
                         if let Err(e) = saved {
-                            eprintln!("saving progress: {e}");
+                            crate::log!("saving progress: {e}");
                         }
                         watch.set(Some(state));
                         ctx.refresh_local_rows();
@@ -242,7 +242,7 @@ impl Component for Detail {
                         ctx.refresh_local_rows();
                         ctx.sync_soon();
                     }
-                    Err(e) => eprintln!("saving My List: {e}"),
+                    Err(e) => crate::log!("saving My List: {e}"),
                 }
             }
         };
@@ -285,7 +285,7 @@ impl Component for Detail {
                             return;
                         }
                     }
-                    eprintln!("no addon answered meta for {kind}/{id}");
+                    crate::log!("no addon answered meta for {kind}/{id}");
                     load_failed.set(true);
                 });
             }
@@ -315,7 +315,7 @@ impl Component for Detail {
                         match res.map(|r| without_torrents(r.streams)) {
                             Ok(found) if !found.is_empty() => streams.write().push((i, found)),
                             Ok(_) => {}
-                            Err(e) => eprintln!("streams from addon {i}: {e}"),
+                            Err(e) => crate::log!("streams from addon {i}: {e}"),
                         }
                     }
                     searching.set(false);
@@ -459,7 +459,7 @@ impl Component for Detail {
                         move |()| {
                             let items: Vec<(String, bool)> = ids.iter().map(|id| (id.clone(), !all_done)).collect();
                             if let Err(e) = ctx.store.put_many(&ctx.profile, "watched", &items) {
-                                eprintln!("saving watched: {e}");
+                                crate::log!("saving watched: {e}");
                                 return;
                             }
                             let mut set = watched.write();
@@ -781,7 +781,7 @@ fn fetch_subtitles(ctx: &Ctx, kind: &str, video_id: &str, filename: Option<&str>
                 Ok(r) => {
                     let _ = to_mpv.send(player::ToPlayer::Subtitles(player::sub_add_args(&r.subtitles, &addon)));
                 }
-                Err(e) => eprintln!("subtitles from {addon}: {e}"),
+                Err(e) => crate::log!("subtitles from {addon}: {e}"),
             }
         });
     }

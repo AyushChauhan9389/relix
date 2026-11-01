@@ -98,7 +98,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     while let Some(Ok((n, res))) = set.join_next().await {
                         match res {
                             Ok(r) => pages[n] = r.metas,
-                            Err(e) => eprintln!("browse: {e}"),
+                            Err(e) => crate::log!("browse: {e}"),
                         }
                     }
                     if *generation.peek() != gen_now {

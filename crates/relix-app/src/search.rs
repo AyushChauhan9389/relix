@@ -57,7 +57,7 @@ impl Component for Search {
                         rows[i].loading = false;
                         match res {
                             Ok(r) => rows[i].metas = r.metas,
-                            Err(e) => eprintln!("search {id}: {e}"),
+                            Err(e) => crate::log!("search {id}: {e}"),
                         }
                     }
                     // Hide catalogs with no matches once they've answered.

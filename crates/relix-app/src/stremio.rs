@@ -187,7 +187,7 @@ pub async fn export_to_stremio(ctx: &Ctx) -> Result<Summary, String> {
     while let Some(Ok((i, res))) = set.join_next().await {
         match res {
             Ok(v) => raw[i] = Some(v),
-            Err(e) => eprintln!("export: manifest of {} unavailable: {e}", mine[i].manifest.name),
+            Err(e) => crate::log!("export: manifest of {} unavailable: {e}", mine[i].manifest.name),
         }
     }
     let skipped = raw.iter().filter(|r| r.is_none()).count();

@@ -9,6 +9,8 @@ mod bundled;
 mod detail;
 mod discord;
 mod filter;
+#[macro_use]
+mod debug;
 mod gamepad;
 mod focus;
 mod home;
@@ -52,6 +54,7 @@ const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
 fn main() {
+    debug::init();
     // Release builds have no console, so a panic would vanish: keep it in crash.log too.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -77,7 +80,7 @@ fn main() {
             std::process::exit(match bundled::write(std::path::Path::new(&out), &exe, &dll) {
                 Ok(()) => 0,
                 Err(e) => {
-                    eprintln!("bundle: {e}");
+                    crate::log!("bundle: {e}");
                     1
                 }
             });
@@ -97,7 +100,7 @@ fn main() {
                         println!("{} subtitles", r.subtitles.len());
                         let _ = tx.send(player::sub_add_args(&r.subtitles, "OpenSubtitles"));
                     }
-                    Err(e) => eprintln!("subtitles: {e}"),
+                    Err(e) => crate::log!("subtitles: {e}"),
                 }
             });
         }
@@ -114,7 +117,7 @@ fn main() {
         };
         match player::play(&url, &Default::default(), start, &title, &Default::default(), None, inbox, |_| {}) {
             Ok((p, ended)) => println!("stopped at {:.1}s of {:.1}s ({ended:?})", p.position, p.duration),
-            Err(e) => eprintln!("mpv: {e}"),
+            Err(e) => crate::log!("mpv: {e}"),
         }
         return;
     }
@@ -137,23 +140,25 @@ fn main() {
         && let Some(len) = bundled::appended_len(&exe)
         && let Err(e) = bundled::unpack(&exe, len, &data_dir().join("mpv"))
     {
-        eprintln!("unpacking libmpv: {e}");
+        crate::log!("unpacking libmpv: {e}");
     }
 
     update::cleanup();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let _rt = rt.enter();
-    launch(
-        LaunchConfig::new().with_window(
-            WindowConfig::new(app)
-                .with_title("Relix")
-                .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon.png")))
-                .with_size(1440., 900.)
-                // Video is drawn through OpenGL (video.rs), so Freya renders with it everywhere.
-                .with_renderer(RendererPreference::OpenGl)
-                .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs }),
-        ),
-    )
+    let config = LaunchConfig::new().with_window(
+        WindowConfig::new(app)
+            .with_title("Relix")
+            .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon.png")))
+            .with_size(1440., 900.)
+            // Video is drawn through OpenGL (video.rs), so Freya renders with it everywhere.
+            .with_renderer(RendererPreference::OpenGl)
+            .with_window_attributes(|attrs, _| if test_offscreen() { offscreen(attrs) } else { attrs }),
+    );
+    // Debug mode: the FPS / frame-time overlay (Ctrl+Shift+P hides it). Debug builds get it from Freya.
+    #[cfg(not(debug_assertions))]
+    let config = if debug::enabled() { config.with_plugin(freya::metrics::MetricsPlugin::default().with_visible_performance(true)) } else { config };
+    launch(config)
 }
 
 /// `RELIX_TEST_OFFSCREEN=1`: for automated checks on a developer's machine. The window opens
@@ -261,7 +266,7 @@ impl Ctx {
     /// Turns the server's admin addons on or off for this user, and syncs the choice.
     pub fn set_admin_enabled(&self, on: bool) {
         if let Err(e) = self.store.put(&self.profile, "settings", "admin_addons_enabled", &on) {
-            eprintln!("saving setting: {e}");
+            crate::log!("saving setting: {e}");
         }
         let mut enabled = self.admin_enabled;
         enabled.set(on);
@@ -272,7 +277,7 @@ impl Ctx {
     /// Switches the look and syncs the choice.
     pub fn set_look(&self, look: Look) {
         if let Err(e) = self.store.put(&self.profile, "settings", "look", &look) {
-            eprintln!("saving setting: {e}");
+            crate::log!("saving setting: {e}");
         }
         self.show_look(look);
         self.sync_soon();
@@ -334,6 +339,7 @@ impl Ctx {
 
     /// Esc while playing: leave fullscreen first, then stop.
     pub fn player_escape(&self) {
+        crate::log!("player: Esc");
         let (mut fullscreen, player) = (self.fullscreen, self.player.peek().clone());
         Platform::get().with_window(Platform::window_id(), move |w| {
             if w.fullscreen().is_some() {
@@ -354,7 +360,7 @@ impl Ctx {
     pub fn save_player_prefs(&self, prefs: &player::Prefs) {
         match self.store.put(&self.profile, "settings", "player", prefs) {
             Ok(()) => self.sync_soon(),
-            Err(e) => eprintln!("saving player settings: {e}"),
+            Err(e) => crate::log!("saving player settings: {e}"),
         }
     }
 
@@ -366,7 +372,7 @@ impl Ctx {
     pub fn save_addons(&self, addons: Vec<Addon>) {
         let mut this = self.clone();
         if let Err(e) = self.store.put(&self.profile, "addons", "list", &addons) {
-            eprintln!("saving addons: {e}");
+            crate::log!("saving addons: {e}");
         }
         self.sync_soon();
         this.addons.set(addons);
@@ -376,7 +382,9 @@ impl Ctx {
 
 /// A JSON request that gives up after 20s, so a stalled addon can't hold a screen forever.
 pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: String) -> reqwest::Result<T> {
-    http.get(url).timeout(std::time::Duration::from_secs(20)).send().await?.error_for_status()?.json().await
+    // Errors drop the URL: addon URLs can carry debrid keys, and errors end up in logs.
+    let res = http.get(url).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.without_url())?;
+    res.error_for_status().map_err(|e| e.without_url())?.json().await.map_err(|e| e.without_url())
 }
 
 fn app() -> impl IntoElement {
@@ -462,7 +470,7 @@ fn app() -> impl IntoElement {
     let initial = std::env::args()
         .skip_while(|a| a != "--route")
         .nth(1)
-        .and_then(|r| r.parse::<Route>().inspect_err(|e| eprintln!("--route {r}: {e}")).ok())
+        .and_then(|r| r.parse::<Route>().inspect_err(|e| crate::log!("--route {r}: {e}")).ok())
         .unwrap_or(Route::Home);
     Router::<Route>::new(move || RouterConfig::default().with_initial_path(initial.clone()))
 }
@@ -473,7 +481,7 @@ async fn install_defaults(ctx: &Ctx) {
         let url = manifest_url(url).unwrap();
         match get::<Manifest>(ctx.http.clone(), url.to_string()).await {
             Ok(manifest) => addons.push(Addon { manifest_url: url, manifest }),
-            Err(e) => eprintln!("manifest {url}: {e}"),
+            Err(e) => crate::log!("manifest {url}: {e}"),
         }
     }
     ctx.save_addons(addons);
@@ -523,7 +531,7 @@ pub async fn load_rows(mut ctx: Ctx) {
             // Failed or empty: the row goes rather than sit blank.
             Ok(_) => drop(ctx.rows.write().remove(i)),
             Err(e) => {
-                eprintln!("catalog {id}: {e}");
+                crate::log!("catalog {id}: {e}");
                 ctx.rows.write().remove(i);
             }
         }

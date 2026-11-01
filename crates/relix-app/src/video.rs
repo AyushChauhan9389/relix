@@ -32,11 +32,13 @@ pub struct VideoRenderer {
 impl Drop for VideoRenderer {
     fn drop(&mut self) {
         // The GL side goes here, where Freya's GL context is current, and before the core it borrows.
+        let started = std::time::Instant::now();
         // libmpv2 frees the frame callback before the context, so swap in one that owns nothing first.
         if let Some(gl) = self.gl.borrow_mut().as_mut() {
             gl.ctx.set_update_callback(|| {});
         }
         self.gl.borrow_mut().take();
+        crate::log!("player: video renderer released in {} ms (UI thread)", started.elapsed().as_millis());
         // Destroying mpv waits for its network and decoder threads to stop: never on the UI thread.
         if let Some(mpv) = self.mpv.take() {
             std::thread::spawn(move || drop(mpv));
@@ -69,7 +71,7 @@ impl VideoRenderer {
                 RenderParam::ApiType(RenderParamApiType::OpenGl),
                 RenderParam::InitParams(OpenGLInitParams { get_proc_address: gl_proc, ctx: () }),
             ];
-            let ctx = self.mpv().create_render_context(params).map_err(|e| eprintln!("mpv render context: {e}")).ok()?;
+            let ctx = self.mpv().create_render_context(params).map_err(|e| crate::log!("mpv render context: {e}")).ok()?;
             // SAFETY: `ctx` borrows `self.mpv`, which this struct keeps alive and drops after `gl`.
             let mut ctx: MpvRenderContext<'static> = unsafe { std::mem::transmute(ctx) };
             let on_frame = self.on_frame.clone();
@@ -97,7 +99,7 @@ impl VideoRenderer {
         let drawn = gl.ctx.render::<()>(fbo as i32, size.0, size.1, true);
         dctx.reset(None);
         if let Err(e) = drawn {
-            eprintln!("mpv render: {e}");
+            crate::log!("mpv render: {e}");
         }
         Some(surface.image_snapshot())
     }
