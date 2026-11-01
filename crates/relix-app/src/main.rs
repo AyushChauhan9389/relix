@@ -627,6 +627,8 @@ impl Component for Shell {
     fn render(&self) -> impl IntoElement {
         let registry = use_provide_context(Registry::default);
         let ctx = use_consume::<Ctx>();
+        // The window's width, for layouts that tighten on small windows.
+        let window_w = use_state(|| 1440f32);
         let playing = ctx.player.read().is_some();
         let update = ctx.update.read().clone();
         let look = *ctx.look.read();
@@ -679,6 +681,12 @@ impl Component for Shell {
         });
         rect()
             .expanded()
+            .on_sized(move |e: Event<SizedEventData>| {
+                let mut w = window_w;
+                if (*w.peek() - e.area.width()).abs() > 1. {
+                    w.set(e.area.width());
+                }
+            })
             .on_global_key_down({
                 let registry = registry.clone();
                 move |e: Event<KeyboardEventData>| handle_key(&keys, &registry, &e.key)
@@ -702,7 +710,7 @@ impl Component for Shell {
             )
             .maybe(!playing, |el| {
                 let active = home::active_link(&RouterContext::get().current::<Route>());
-                el.child(if sidebar { home::sidebar(active) } else { home::nav(active, &ctx) }.layer(Layer::OverlayLevel(2)))
+                el.child(if sidebar { home::sidebar(active) } else { home::nav(active, &ctx, *window_w.read() < 1000.) }.layer(Layer::OverlayLevel(2)))
             })
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.

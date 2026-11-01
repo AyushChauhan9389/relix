@@ -11,6 +11,11 @@ use crate::{Ctx, data_dir, get};
 /// The release signing key's public half, set when building releases; no key, no updates.
 const PUBLIC_KEY: Option<&str> = option_env!("RELIX_UPDATE_PUBKEY");
 
+/// Builds without the update key (development and test builds) never update themselves.
+pub fn enabled() -> bool {
+    PUBLIC_KEY.is_some()
+}
+
 /// A newer version, downloaded and verified, waiting for a restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ready {
@@ -52,7 +57,7 @@ pub async fn check(ctx: Ctx) {
 /// The "Check for updates" button in Settings: checks now and says what it found.
 pub async fn check_now(ctx: Ctx) -> String {
     let (Some(key), false) = (PUBLIC_KEY, cfg!(debug_assertions)) else {
-        return "Updates are off in development builds.".into();
+        return "Updates are off in this build.".into();
     };
     match prepare(&ctx, key).await {
         Ok(Some(ready)) => {

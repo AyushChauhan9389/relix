@@ -60,7 +60,8 @@ impl Component for Settings {
                     .child(label().text("APPEARANCE").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
-                            .width(Size::px(720.))
+                            .width(Size::fill())
+                            .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
                             .horizontal()
                             .content(Content::Flex)
@@ -88,7 +89,8 @@ impl Component for Settings {
                     .child(label().text("UPDATES").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
-                            .width(Size::px(720.))
+                            .width(Size::fill())
+                            .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
                             .horizontal()
                             .content(Content::Flex)
@@ -105,7 +107,9 @@ impl Component for Settings {
                                         busy("Checking…").into_element()
                                     } else {
                                         label()
-                                            .text(found.read().clone().unwrap_or_else(|| "Relix checks for updates when it starts.".into()))
+                                            .text(found.read().clone().unwrap_or_else(|| {
+                                                if update::enabled() { "Relix checks for updates when it starts." } else { "Updates are off in this build." }.into()
+                                            }))
                                             .font_size(13.)
                                             .color(theme().muted)
                                             .into_element()
@@ -130,7 +134,8 @@ impl Component for Settings {
                     .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
-                            .width(Size::px(720.))
+                            .width(Size::fill())
+                            .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
                             .horizontal()
                             .content(Content::Flex)

@@ -142,17 +142,19 @@ impl Component for NavItem {
     }
 }
 
-pub fn nav(active: Option<NavLink>, ctx: &Ctx) -> Rect {
+/// `compact` (a narrow window) tightens the margins and gaps so every link still fits on one line.
+pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
     let link = move |which: NavLink, text: &'static str, to: Route| NavItem { text, to, active: active == Some(which) };
+    let side = if compact { 20. } else { 48. };
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
         .width(Size::fill())
         .height(Size::px(NAV_H))
-        .padding(Gaps::new(0., 48., 0., 48.))
+        .padding(Gaps::new(0., side, 0., side))
         .horizontal()
         .content(Content::Flex)
         .cross_align(Alignment::Center)
-        .spacing(28.)
+        .spacing(if compact { 14. } else { 28. })
         .background(theme().bg)
         .border(Border::new().fill(theme().border).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }))
         .child(
@@ -167,7 +169,7 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx) -> Rect {
             rect()
                 .horizontal()
                 .cross_align(Alignment::Center)
-                .spacing(24.)
+                .spacing(if compact { 12. } else { 24. })
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
                 .child(link(NavLink::Settings, "Settings", Route::Settings))

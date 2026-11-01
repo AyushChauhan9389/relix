@@ -32,6 +32,8 @@ impl Component for Detail {
         use_page_scroller(page);
         let mut meta = use_state(|| None::<Meta>);
         let mut season = use_state(|| None::<u32>);
+        // The page's width: narrow windows stack the info above the panel instead of beside it.
+        let page_w = use_state(|| 1440f32);
         // The movie itself, or the episode the user picked.
         let mut video = use_state(|| None::<String>);
         let mut streams = use_state(Vec::<(usize, Vec<Stream>)>::new);
@@ -483,23 +485,30 @@ impl Component for Detail {
                 .into()
         };
 
+        let narrow = *page_w.read() < 1050.;
         rect()
             .expanded()
+            .on_sized(move |e: Event<SizedEventData>| {
+                let mut w = page_w;
+                if (*w.peek() - e.area.width()).abs() > 1. {
+                    w.set(e.area.width());
+                }
+            })
             .child(backdrop(meta.background.as_deref()).layer(1))
             // Darken the whole picture so text and the panel read on any backdrop.
             .child(layer().layer(2).background((0, 0, 0, 0.45)))
             .child(
                 layer()
                     .layer(5)
-                    .horizontal()
+                    .maybe(!narrow, |el| el.horizontal())
                     .content(Content::Flex)
                     .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
-                    .spacing(40.)
-                    .child(info_column(&meta, *in_list.read(), toggle_list, play_label, on_play))
+                    .spacing(if narrow { 20. } else { 40. })
+                    .child(info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play))
                     .child(
                         rect()
-                            .width(Size::px(460.))
-                            .height(Size::fill())
+                            .width(if narrow { Size::fill() } else { Size::px(460.) })
+                            .height(if narrow { Size::flex(1.) } else { Size::fill() })
                             .padding(Gaps::new_all(16.))
                             .corner_radius(12.)
                             .background(theme().panel)
@@ -560,7 +569,7 @@ fn short_label(v: &Video) -> String {
 }
 
 /// The title's details on the left of the page.
-fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static, play_label: String, on_play: Box<dyn FnMut(())>) -> Rect {
+fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut(()) + 'static, play_label: String, on_play: Box<dyn FnMut(())>) -> Rect {
     let facts: Vec<String> = [meta.release_info.clone(), meta.runtime.clone()].into_iter().flatten().collect();
     let people = |title: &str, names: Vec<String>| {
         (!names.is_empty()).then(|| {
@@ -577,12 +586,13 @@ fn info_column(meta: &Meta, in_list: bool, toggle_list: impl FnMut(()) + 'static
     let mut on_play = on_play;
 
     rect()
-        .width(Size::flex(1.))
-        .height(Size::fill())
+        // Beside the panel it fills the height with its content at the bottom; stacked it's as tall as it needs.
+        .width(if narrow { Size::fill() } else { Size::flex(1.) })
+        .height(if narrow { Size::auto() } else { Size::fill() })
         .spacing(16.)
         .main_align(Alignment::End)
-        // Pinned top-left; the rest of the column sits at the bottom.
-        .child(rect().position(Position::new_absolute().top(0.).left(0.)).child(Focusable::new(
+        // Beside the panel: pinned top-left, the rest of the column at the bottom. Stacked: its own first line.
+        .child(rect().maybe(!narrow, |el| el.position(Position::new_absolute().top(0.).left(0.))).child(Focusable::new(
             label().text("‹ Back").font_size(16.).color(theme().muted),
             |()| RouterContext::get().go_back(),
         )))
