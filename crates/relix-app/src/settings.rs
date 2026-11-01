@@ -128,7 +128,8 @@ impl Component for Settings {
                                     });
                                 })
                                 .into_element(),
-                                None => Focusable::new(button("Check for updates", theme().raised, (255, 255, 255)), check).into_element(),
+                                None if update::enabled() => Focusable::new(button("Check for updates", theme().raised, (255, 255, 255)), check).into_element(),
+                                None => rect().into_element(),
                             }),
                     )
                     .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))

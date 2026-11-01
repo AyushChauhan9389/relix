@@ -333,7 +333,10 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     crate::log!("player: {}", if v { "buffering" } else { "buffered" });
                     status.buffering = v;
                 }
-                (10, PropertyData::Flag(v)) => status.seeking = v,
+                (10, PropertyData::Flag(v)) => {
+                    crate::log!("player: {}", if v { "seeking" } else { "seeked" });
+                    status.seeking = v;
+                }
                 _ => {}
             },
             // A playlist link expanding into its entries; playback goes on with them.

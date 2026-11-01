@@ -541,30 +541,27 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
             None => blank(name),
         })
         .into();
-    // Sized to the poster so the progress bar's position is exact in both looks.
-    let art = rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).child(art).map(progress, |el, p| {
-        el.child(
+    // Under the poster, never over it (overlaid, Freya's layers either hid it under the image or let
+    // it escape the row's clipping): a "NEW EPISODE" tag, or the progress bar, in a fixed-height strip.
+    let strip: Option<Element> = if new_episode {
+        Some(label().text("NEW EPISODE").font_size(11.).font_weight(FontWeight::BOLD).color(theme().accent).into())
+    } else {
+        progress.map(|p| {
             rect()
-                .position(Position::new_absolute().left(8.).bottom(8.))
-                .layer(Layer::OverlayLevel(1)) // above the poster image, below the nav
-                .width(Size::px(POSTER_W - 16.))
+                .width(Size::fill())
                 .height(Size::px(4.))
                 .corner_radius(2.)
                 .background(theme().track)
-                .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background(theme().accent)),
-        )
-    });
-    let art = art.maybe(new_episode, |el| {
-        el.child(
-            rect()
-                .position(Position::new_absolute().left(8.).top(8.))
-                .layer(Layer::OverlayLevel(1))
-                .padding(Gaps::new(3., 7., 3., 7.))
-                .corner_radius(4.)
-                .background(theme().accent)
-                .child(label().text("NEW EPISODE").font_size(11.).font_weight(FontWeight::BOLD)),
-        )
-    });
+                .child(rect().width(Size::percent(p.clamp(0., 1.) * 100.)).height(Size::fill()).corner_radius(2.).background(theme().accent))
+                .into()
+        })
+    };
+    let has_strip = strip.is_some();
+    let art = rect()
+        .width(Size::px(POSTER_W))
+        .spacing(6.)
+        .child(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).child(art))
+        .maybe(has_strip, |el| el.child(rect().width(Size::fill()).height(Size::px(STRIP_H)).main_align(Alignment::Center).child(strip.unwrap())));
     let card = Focusable { row, radius: theme().radius, grow: 1.08, ..Focusable::new(art, open_title(meta)) };
     if !theme().sidebar {
         return card.into();
@@ -611,7 +608,7 @@ pub fn poster_grid(
     let cols = ((page.width() + GAP) / (POSTER_W + GAP)).floor().max(1.) as usize;
     let titled = theme().sidebar;
     // A fixed row height (the Stremio look adds a title line), so the list knows where rows sit.
-    let row_h = POSTER_H + if titled { 30. } else { 0. } + 16.;
+    let row_h = POSTER_H + if titled { 30. } else { 0. } + STRIP_H + 6. + 16.;
     let rows = if placeholders { 2 } else { metas.len().div_ceil(cols) };
     let len = 1 + rows + usize::from(footer.is_some());
     page.wrap(
@@ -716,8 +713,12 @@ mod tests {
 
 /// A row's height: posters, plus the title under each one in the Stremio look.
 fn row_h() -> f32 {
-    POSTER_H + if theme().sidebar { 88. } else { 60. }
+    // Room for the strip under posters (progress bar or "NEW EPISODE") too.
+    POSTER_H + STRIP_H + 6. + if theme().sidebar { 88. } else { 60. }
 }
+
+/// The strip under a poster: progress bar or "NEW EPISODE".
+const STRIP_H: f32 = 12.;
 
 /// The Stremio look's top bar: a search field (opening Search) above every page.
 pub fn top_bar(ctx: &Ctx) -> Rect {

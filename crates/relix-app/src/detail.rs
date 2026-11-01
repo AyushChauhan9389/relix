@@ -494,12 +494,16 @@ impl Component for Detail {
                     w.set(e.area.width());
                 }
             })
+            // Freya adds a layer per level of nesting, and the backdrop's image sits several levels deep:
+            // the shading needs a clear jump above it, and the content another above that.
             .child(backdrop(meta.background.as_deref()).layer(1))
             // Darken the whole picture so text and the panel read on any backdrop.
-            .child(layer().layer(2).background((0, 0, 0, 0.45)))
+            .child(layer().layer(20).background((0, 0, 0, 0.45)))
+            // Deeper on the text side, so labels read on bright backdrops too (as on Home's hero).
+            .child(layer().layer(21).background(LinearGradient::new().angle(270.).stop(((0, 0, 0, 0.7), 0.)).stop(((0, 0, 0, 0.), 65.))))
             .child(
                 layer()
-                    .layer(5)
+                    .layer(40)
                     .maybe(!narrow, |el| el.horizontal())
                     .content(Content::Flex)
                     .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
@@ -577,7 +581,7 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
                 .max_lines(2)
                 .text_overflow(TextOverflow::Ellipsis)
                 .font_size(15.)
-                .span(Span::new(format!("{title}  ")).color(theme().muted))
+                .span(Span::new(format!("{title}  ")).color((205, 205, 205)))
                 .span(names.into_iter().take(5).collect::<Vec<_>>().join(", "))
         })
     };
@@ -593,7 +597,7 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
         .main_align(Alignment::End)
         // Beside the panel: pinned top-left, the rest of the column at the bottom. Stacked: its own first line.
         .child(rect().maybe(!narrow, |el| el.position(Position::new_absolute().top(0.).left(0.))).child(Focusable::new(
-            label().text("‹ Back").font_size(16.).color(theme().muted),
+            label().text("‹ Back").font_size(16.).color((225, 225, 225)),
             |()| RouterContext::get().go_back(),
         )))
         .child(title_art(meta.logo.as_deref(), &meta.name))
