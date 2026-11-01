@@ -110,7 +110,9 @@ fn unpack(dir: &Path, zip: &[u8]) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let zip_path = dir.join("update.zip");
     std::fs::write(&zip_path, zip).map_err(|e| e.to_string())?;
-    let ok = std::process::Command::new("tar").arg("-xf").arg(&zip_path).arg("-C").arg(&out).status().map_err(|e| e.to_string())?;
+    // Windows' own tar reads zips; another `tar` earlier on PATH (Git's GNU tar) can't.
+    let tar = if cfg!(windows) { std::env::var("SystemRoot").map_or("tar".into(), |r| format!("{r}\\System32\\tar.exe")) } else { "tar".into() };
+    let ok = std::process::Command::new(tar).arg("-xf").arg(&zip_path).arg("-C").arg(&out).status().map_err(|e| e.to_string())?;
     if !ok.success() {
         return Err("couldn't unpack the update".into());
     }
@@ -126,6 +128,15 @@ fn app_exe_name() -> String {
     format!("relix-app{}", std::env::consts::EXE_SUFFIX)
 }
 
+/// [`apply`] on a background thread: copying a 100 MB install would freeze the window.
+pub fn apply_in_background(ready: Ready) {
+    std::thread::spawn(move || {
+        if let Err(e) = apply(&ready) {
+            eprintln!("update: {e}");
+        }
+    });
+}
+
 /// Copies the update over this install and starts the new version. Files in use (the running exe,
 /// libmpv) are renamed to `*.old` first, which Windows allows; `cleanup` removes them next launch.
 pub fn apply(ready: &Ready) -> std::io::Result<()> {
@@ -139,7 +150,8 @@ pub fn apply(ready: &Ready) -> std::io::Result<()> {
             {
                 use std::os::windows::process::CommandExt;
                 std::process::Command::new("cmd")
-                    .raw_arg(format!("/C msiexec /i \"{}\" /passive && start \"\" \"{}\"", msi.display(), exe.display()))
+                    // `&`, not `&&`: Relix reopens even when the install is declined or fails.
+                    .raw_arg(format!("/C msiexec /i \"{}\" /passive & start \"\" \"{}\"", msi.display(), exe.display()))
                     .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                     .spawn()?;
                 std::process::exit(0);

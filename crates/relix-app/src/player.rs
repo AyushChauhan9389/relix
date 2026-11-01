@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
 use libmpv2::{Format, Mpv, events::Event, events::PropertyData};
 pub use relix_proto::addon::Subtitle;
@@ -14,9 +15,11 @@ pub struct Progress {
     pub duration: f64,
 }
 
-/// How playback ended, beyond the file simply finishing or the player stopping.
+/// How playback ended, beyond the file simply finishing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ended {
+    /// The viewer closed the player (Esc, Back): never auto-play the next episode.
+    Stopped,
     /// "Next episode" in the controls.
     NextRequested,
     /// mpv couldn't open or decode the stream (dead link, unsupported format).
@@ -146,10 +149,30 @@ fn lang_name(code: &str) -> String {
     name.into()
 }
 
+/// Gives the UI the player and a sender for "render context ready".
+pub type HandOver = Box<dyn FnOnce(Arc<Mpv>, Sender<()>) + Send>;
+
+/// Windows loads libmpv on first use, and a missing DLL ends the whole process there: check first.
+#[cfg(windows)]
+pub fn library_missing() -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+    }
+    let name: Vec<u16> = "libmpv-2.dll\0".encode_utf16().collect();
+    unsafe { LoadLibraryW(name.as_ptr()) }.is_null()
+}
+
+#[cfg(not(windows))]
+pub fn library_missing() -> bool {
+    false
+}
+
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
 /// With `video`, mpv renders for Relix to draw in its own window (video.rs): it's handed the
-/// player as soon as it exists. Without it (the `--play` check) mpv opens its own window with its
+/// player as soon as it exists, with a sender to signal once its render context is up (mpv's
+/// video output needs it before the file opens, or the file plays as audio only). Without it (the `--play` check) mpv opens its own window with its
 /// own controls. `headers` are an addon stream's `proxyHeaders.request`. `inbox` brings subtitles
 /// (attached once the file loads, so they never delay playback), stop and next requests; `status`
 /// gets the player's state whenever it changes.
@@ -161,7 +184,7 @@ pub fn play(
     start: f64,
     title: &str,
     prefs: &Prefs,
-    video: Option<Box<dyn FnOnce(Arc<Mpv>) + Send>>,
+    video: Option<HandOver>,
     inbox: Receiver<ToPlayer>,
     status: impl Fn(Status),
 ) -> libmpv2::Result<(Progress, Option<Ended>)> {
@@ -212,7 +235,10 @@ pub fn play(
         Ok(())
     })?);
     if let Some(hand_over) = video {
-        hand_over(mpv.clone());
+        let (ready, ready_rx) = std::sync::mpsc::channel();
+        hand_over(mpv.clone(), ready);
+        // A minimized window may not draw for a while; video.rs reloads the video once it does.
+        let _ = ready_rx.recv_timeout(Duration::from_secs(3));
     }
 
     let played = run(&mpv, url, prefs, &inbox, &status);
@@ -251,7 +277,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         for msg in inbox.try_iter() {
             match msg {
                 ToPlayer::Subtitles(subs) => pending.extend(subs),
-                ToPlayer::Stop => return Ok((progress(&status), None)),
+                ToPlayer::Stop => return Ok((progress(&status), Some(Ended::Stopped))),
                 ToPlayer::Next => return Ok((progress(&status), Some(Ended::NextRequested))),
             }
         }
@@ -283,8 +309,11 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 (8, PropertyData::Str(v)) => status.aid = v.parse().ok(),
                 _ => {}
             },
-            Some(Ok(Event::EndFile(libmpv2::mpv_end_file_reason::Error))) => return Ok((progress(&status), Some(Ended::Failed))),
+            // A playlist link expanding into its entries; playback goes on with them.
+            Some(Ok(Event::EndFile(libmpv2::mpv_end_file_reason::Redirect))) => {}
             Some(Ok(Event::EndFile(_) | Event::Shutdown)) => return Ok((progress(&status), None)),
+            // libmpv2 reports an errored end of file this way. Once playing, keep the progress.
+            Some(Err(_)) if status.loaded => return Ok((progress(&status), Some(Ended::Failed))),
             Some(Err(e)) => return Err(e),
             _ => {}
         }

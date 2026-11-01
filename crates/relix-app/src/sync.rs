@@ -163,9 +163,15 @@ fn forget_account(ctx: &Ctx) {
 async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
     let first = ctx.store.meta("first_sync").ok().flatten().is_some();
     let since = ctx.store.last_seq().unwrap_or(0);
+    // Signing out while a request is out must not write the old account's data back afterwards.
+    let still_signed_in = || match account(&ctx.store) {
+        Some(now) if now.token == acc.token => Ok(()),
+        _ => Err("signed out".to_owned()),
+    };
 
     let pulled: PullResponse =
         call::<(), _>(&ctx.http, server_url(&format!("/sync/pull?since={since}")), Some(&acc.token), None).await?;
+    still_signed_in()?;
     let changed = ctx.store.apply_pulled(&ctx.profile, &pulled.records, first).map_err(|e| e.to_string())?;
     if changed.iter().any(|k| k == "settings") {
         let mut enabled = ctx.admin_enabled;
@@ -173,6 +179,7 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
         ctx.show_look(ctx.store.get(&ctx.profile, "settings", "look").ok().flatten().unwrap_or(crate::theme::Look::Netflix));
     }
     let admin: Vec<Addon> = call::<(), _>(&ctx.http, server_url("/addons/admin"), Some(&acc.token), None).await?;
+    still_signed_in()?;
     let admin_changed = *ctx.admin_addons.peek() != admin;
     if admin_changed {
         ctx.store.set_meta("admin_addons", Some(&serde_json::to_string(&admin).unwrap())).map_err(|e| e.to_string())?;
@@ -196,6 +203,7 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
     if !sent.is_empty() {
         let records = sent.iter().map(|r| PushRecord { kind: r.kind.clone(), key: r.key.clone(), value: r.value.clone() }).collect();
         let res: PushResponse = call(&ctx.http, server_url("/sync/push"), Some(&acc.token), Some(&Push { records })).await?;
+        still_signed_in()?;
         ctx.store.mark_pushed(&sent, &res.seqs).map_err(|e| e.to_string())?;
     }
     Ok(())

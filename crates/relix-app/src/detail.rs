@@ -75,14 +75,19 @@ impl Component for Detail {
                 if *starting.peek() {
                     return;
                 }
+                if player::library_missing() {
+                    return play_error.set(Some("The video player (libmpv-2.dll) is missing next to Relix. Reinstall Relix to get it back.".into()));
+                }
                 starting.set(true);
                 let ctx = ctx.clone();
                 play_error.set(None);
-                spawn(async move {
+                // Window-level tasks: a page remount (a synced theme change) mustn't cancel playback
+                // midway and leave the player screen up.
+                spawn_in_window(async move {
                     let mut playing = ctx.player;
                     // Requests from the player's controls that Relix handles (fullscreen, Esc).
                     let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
-                    spawn({
+                    spawn_in_window({
                         let (ctx, title) = (ctx.clone(), preview(&m));
                         async move {
                             let mut status = ctx.player_status;
@@ -144,18 +149,18 @@ impl Component for Detail {
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // The player hands its mpv over from its thread; the video is drawn here.
                         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
-                        spawn({
+                        spawn_in_window({
                             let (ctx, overlay) = (ctx.clone(), overlay.clone());
                             async move {
-                                if let Some(mpv) = mpv_rx.recv().await {
-                                    ctx.show_video(mpv, overlay);
+                                if let Some((mpv, ready)) = mpv_rx.recv().await {
+                                    ctx.show_video(mpv, ready, overlay);
                                 }
                             }
                         });
                         // mpv blocks until playback stops, so it gets its own thread.
                         let prefs = ctx.player_prefs();
                         std::thread::spawn(move || {
-                            let video = Box::new(move |mpv| drop(to_ui.send(mpv)));
+                            let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
                             let played = player::play(&url, &headers, start, &overlay.title, &prefs, Some(video), inbox, |msg| {
                                 let _ = to_app.send(msg);
                             });
@@ -163,23 +168,27 @@ impl Component for Detail {
                         });
                         fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), to_player);
 
+                        let dead = "This stream didn't play: the link is dead or the format isn't supported. Try another one.";
                         let (mut p, ended) = match rx.await {
-                            // mpv reports a dead link either as a failed load (-13, MPV_ERROR_LOADING_FAILED) or as an errored end.
-                            Ok(Ok((_, Some(Ended::Failed))) | Err(libmpv2::Error::Raw(-13))) => {
-                                return play_error.set(Some("This stream didn't play: the link is dead or the format isn't supported. Try another one.".into()));
-                            }
+                            // Loading failed (-13), nothing playable (-16) or an unknown format (-17).
+                            Ok(Err(libmpv2::Error::Raw(-13 | -16 | -17))) => return play_error.set(Some(dead.into())),
                             Ok(Ok(played)) => played,
                             Ok(Err(e)) => return play_error.set(Some(format!("The player failed to start: {e}"))),
                             Err(_) => return,
                         };
+                        // Closed before the stream loaded: keep where it was, not 0 of 0.
+                        if p.duration <= 0. {
+                            p = Progress { position: start, duration };
+                        }
                         // Skipping to the next episode counts as having finished this one.
-                        if ended == Some(Ended::NextRequested) {
+                        let finished = ended == Some(Ended::NextRequested) || is_finished(p);
+                        if finished {
                             p.position = p.duration;
                         }
                         let mut state = record_playback(preview(&m), &vid, p, next.clone(), now());
                         state.stream_url = Some(req.url.clone());
                         let saved = ctx.store.put(&ctx.profile, "progress", &m.id, &state).and_then(|()| {
-                            if is_finished(p) {
+                            if finished {
                                 watched.write().insert(vid.clone());
                                 ctx.store.put(&ctx.profile, "watched", &vid, &true)?;
                             }
@@ -192,13 +201,22 @@ impl Component for Detail {
                         ctx.refresh_local_rows();
                         ctx.sync_soon();
 
-                        let Some(next_id) = next.filter(|_| is_finished(p)) else { return };
+                        if ended == Some(Ended::Failed) {
+                            return play_error.set(Some(dead.into()));
+                        }
+                        // Closing the player during the credits still counts as watched, but stays closed.
+                        let Some(next_id) = next.filter(|_| finished && ended != Some(Ended::Stopped)) else { return };
                         if let Some(v) = m.videos.iter().find(|v| v.id == next_id) {
                             season.set(v.season);
                         }
                         video.set(Some(next_id.clone()));
                         let Some(group) = req.binge_group.clone() else { return };
-                        let Some(next_req) = binge_stream(&ctx, &m.r#type, &next_id, req.addon, &group).await else { return };
+                        // The finished player's screen goes while the next episode's stream is looked up.
+                        playing.set(None);
+                        let mut now = ctx.now_playing;
+                        now.set(None);
+                        let lookup = binge_stream(&ctx, &m.r#type, &next_id, req.addon, &group);
+                        let Ok(Some(next_req)) = tokio::time::timeout(std::time::Duration::from_secs(30), lookup).await else { return };
                         (req, vid) = (next_req, next_id);
                     }
                     }
@@ -354,7 +372,8 @@ impl Component for Detail {
         let has_stream_addons = addons.iter().any(|a| a.serves(&ResourceRequest::new("stream", &self.kind, &self.id)));
         let groups: Vec<(usize, String, Vec<Stream>)> = stream_groups(streams.read().clone())
             .into_iter()
-            .map(|(i, s)| (i, addons[i].manifest.name.clone(), s))
+            // A sync can shrink the addon list while streams are on screen: drop groups whose addon went.
+            .filter_map(|(i, s)| Some((i, addons.get(i)?.manifest.name.clone(), s)))
             .collect();
         let all_seasons: Vec<(u32, Vec<Video>)> =
             seasons(&meta.videos).into_iter().map(|(n, eps)| (n, eps.into_iter().cloned().collect())).collect();
@@ -438,11 +457,10 @@ impl Component for Detail {
                             .font_size(14.)
                             .color(theme().muted),
                         move |()| {
-                            for id in &ids {
-                                if let Err(e) = ctx.store.put(&ctx.profile, "watched", id, &!all_done) {
-                                    eprintln!("saving watched: {e}");
-                                    return;
-                                }
+                            let items: Vec<(String, bool)> = ids.iter().map(|id| (id.clone(), !all_done)).collect();
+                            if let Err(e) = ctx.store.put_many(&ctx.profile, "watched", &items) {
+                                eprintln!("saving watched: {e}");
+                                return;
                             }
                             let mut set = watched.write();
                             for id in &ids {

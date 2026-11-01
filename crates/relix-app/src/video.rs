@@ -5,9 +5,10 @@
 use std::any::Any;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 use freya::prelude::*;
 use freya_core::integration::*;
@@ -24,11 +25,17 @@ pub struct VideoRenderer {
     /// Only `None` while dropping.
     mpv: Option<Arc<Mpv>>,
     on_frame: Arc<dyn Fn() + Send + Sync>,
+    /// Tells the player the render context is up, so it can open the file.
+    ready: RefCell<Option<Sender<()>>>,
 }
 
 impl Drop for VideoRenderer {
     fn drop(&mut self) {
         // The GL side goes here, where Freya's GL context is current, and before the core it borrows.
+        // libmpv2 frees the frame callback before the context, so swap in one that owns nothing first.
+        if let Some(gl) = self.gl.borrow_mut().as_mut() {
+            gl.ctx.set_update_callback(|| {});
+        }
         self.gl.borrow_mut().take();
         // Destroying mpv waits for its network and decoder threads to stop: never on the UI thread.
         if let Some(mpv) = self.mpv.take() {
@@ -45,8 +52,8 @@ struct Gl {
 impl VideoRenderer {
     /// `mpv` must be created with `vo=libmpv`. `on_frame` runs on mpv's thread whenever a new frame
     /// is ready; it should make the UI repaint the video element.
-    pub fn new(mpv: Arc<Mpv>, on_frame: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { gl: RefCell::new(None), mpv: Some(mpv), on_frame: Arc::new(on_frame) }
+    pub fn new(mpv: Arc<Mpv>, ready: Sender<()>, on_frame: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { gl: RefCell::new(None), mpv: Some(mpv), on_frame: Arc::new(on_frame), ready: RefCell::new(Some(ready)) }
     }
 
     /// The player, for the controls (pause, seek, volume, tracks).
@@ -68,6 +75,12 @@ impl VideoRenderer {
             let on_frame = self.on_frame.clone();
             ctx.set_update_callback(move || on_frame());
             *gl = Some(Gl { ctx, target: None });
+            // If the player stopped waiting (the window didn't draw in time) the file plays without
+            // video; this brings it back. Before the file opens it just fails, harmlessly.
+            let _ = self.mpv().command("video-reload", &[]);
+            if let Some(ready) = self.ready.borrow_mut().take() {
+                let _ = ready.send(());
+            }
         }
         let gl = gl.as_mut()?;
         if gl.target.as_ref().is_none_or(|(s, _)| *s != size) {
@@ -112,13 +125,29 @@ fn gl_proc(_: &(), name: &str) -> *mut c_void {
 
 #[cfg(not(windows))]
 fn gl_proc(_: &(), name: &str) -> *mut c_void {
-    // shortcut: EGL only (Freya's default GL on Linux); macOS needs CGL lookup when a Mac build exists.
-    #[link(name = "EGL")]
+    // Freya uses EGL on Wayland and GLX first on X11: look functions up the way the current context
+    // was made. shortcut: Linux only; macOS needs CGL lookup when a Mac build exists.
     unsafe extern "C" {
-        fn eglGetProcAddress(name: *const std::ffi::c_char) -> *mut c_void;
+        fn dlopen(file: *const c_char, flags: i32) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     }
+    type GetProc = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+    type GetContext = unsafe extern "C" fn() -> *mut c_void;
+    const RTLD_LAZY: i32 = 1;
     let Ok(name) = CString::new(name) else { return std::ptr::null_mut() };
-    unsafe { eglGetProcAddress(name.as_ptr()) }
+    let sym = |lib: &std::ffi::CStr, sym: &std::ffi::CStr| unsafe {
+        let handle = dlopen(lib.as_ptr(), RTLD_LAZY);
+        if handle.is_null() { std::ptr::null_mut() } else { dlsym(handle, sym.as_ptr()) }
+    };
+    unsafe {
+        let current = sym(c"libEGL.so.1", c"eglGetCurrentContext");
+        if !current.is_null() && !std::mem::transmute::<*mut c_void, GetContext>(current)().is_null() {
+            let get = sym(c"libEGL.so.1", c"eglGetProcAddress");
+            return if get.is_null() { get } else { std::mem::transmute::<*mut c_void, GetProc>(get)(name.as_ptr()) };
+        }
+        let get = [c"libGLX.so.0", c"libGL.so.1"].into_iter().map(|lib| sym(lib, c"glXGetProcAddressARB")).find(|p| !p.is_null());
+        get.map_or(std::ptr::null_mut(), |get| std::mem::transmute::<*mut c_void, GetProc>(get)(name.as_ptr()))
+    }
 }
 
 /// An element that draws the renderer's current frame filling its area. `frame` should change

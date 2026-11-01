@@ -41,6 +41,8 @@ impl Store {
     fn init(db: Connection) -> Result<Self> {
         db.execute_batch(
             "PRAGMA journal_mode = WAL;
+             -- Safe with WAL (a power cut can lose the last commit, never corrupt): far fewer disk flushes.
+             PRAGMA synchronous = NORMAL;
              CREATE TABLE IF NOT EXISTS profiles (
                  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
                  name TEXT NOT NULL
@@ -61,6 +63,8 @@ impl Store {
             // Local write order, for "most recent first" lists.
             db.execute_batch("ALTER TABLE records ADD COLUMN updated INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 1;")?;
         }
+        // Every write reads max(updated); without this that's a scan of the whole table.
+        db.execute_batch("CREATE INDEX IF NOT EXISTS records_updated ON records (updated);")?;
         Ok(Self { db })
     }
 
@@ -105,11 +109,25 @@ impl Store {
             "SELECT key, value FROM records WHERE profile = ?1 AND kind = ?2 ORDER BY updated DESC, rowid DESC",
         )?;
         let rows = stmt.query_map(params![profile, kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        rows.map(|row| {
+        let mut out = vec![];
+        for row in rows {
             let (key, value) = row?;
-            Ok((key, serde_json::from_str(&value)?))
-        })
-        .collect()
+            // One unreadable record (null, or written by another version) mustn't hide the rest.
+            match serde_json::from_str(&value) {
+                Ok(v) => out.push((key, v)),
+                Err(e) => eprintln!("skipping {kind}/{key}: {e}"),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Writes several records of one kind in a single transaction (e.g. a whole season watched).
+    pub fn put_many<T: Serialize>(&self, profile: &str, kind: &str, items: &[(String, T)]) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        for (key, value) in items {
+            self.put(profile, kind, key, value)?;
+        }
+        Ok(tx.commit()?)
     }
 
     /// Records changed locally and not yet accepted by the sync server.
@@ -143,6 +161,8 @@ impl Store {
     /// Local edits not yet pushed are kept (they're newer), except on the first sync after
     /// signing in (`first`), when the account's copy beats this device's defaults.
     pub fn apply_pulled(&self, profile: &str, records: &[SyncedRecord], first: bool) -> Result<Vec<String>> {
+        // One transaction: a first sync can bring the whole account's history.
+        let tx = self.db.unchecked_transaction()?;
         let mut changed: Vec<String> = vec![];
         for r in records {
             let dirty: bool = self
@@ -171,18 +191,20 @@ impl Store {
         if let Some(max) = records.iter().map(|r| r.seq).max().filter(|m| *m > self.last_seq().unwrap_or(0)) {
             self.set_meta("last_seq", Some(&max.to_string()))?;
         }
+        tx.commit()?;
         Ok(changed)
     }
 
     /// Marks pushed records clean with their server seq, unless they changed again since being sent.
     pub fn mark_pushed(&self, sent: &[Record], seqs: &[u64]) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
         for (r, seq) in sent.iter().zip(seqs) {
             self.db.execute(
                 "UPDATE records SET dirty = 0, seq = ?5 WHERE profile = ?1 AND kind = ?2 AND key = ?3 AND value = ?4",
                 params![r.profile, r.kind, r.key, r.value, *seq as i64],
             )?;
         }
-        Ok(())
+        Ok(tx.commit()?)
     }
 }
 

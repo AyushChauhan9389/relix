@@ -55,13 +55,18 @@ fn main() {
     // Release builds have no console, so a panic would vanish: keep it in crash.log too.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let dir = data_dir();
-        let _ = std::fs::create_dir_all(&dir);
         let entry = format!("{info}\n{}\n\n", std::backtrace::Backtrace::force_capture());
-        let _ = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")).and_then(|mut f| {
-            use std::io::Write;
-            f.write_all(entry.as_bytes())
-        });
+        // The data folder may be the problem (read-only portable copy): fall back to the temp folder.
+        for dir in [data_dir(), std::env::temp_dir().join("relix")] {
+            let _ = std::fs::create_dir_all(&dir);
+            let written = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")).and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(entry.as_bytes())
+            });
+            if written.is_ok() {
+                break;
+            }
+        }
         default_hook(info);
     }));
     #[cfg(windows)]
@@ -76,11 +81,6 @@ fn main() {
                     1
                 }
             });
-        }
-        if let Some(len) = bundled::appended_len(&exe)
-            && let Err(e) = bundled::unpack(&exe, len, &data_dir().join("mpv"))
-        {
-            eprintln!("unpacking libmpv: {e}");
         }
     }
 
@@ -131,6 +131,14 @@ fn main() {
             instance::Claim::Unsure => None,
         },
     };
+    // After the claim, so a relaunch after an update has waited for the old copy to let go of it.
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(len) = bundled::appended_len(&exe)
+        && let Err(e) = bundled::unpack(&exe, len, &data_dir().join("mpv"))
+    {
+        eprintln!("unpacking libmpv: {e}");
+    }
 
     update::cleanup();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -284,27 +292,30 @@ impl Ctx {
     pub fn toggle_fullscreen(&self) {
         use freya::winit::window::Fullscreen;
         let mut fullscreen = self.fullscreen;
-        let on = !*fullscreen.peek();
-        fullscreen.set(on);
+        // The window decides: it may have left fullscreen through the system (a shortcut, the compositor).
         Platform::get().with_window(Platform::window_id(), move |w| {
+            let on = w.fullscreen().is_none();
             w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+            fullscreen.set(on);
         });
     }
 
     /// Shows a player full-window; called with the mpv the player hands over.
-    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>, overlay: player::Overlay) {
+    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>, ready: std::sync::mpsc::Sender<()>, overlay: player::Overlay) {
         // A player that already stopped (a dead link fails fast) hands over its mpv too late to show.
+        // Its destroy waits on mpv's threads, so it goes off the UI thread.
         if self.player.peek().is_none() {
+            std::thread::spawn(move || drop(mpv));
             return;
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut frame = self.video_frame;
-        spawn(async move {
+        spawn_in_window(async move {
             while rx.recv().await.is_some() {
                 *frame.write() += 1;
             }
         });
-        let video = Rc::new(video::VideoRenderer::new(mpv, move || {
+        let video = Rc::new(video::VideoRenderer::new(mpv, ready, move || {
             let _ = tx.send(());
         }));
         let (mut now, mut status) = (self.now_playing, self.player_status);
@@ -323,11 +334,15 @@ impl Ctx {
 
     /// Esc while playing: leave fullscreen first, then stop.
     pub fn player_escape(&self) {
-        if *self.fullscreen.peek() {
-            self.toggle_fullscreen();
-        } else if let Some(p) = self.player.peek().as_ref() {
-            let _ = p.send(player::ToPlayer::Stop);
-        }
+        let (mut fullscreen, player) = (self.fullscreen, self.player.peek().clone());
+        Platform::get().with_window(Platform::window_id(), move |w| {
+            if w.fullscreen().is_some() {
+                w.set_fullscreen(None);
+                fullscreen.set(false);
+            } else if let Some(p) = player {
+                let _ = p.send(player::ToPlayer::Stop);
+            }
+        });
     }
 
     /// Asks the sync loop to run soon (no-op when signed out).
@@ -359,8 +374,9 @@ impl Ctx {
     }
 }
 
+/// A JSON request that gives up after 20s, so a stalled addon can't hold a screen forever.
 pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: String) -> reqwest::Result<T> {
-    http.get(url).send().await?.error_for_status()?.json().await
+    http.get(url).timeout(std::time::Duration::from_secs(20)).send().await?.error_for_status()?.json().await
 }
 
 fn app() -> impl IntoElement {
@@ -396,7 +412,13 @@ fn app() -> impl IntoElement {
     let admin_enabled =
         use_state(|| store.get::<bool>(&profile, "settings", "admin_addons_enabled").ok().flatten().unwrap_or(true));
     let ctx = use_provide_context(|| Ctx {
-        http: reqwest::Client::new(),
+        // No overall timeout: the sync event stream and update downloads run long. The read timeout
+        // still ends a stalled one (the server sends keep-alives every 15s).
+        http: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("HTTP client"),
         store: store.clone(),
         profile,
         addons,
@@ -459,6 +481,10 @@ async fn install_defaults(ctx: &Ctx) {
 
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
 pub async fn load_rows(mut ctx: Ctx) {
+    // Runs overlap (addons change, sync, Try again); only the newest one touches the rows.
+    static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run = LATEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let current = || LATEST.load(std::sync::atomic::Ordering::Relaxed) == run;
     ctx.rows_loading.set(true);
     let addons = ctx.all_addons();
     let mut rows = library::local_rows(&ctx.store, &ctx.profile);
@@ -481,7 +507,11 @@ pub async fn load_rows(mut ctx: Ctx) {
         }
     }
     ctx.rows.set(rows);
-    while let Some(Ok((id, res))) = set.join_next().await {
+    while let Some(joined) = set.join_next().await {
+        if !current() {
+            return;
+        }
+        let Ok((id, res)) = joined else { continue };
         // Rows may have been rebuilt meanwhile, so find ours by id.
         let Some(i) = ctx.rows.peek().iter().position(|r| r.id == id) else { continue };
         match res {
@@ -529,11 +559,7 @@ pub enum Route {
 fn update_banner(ready: &update::Ready) -> Rect {
     let restart = {
         let ready = ready.clone();
-        move |()| {
-            if let Err(e) = update::apply(&ready) {
-                eprintln!("update: {e}");
-            }
-        }
+        move |()| update::apply_in_background(ready.clone())
     };
     rect()
         .position(Position::new_absolute().right(24.).bottom(24.))

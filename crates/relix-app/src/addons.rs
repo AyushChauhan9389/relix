@@ -183,9 +183,9 @@ fn action(ctx: &Ctx, addons: &[Addon], text: &'static str, edit: impl Fn(&mut Ve
 /// Opens `url` in the system browser.
 pub fn open_in_browser(url: &str) {
     let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("cmd");
-        // `start` treats the first quoted arg as a window title, hence the empty "".
-        c.args(["/C", "start", ""]);
+        // Not `cmd /C start`: cmd reads `|` and `&` in addon URLs (Torrentio's `providers=a|b`) as commands.
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
         c
     } else if cfg!(target_os = "macos") {
         std::process::Command::new("open")

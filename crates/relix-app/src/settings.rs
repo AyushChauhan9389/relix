@@ -113,9 +113,14 @@ impl Component for Settings {
                             .child(match ready {
                                 // Same as the banner's Restart: swap in the new files and reopen.
                                 Some(ready) => Focusable::new(button("Restart to update", theme().primary.0, theme().primary.1), move |()| {
-                                    if let Err(e) = update::apply(&ready) {
-                                        found.set(Some(format!("Couldn't install the update: {e}")));
-                                    }
+                                    let ready = ready.clone();
+                                    // Copying the files happens off the UI thread; on success Relix restarts.
+                                    spawn(async move {
+                                        let applied = tokio::task::spawn_blocking(move || update::apply(&ready).map_err(|e| e.to_string())).await;
+                                        if let Ok(Err(e)) = applied {
+                                            found.set(Some(format!("Couldn't install the update: {e}")));
+                                        }
+                                    });
                                 })
                                 .into_element(),
                                 None => Focusable::new(button("Check for updates", theme().raised, (255, 255, 255)), check).into_element(),

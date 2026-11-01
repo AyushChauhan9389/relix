@@ -30,15 +30,20 @@ pub fn write(out: &Path, exe: &Path, dll: &Path) -> io::Result<()> {
 /// Unpacks the appended libmpv into `dir` (again only when its size changed) and has Windows load it from there.
 pub fn unpack(exe: &Path, len: u64, dir: &Path) -> io::Result<()> {
     let dll = dir.join("libmpv-2.dll");
-    if std::fs::metadata(&dll).map(|m| m.len()).ok() != Some(len) {
-        std::fs::create_dir_all(dir)?;
-        let mut f = File::open(exe)?;
-        f.seek(SeekFrom::End(-16 - len as i64))?;
-        let part = dll.with_extension("part");
-        io::copy(&mut f.take(len), &mut File::create(&part)?)?;
-        std::fs::rename(&part, &dll)?;
-    }
-    set_dll_directory(dir)
+    let unpacked = (|| {
+        if std::fs::metadata(&dll).map(|m| m.len()).ok() != Some(len) {
+            std::fs::create_dir_all(dir)?;
+            let mut f = File::open(exe)?;
+            f.seek(SeekFrom::End(-16 - len as i64))?;
+            let part = dll.with_extension("part");
+            io::copy(&mut f.take(len), &mut File::create(&part)?)?;
+            std::fs::rename(&part, &dll)?;
+        }
+        Ok(())
+    })();
+    // Even when refreshing it failed (a copy still in use), the one already there works.
+    set_dll_directory(dir)?;
+    unpacked
 }
 
 fn set_dll_directory(dir: &Path) -> io::Result<()> {
