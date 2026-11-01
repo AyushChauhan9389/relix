@@ -48,11 +48,12 @@ impl Component for Home {
             return nothing_to_show(&ctx).into_element();
         }
         // Featured titles come from the first catalog, not Continue Watching or My List.
-        let featured: Vec<MetaPreview> = rows
+        let featured: std::rc::Rc<[MetaPreview]> = rows
             .iter()
             .find(|r| !r.id.starts_with("local/"))
             .map(|r| r.metas.iter().filter(|m| m.background.is_some()).take(FEATURED).cloned().collect())
-            .unwrap_or_default();
+            .unwrap_or_else(|| std::rc::Rc::from([]));
+        let loading = *ctx.rows_loading.read();
         // Nothing yet (first start, addons loading): placeholder rows.
         let rows = if rows.is_empty() {
             (0..3).map(|n| Row { id: format!("skeleton/{n}"), title: String::new(), metas: vec![], progress: vec![], loading: true, next: None }).collect()
@@ -60,16 +61,18 @@ impl Component for Home {
             rows
         };
         let len = rows.len() + 1;
+        // Shared, so the per-scroll-frame item builder copies pointers, not whole rows of titles.
+        let rows: Vec<std::rc::Rc<Row>> = rows.into_iter().map(std::rc::Rc::new).collect();
 
         page.wrap(
             VirtualScrollView::new_with_data_controlled(
-                (featured, rows),
-                |item, (featured, rows)| {
+                (featured, rows, loading),
+                |item, (featured, rows, loading)| {
                     if item.index == 0 && theme().sidebar {
                         // The Stremio look has no hero: just room under its top bar.
                         rect().height(Size::px(theme().top - 24.)).into()
                     } else if item.index == 0 {
-                        Hero { items: featured.clone() }.into()
+                        Hero { items: featured.clone(), loading: *loading }.into()
                     } else {
                         PosterRow { row: rows[item.index - 1].clone() }.into()
                     }
@@ -176,7 +179,9 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx) -> Rect {
 /// Featured titles cross-fading every few seconds, Netflix billboard style.
 #[derive(PartialEq)]
 struct Hero {
-    items: Vec<MetaPreview>,
+    items: std::rc::Rc<[MetaPreview]>,
+    /// Catalogs are still answering: the empty hero pulses rather than sitting blank.
+    loading: bool,
 }
 
 impl Component for Hero {
@@ -210,6 +215,11 @@ impl Component for Hero {
         });
 
         let Some(meta) = self.items.get(current) else {
+            // Nothing to feature and nothing coming (offline, or catalogs without art): stay still,
+            // since a pulse that never ends keeps the window redrawing.
+            if !self.loading {
+                return rect().width(Size::fill()).height(Size::px(theme().top + 40.)).into_element();
+            }
             // Featured titles still loading: the hero's shape, pulsing.
             return rect()
                 .width(Size::fill())
@@ -249,6 +259,8 @@ pub fn backdrop(background: Option<&str>) -> Rect {
                 ImageViewer::new(url)
                     .width(Size::fill())
                     .height(Size::fill())
+                    // Fill-sized images decode at their full size otherwise: 33 MB each for 4K art.
+                    .decode_mode(DecodeMode::Custom(Size2D::new(1920., 1080.)))
                     .aspect_ratio(AspectRatio::Max)
                     .image_cover(ImageCover::Center)
                     .loading_placeholder(rect())
@@ -383,9 +395,15 @@ fn dots(len: usize, current: usize) -> Rect {
         }))
 }
 
-#[derive(PartialEq)]
 pub struct PosterRow {
-    pub row: Row,
+    pub row: std::rc::Rc<Row>,
+}
+
+/// Same row object, same row: comparing whole rows of titles on every scroll frame was the cost.
+impl PartialEq for PosterRow {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.row, &other.row)
+    }
 }
 
 impl Component for PosterRow {
@@ -553,6 +571,91 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
         .child(card)
         .child(label().text(meta.name.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
         .into()
+}
+
+/// Under a poster grid: "Loading more…" while a page is coming, "Load more" when there are more.
+#[derive(Clone, PartialEq)]
+pub struct GridFooter {
+    pub loading: bool,
+    pub more: bool,
+    pub load_more: EventHandler<()>,
+}
+
+/// A grid's header, always re-rendered with its screen (it holds filters and other live state).
+struct GridHeader(Element);
+
+impl PartialEq for GridHeader {
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+/// Posters in rows of as many as fit, virtualized: only the rows on screen exist, so a long grid
+/// doesn't start every image load and placeholder animation at once. `header` scrolls above the
+/// first row; `placeholders` shows two pulsing rows (first load). It fills its parent and scrolls
+/// with `page`. Call it unconditionally (it measures the header with a hook).
+pub fn poster_grid(
+    page: Scroller,
+    header: Element,
+    metas: std::rc::Rc<Vec<MetaPreview>>,
+    new: std::rc::Rc<std::collections::HashSet<String>>,
+    placeholders: bool,
+    footer: Option<GridFooter>,
+) -> Element {
+    const GAP: f32 = 8.;
+    let header_h = use_state(|| 200f32);
+    let cols = ((page.width() + GAP) / (POSTER_W + GAP)).floor().max(1.) as usize;
+    let titled = theme().sidebar;
+    // A fixed row height (the Stremio look adds a title line), so the list knows where rows sit.
+    let row_h = POSTER_H + if titled { 30. } else { 0. } + 16.;
+    let rows = if placeholders { 2 } else { metas.len().div_ceil(cols) };
+    let len = 1 + rows + usize::from(footer.is_some());
+    page.wrap(
+        VirtualScrollView::new_with_data_controlled(
+            (GridHeader(header), metas, new, placeholders, footer, cols, rows),
+            move |item, (header, metas, new, placeholders, footer, cols, rows)| {
+                if item.index == 0 {
+                    let mut measured = header_h;
+                    return rect()
+                        .width(Size::fill())
+                        .on_sized(move |e: Event<SizedEventData>| {
+                            if (*measured.peek() - e.area.height()).abs() > 0.5 {
+                                measured.set(e.area.height());
+                            }
+                        })
+                        .child(header.0.clone())
+                        .into();
+                }
+                let item_index = item.index - 1;
+                if item_index >= *rows {
+                    let footer = footer.as_ref();
+                    return rect()
+                        .padding(Gaps::new(8., 0., 32., 0.))
+                        .maybe(footer.is_some_and(|f| f.loading), |el| el.child(crate::motion::busy("Loading more…")))
+                        .maybe_child(footer.filter(|f| f.more && !f.loading).map(|f| {
+                            let load = f.load_more.clone();
+                            Focusable::new(button("Load more", theme().raised, (255, 255, 255)), move |()| load.call(()))
+                        }))
+                        .into();
+                }
+                let cells: Vec<Element> = if *placeholders {
+                    (0..*cols).map(|_| Placeholder::new(Size::px(POSTER_W), POSTER_H).into_element()).collect()
+                } else {
+                    metas.iter().skip(item_index * cols).take(*cols).map(|m| poster(m, None, new.contains(&m.id), None)).collect()
+                };
+                rect().key(item.index).horizontal().spacing(GAP).height(Size::px(row_h)).children(cells).into()
+            },
+            page.controller,
+        )
+        .scroll_with_arrows(false)
+        .length(len)
+        .item_size(ItemSize::Dynamic(Callback::new(move |i| match i {
+            0 => *header_h.peek(),
+            i if i <= rows => row_h,
+            _ => 96.,
+        }))),
+    )
+    .into()
 }
 
 /// Home with no rows once loading is done: no addon offers Home catalogs, or every catalog failed (usually offline).

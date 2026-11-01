@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use freya::prelude::*;
 use relix_proto::addon::{Catalog, CatalogResponse, MetaPreview, discover_catalogs};
@@ -6,13 +7,10 @@ use tokio::task::JoinSet;
 
 use crate::filter::{Filter, Sort, apply, year_bounds};
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
-use crate::home::{chip, poster};
-use crate::motion::{Placeholder, busy};
+use crate::home::{GridFooter, chip, poster_grid};
 use crate::theme::theme;
 use crate::{Ctx, get};
 
-const POSTER_W: f32 = 150.;
-const POSTER_H: f32 = 225.;
 
 /// Discover: one catalog of a type at a time, narrowed by genres (several, all or any), years,
 /// rating and watched state, and sorted; loads a page at a time.
@@ -59,6 +57,11 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         let mut loading = use_state(|| true);
         // Bumped on every fresh load, so answers for an older filter are dropped.
         let mut generation = use_state(|| 0u64);
+        // Read once per visit, not on every render (it's the whole watched history).
+        let watched: HashSet<String> = use_hook({
+            let ctx = ctx.clone();
+            move || ctx.store.list::<bool>(&ctx.profile, "watched").unwrap_or_default().into_iter().map(|(k, _)| k).collect()
+        });
 
         let catalogs = move |ctx: &Ctx| -> Vec<(usize, Catalog)> {
             let addons = ctx.all_addons();
@@ -136,8 +139,6 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         let several_addons = list.iter().any(|(i, _)| *i != list.first().map(|f| f.0).unwrap_or_default());
         let f = filter.read().clone();
         let loaded = items.read().clone();
-        let watched: HashSet<String> =
-            ctx.store.list::<bool>(&ctx.profile, "watched").unwrap_or_default().into_iter().map(|(k, _)| k).collect();
         let shown = apply(&loaded, &f, &watched);
         let title = match kind_name.as_str() {
             "movie" => "Movies".to_owned(),
@@ -145,20 +146,16 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
             other => other.to_owned(),
         };
         let first_load = *loading.read() && loaded.is_empty();
+        let footer = (!list.is_empty()).then(|| GridFooter {
+            loading: *loading.read() && !loaded.is_empty(),
+            more: *more.read(),
+            load_more: EventHandler::new(move |()| load(false)),
+        });
 
-        let grid = if first_load {
-            rect().horizontal().content(Content::wrap_spacing(16.)).spacing(8.).children((0..16).map(|_| {
-                rect().spacing(8.).child(Placeholder::new(Size::px(POSTER_W), POSTER_H)).into_element()
-            }))
-        } else {
-            rect().horizontal().content(Content::wrap_spacing(16.)).spacing(8.).children(shown.iter().map(|m| poster(m, None, false, None)))
-        };
-
-        page.wrap(
-            ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
-                rect()
+        // The header scrolls above the grid, which builds only its visible rows.
+        let header = rect()
                     .width(Size::fill())
-                    .padding(Gaps::new(theme().top, 48., 48., 48.))
+                    .padding(Gaps::new(theme().top, 0., 14., 0.))
                     .spacing(14.)
                     .child(label().text(title).font_size(32.).font_weight(FontWeight::BOLD))
                     .child(chip_row(catalog_row, list.iter().enumerate().map(
@@ -185,13 +182,11 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                                 .color(theme().muted),
                         )
                     })
-                    .child(grid)
-                    .maybe(*loading.read() && !loaded.is_empty(), |el| el.child(busy("Loading more…")))
-                    .maybe(*more.read() && !*loading.read(), |el| {
-                        el.child(Focusable::new(crate::home::button("Load more", theme().raised, (255, 255, 255)), move |()| load(false)))
-                    }),
-            ),
-        )
+                    .into_element();
+        rect()
+            .expanded()
+            .padding(Gaps::new(0., 48., 0., 48.))
+            .child(poster_grid(page, header, Rc::new(shown), Rc::default(), first_load, footer))
     }
 }
 

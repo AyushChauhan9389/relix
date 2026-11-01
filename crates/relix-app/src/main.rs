@@ -683,6 +683,9 @@ impl Component for Shell {
                 rect()
                     .expanded()
                     .padding(Gaps::new(0., 0., 0., if sidebar { home::SIDEBAR_W } else { 0. }))
+                    // Under the player the page stays alive (it runs playback) but is clipped away, so
+                    // Freya skips painting it on every video frame.
+                    .maybe(playing, |el| el.height(Size::px(0.)).overflow(Overflow::Clip))
                     .child(motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}")))
                     // Stremio's search bar tops every page but Search, which has its own field.
                     .maybe(sidebar && !playing && route != Route::Search.to_string(), |el| {

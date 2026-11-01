@@ -1,9 +1,11 @@
+use std::rc::Rc;
+
 use freya::prelude::*;
 use relix_proto::addon::MetaPreview;
 
 use crate::Ctx;
 use crate::focus::{use_page_scroller, use_scroller};
-use crate::home::poster;
+use crate::home::poster_grid;
 use crate::theme::theme;
 
 /// Everything saved with "+ My List", newest first.
@@ -26,24 +28,18 @@ impl Component for MyList {
             .filter_map(|(_, m)| m)
             .collect();
 
-        page.wrap(
-            ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
-                rect()
-                    .width(Size::fill())
-                    .padding(Gaps::new(theme().top, 48., 48., 48.))
-                    .spacing(16.)
-                    .child(label().text("My List").font_size(32.).font_weight(FontWeight::BOLD))
-                    .maybe(titles.is_empty(), |el| {
-                        el.child(label().text("Titles you add with \"+ My List\" show up here.").color(theme().muted))
-                    })
-                    .child(
-                        rect()
-                            .horizontal()
-                            .content(Content::wrap_spacing(16.))
-                            .spacing(8.)
-                            .children(titles.iter().map(|m| poster(m, None, new.contains(&m.id), None))),
-                    ),
-            ),
-        )
+        let header = rect()
+            .width(Size::fill())
+            .padding(Gaps::new(theme().top, 0., 16., 0.))
+            .spacing(16.)
+            .child(label().text("My List").font_size(32.).font_weight(FontWeight::BOLD))
+            .maybe(titles.is_empty(), |el| {
+                el.child(label().text("Titles you add with \"+ My List\" show up here.").color(theme().muted))
+            })
+            .into_element();
+        rect()
+            .expanded()
+            .padding(Gaps::new(0., 48., 0., 48.))
+            .child(poster_grid(page, header, Rc::new(titles), Rc::new(new), false, None))
     }
 }

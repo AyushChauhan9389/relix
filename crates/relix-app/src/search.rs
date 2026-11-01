@@ -79,7 +79,7 @@ impl Component for Search {
                 .maybe(*searched.read() && results.is_empty(), |el| {
                     el.child(rect().padding(Gaps::new(24., 48., 0., 48.)).child(label().text("No matches yet.").color(theme().muted)))
                 })
-                .children(results.into_iter().map(|row| PosterRow { row }.into_element())),
+                .children(results.into_iter().map(|row| PosterRow { row: std::rc::Rc::new(row) }.into_element())),
         )
     }
 }

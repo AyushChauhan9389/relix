@@ -59,7 +59,20 @@ impl Scroller {
     /// Wraps the scroll view in a rect that measures the viewport.
     pub fn wrap(self, view: impl IntoElement) -> Rect {
         let mut viewport = self.viewport;
-        rect().expanded().on_sized(move |e: Event<SizedEventData>| viewport.set(e.area)).child(view)
+        // Size events also come on relayouts that change nothing; only real changes notify readers.
+        rect()
+            .expanded()
+            .on_sized(move |e: Event<SizedEventData>| {
+                if *viewport.peek() != e.area {
+                    viewport.set(e.area)
+                }
+            })
+            .child(view)
+    }
+
+    /// The viewport's width; reading it re-renders the reader when the window is resized.
+    pub fn width(&self) -> f32 {
+        self.viewport.read().width()
     }
 
     /// Glides the view so `area` is inside it (with `top_inset` clear of the nav).

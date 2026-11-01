@@ -59,6 +59,27 @@ enum Menu {
 }
 
 /// Full-window video and controls while something plays.
+/// The picture alone: the only part of the player that redraws with every video frame, so the
+/// controls re-render only when the player's state changes (a few times a second).
+struct VideoView {
+    renderer: Rc<VideoRenderer>,
+    on_press: EventHandler<()>,
+}
+
+impl PartialEq for VideoView {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.renderer, &other.renderer) && self.on_press == other.on_press
+    }
+}
+
+impl Component for VideoView {
+    fn render(&self) -> impl IntoElement {
+        let frame = *use_consume::<Ctx>().video_frame.read();
+        let on_press = self.on_press.clone();
+        video(self.renderer.clone(), frame).width(Size::fill()).height(Size::fill()).on_press(move |_| on_press.call(()))
+    }
+}
+
 #[derive(PartialEq)]
 pub struct Player;
 
@@ -102,26 +123,24 @@ impl Component for Player {
             .expanded()
             .background((0, 0, 0))
             .on_global_pointer_move(move |_| wake())
-            .child(
-                video(r.clone(), *ctx.video_frame.read())
-                    .width(Size::fill())
-                    .height(Size::fill())
-                    // A click pauses or plays, a double click toggles fullscreen (and undoes the pause).
-                    .on_press({
-                        let (r, ctx) = (r.clone(), ctx.clone());
-                        move |_| {
-                            let paused = ctx.player_status.peek().paused;
-                            let _ = r.mpv().set_property("pause", !paused);
-                            menu.set(None);
-                            if last_click.peek().is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
-                                ctx.toggle_fullscreen();
-                                last_click.set(None);
-                            } else {
-                                last_click.set(Some(Instant::now()));
-                            }
+            .child(VideoView {
+                renderer: r.clone(),
+                // A click pauses or plays, a double click toggles fullscreen (and undoes the pause).
+                on_press: EventHandler::new({
+                    let (r, ctx) = (r.clone(), ctx.clone());
+                    move |()| {
+                        let paused = ctx.player_status.peek().paused;
+                        let _ = r.mpv().set_property("pause", !paused);
+                        menu.set(None);
+                        if last_click.peek().is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
+                            ctx.toggle_fullscreen();
+                            last_click.set(None);
+                        } else {
+                            last_click.set(Some(Instant::now()));
                         }
-                    }),
-            )
+                    }
+                }),
+            })
             .maybe(!status.loaded, |el| el.child(Loading { logo: np.logo.clone(), background: np.background.clone(), title: np.title.clone() }.into_element()))
             .maybe(status.loaded && status.paused, |el| {
                 el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
