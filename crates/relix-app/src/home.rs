@@ -195,11 +195,13 @@ impl Component for Hero {
         count.set_if_modified(len);
 
         use_hook(move || {
+            let focused = Platform::get().current_window().is_app_focused;
             spawn(async move {
                 loop {
                     tokio::time::sleep(ROTATE_EVERY).await;
-                    let (i, len) = (*index.read(), *count.read());
-                    if len > 1 {
+                    let (i, len) = (*index.peek(), *count.peek());
+                    // Behind other windows or minimized, Relix shouldn't spend anything redrawing.
+                    if len > 1 && *focused.peek() {
                         prev.set(i);
                         index.set((i + 1) % len);
                     }
@@ -211,7 +213,7 @@ impl Component for Hero {
         let fade = use_animation_with_dependencies(&current, |conf, _| {
             conf.on_creation(OnCreation::Finish);
             conf.on_change(OnChange::Rerun);
-            AnimNum::new(0., 1.).time(900).ease(Ease::InOut)
+            AnimNum::new(0., 1.).time(500).ease(Ease::InOut)
         });
 
         let Some(meta) = self.items.get(current) else {

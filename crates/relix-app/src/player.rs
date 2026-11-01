@@ -246,8 +246,9 @@ pub fn play(
     }
 
     let played = run(&mpv, url, prefs, &inbox, &status);
-    // Make sure the core stops even if something else still holds it.
-    let _ = mpv.command("quit", &[]);
+    // Unload the stream now (stops the network reads and sound) and return at once; the core itself
+    // is destroyed by its last holder, off the UI thread (video.rs).
+    let _ = mpv.command("stop", &[]);
     played
 }
 
