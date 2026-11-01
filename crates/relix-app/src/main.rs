@@ -454,8 +454,10 @@ pub async fn load_rows(mut ctx: Ctx) {
                 other => other.to_owned(),
             };
             let id = format!("{}/{}/{}", addon.manifest.id, c.r#type, c.id);
-            rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![], loading: true });
-            let url = ResourceRequest::new("catalog", &c.r#type, &c.id).url(addon);
+            let req = ResourceRequest::new("catalog", &c.r#type, &c.id);
+            let next = c.supports("skip").then(|| (addon.clone(), req.clone()));
+            rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![], loading: true, next });
+            let url = req.url(addon);
             let http = ctx.http.clone();
             set.spawn(async move { (id, get::<CatalogResponse>(http, url).await) });
         }

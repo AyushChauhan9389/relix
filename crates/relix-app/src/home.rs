@@ -3,7 +3,7 @@ use std::time::Duration;
 use freya::animation::*;
 use freya::prelude::*;
 use freya::router::*;
-use relix_proto::addon::MetaPreview;
+use relix_proto::addon::{Addon, CatalogResponse, MetaPreview, ResourceRequest};
 
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, HOVER_MS, Placeholder};
@@ -17,6 +17,9 @@ const NAV_H: f32 = 68.;
 const FEATURED: usize = 5;
 const ROTATE_EVERY: Duration = Duration::from_secs(8);
 
+/// What each poster in a row's virtual list needs.
+type RowData = (Vec<MetaPreview>, Vec<f32>, Scroller, bool, std::collections::HashSet<String>, EventHandler<()>);
+
 #[derive(Clone, PartialEq)]
 pub struct Row {
     /// Stable identity, so late catalog answers land in the right row.
@@ -27,6 +30,8 @@ pub struct Row {
     pub progress: Vec<f32>,
     /// Its catalog hasn't answered yet: shows placeholder posters.
     pub loading: bool,
+    /// The catalog request to page with `skip` as the row scrolls, if the catalog supports it.
+    pub next: Option<(Addon, ResourceRequest)>,
 }
 
 /// A vertically virtualized page: item 0 is the hero, the rest are rows.
@@ -50,7 +55,7 @@ impl Component for Home {
             .unwrap_or_default();
         // Nothing yet (first start, addons loading): placeholder rows.
         let rows = if rows.is_empty() {
-            (0..3).map(|n| Row { id: format!("skeleton/{n}"), title: String::new(), metas: vec![], progress: vec![], loading: true }).collect()
+            (0..3).map(|n| Row { id: format!("skeleton/{n}"), title: String::new(), metas: vec![], progress: vec![], loading: true, next: None }).collect()
         } else {
             rows
         };
@@ -386,8 +391,41 @@ pub struct PosterRow {
 impl Component for PosterRow {
     fn render(&self) -> impl IntoElement {
         let row = use_scroller();
-        let new = use_consume::<Ctx>().new_episodes.read().clone();
-        let metas = self.row.metas.clone();
+        let ctx = use_consume::<Ctx>();
+        let new = ctx.new_episodes.read().clone();
+        // Later pages, fetched as the row nears its end: (row id, items, no more pages).
+        let mut paged = use_state(|| (String::new(), Vec::<MetaPreview>::new(), false));
+        let busy = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(false)));
+        let mut metas = self.row.metas.clone();
+        let (more, done) = {
+            let p = paged.read();
+            if p.0 == self.row.id { (p.1.clone(), p.2) } else { (vec![], false) }
+        };
+        metas.extend(more);
+        let load_more = EventHandler::new({
+            let (id, next, received, base) = (self.row.id.clone(), self.row.next.clone(), metas.len(), metas.clone());
+            move |()| {
+                let Some((addon, req)) = next.clone() else { return };
+                if done || busy.get() {
+                    return;
+                }
+                busy.set(true);
+                let (id, http, busy, base) = (id.clone(), ctx.http.clone(), busy.clone(), base.clone());
+                spawn(async move {
+                    let url = req.extra("skip", &received.to_string()).url(&addon);
+                    let page = crate::get::<CatalogResponse>(http, url).await.map(|r| r.metas).unwrap_or_default();
+                    // Addons that ignore `skip` repeat page one: no new ids means the end.
+                    let fresh: Vec<_> = page.into_iter().filter(|m| !base.iter().any(|b| b.id == m.id)).collect();
+                    let mut p = paged.write();
+                    if p.0 != id {
+                        *p = (id, vec![], false);
+                    }
+                    p.2 = fresh.is_empty();
+                    p.1.extend(fresh);
+                    busy.set(false);
+                });
+            }
+        });
         let progress = self.row.progress.clone();
         let len = if self.row.loading { 8 } else { metas.len() };
         let loading = self.row.loading;
@@ -403,8 +441,11 @@ impl Component for PosterRow {
             .child(
                 row.wrap(
                     VirtualScrollView::new_with_data_controlled(
-                        (metas, progress, row, loading, new),
-                        |item, (metas, progress, row, loading, new): &(Vec<MetaPreview>, Vec<f32>, Scroller, bool, std::collections::HashSet<String>)| {
+                        (metas, progress, row, loading, new, load_more),
+                        |item, (metas, progress, row, loading, new, load_more): &RowData| {
+                            if !*loading && item.index + 6 >= metas.len() {
+                                load_more.call(());
+                            }
                             let card: Element = if *loading {
                                 Placeholder::new(Size::px(POSTER_W), POSTER_H).into()
                             } else {

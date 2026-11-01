@@ -41,7 +41,8 @@ impl Component for Search {
                     for (i, c, req) in search_requests(&addons, &q) {
                         let id = format!("{i}/{}/{}", c.r#type, c.id);
                         let kind = if c.r#type == "movie" { "Movies".into() } else if c.r#type == "series" { "Series".into() } else { c.r#type.clone() };
-                        next.push(Row { id: id.clone(), title: format!("{} · {kind}", addons[i].manifest.name), metas: vec![], progress: vec![], loading: true });
+                        let more = c.supports("skip").then(|| (addons[i].clone(), req.clone()));
+                        next.push(Row { id: id.clone(), title: format!("{} · {kind}", addons[i].manifest.name), metas: vec![], progress: vec![], loading: true, next: more });
                         let (http, url) = (ctx.http.clone(), req.url(&addons[i]));
                         set.spawn(async move { (id, get::<CatalogResponse>(http, url).await) });
                     }

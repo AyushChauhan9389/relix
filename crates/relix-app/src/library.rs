@@ -116,10 +116,11 @@ pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
             progress: watching.iter().map(WatchState::fraction).collect(),
             metas: watching.into_iter().map(|s| s.title).collect(),
             loading: false,
+            next: None,
         });
     }
     if !list.is_empty() {
-        rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![], loading: false });
+        rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![], loading: false, next: None });
     }
     rows
 }
