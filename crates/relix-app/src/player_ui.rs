@@ -592,8 +592,13 @@ pub fn key(ctx: &Ctx, key: &Key) -> bool {
         Key::Character(c) if c == " " => drop(mpv.set_property("pause", !s.paused)),
         Key::Named(NamedKey::ArrowLeft) => drop(mpv.command("seek", &["-10", "relative"])),
         Key::Named(NamedKey::ArrowRight) => drop(mpv.command("seek", &["10", "relative"])),
-        Key::Named(NamedKey::ArrowUp) => set_volume(ctx, mpv, s.volume * *ctx.volume_boost.peek() + 5.),
-        Key::Named(NamedKey::ArrowDown) => set_volume(ctx, mpv, s.volume * *ctx.volume_boost.peek() - 5.),
+        // Read the boost into a value first: a borrow taken inside the call's arguments lives until the
+        // statement ends, and set_volume writes the same State (that panicked above 100%).
+        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
+            let current = s.volume * *ctx.volume_boost.peek();
+            let step = if matches!(key, Key::Named(NamedKey::ArrowUp)) { 5. } else { -5. };
+            set_volume(ctx, mpv, current + step)
+        }
         Key::Character(c) if c.eq_ignore_ascii_case("f") => ctx.toggle_fullscreen(),
         Key::Character(c) if c.eq_ignore_ascii_case("m") => drop(mpv.set_property("mute", !s.muted)),
         Key::Character(c) if c.eq_ignore_ascii_case("n") && np.has_next => {
