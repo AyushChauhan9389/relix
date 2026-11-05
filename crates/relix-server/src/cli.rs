@@ -7,6 +7,9 @@ pub const USAGE: &str = "usage: relix-server admin <command>
   add <manifest-url>   publish an addon to every signed-in account
   list                 show published addons and their ids
   remove <id>          stop publishing an addon
+  preview add <username>     let an account host Watch Together parties
+  preview remove <username>  take that away
+  preview list               accounts that can host
 env: RELIX_ADMIN_TOKEN (required), RELIX_SERVER_URL (default http://127.0.0.1:8787)";
 
 #[derive(Debug, PartialEq)]
@@ -14,6 +17,10 @@ pub enum AdminCommand {
     Add(Url),
     List,
     Remove(u64),
+    /// Watch Together preview hosts.
+    PreviewAdd(String),
+    PreviewRemove(String),
+    PreviewList,
 }
 
 /// Parses the arguments after `admin`.
@@ -24,6 +31,9 @@ pub fn parse_admin(args: &[String]) -> Result<AdminCommand, String> {
             .map_err(|_| format!("{url} isn't an addon link; it should end in /manifest.json")),
         ["list"] => Ok(AdminCommand::List),
         ["remove", id] => id.parse().map(AdminCommand::Remove).map_err(|_| format!("{id} isn't an addon id; see `list`")),
+        ["preview", "add", name] => Ok(AdminCommand::PreviewAdd((*name).to_owned())),
+        ["preview", "remove", name] => Ok(AdminCommand::PreviewRemove((*name).to_owned())),
+        ["preview", "list"] => Ok(AdminCommand::PreviewList),
         _ => Err(USAGE.into()),
     }
 }

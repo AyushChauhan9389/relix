@@ -2,6 +2,8 @@
 //! each account's records, hands out sequence numbers and notifies devices over SSE.
 
 pub mod cli;
+mod party;
+mod social;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -9,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -91,6 +94,8 @@ struct AppState {
     events: broadcast::Sender<(Option<i64>, String)>,
     // ponytail: in-memory throttle, resets on restart and isn't shared between instances; fine for one box.
     failures: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
+    /// Live connections, presence and Watch Together parties.
+    hub: Arc<party::Hub>,
 }
 
 #[derive(Debug)]
@@ -162,6 +167,8 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS admin_addons (id INTEGER PRIMARY KEY, addon TEXT NOT NULL);",
     )?;
+    db.execute_batch(social::SCHEMA)?;
+    social::migrate(&db)?;
     // Databases from before session expiry: start their sessions' clocks now.
     if !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'last_used'")?.exists([])? {
         db.execute_batch("ALTER TABLE sessions ADD COLUMN last_used INTEGER NOT NULL DEFAULT 0; UPDATE sessions SET last_used = unixepoch();")?;
@@ -171,6 +178,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         config: Arc::new(config),
         events: broadcast::channel(256).0,
         failures: Arc::default(),
+        hub: Arc::default(),
     };
     Ok(Router::new()
         .route("/signup", post(signup))
@@ -188,6 +196,17 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/admin/addons", get(admin_list).post(admin_add))
         .route("/admin/addons/{id}", delete(admin_remove))
         .route("/admin/update/{name}", put(admin_upload).layer(DefaultBodyLimit::max(512 * 1024 * 1024)))
+        .route("/me", get(social::me))
+        .route("/me/username", put(social::set_username))
+        .route("/friends", get(social::list))
+        .route("/friends/request", post(social::request))
+        .route("/friends/accept", post(social::accept))
+        .route("/friends/decline", post(social::decline))
+        .route("/friends/block", post(social::block))
+        .route("/friends/{username}", delete(social::remove))
+        .route("/ws", get(ws))
+        .route("/admin/preview", get(social::admin_hosts))
+        .route("/admin/preview/{username}", put(social::admin_allow).delete(social::admin_disallow))
         .route("/update/latest", get(update_latest))
         .route("/update/files/{name}", get(update_file))
         .with_state(state))
@@ -398,6 +417,7 @@ async fn delete_account(State(s): State<AppState>, headers: HeaderMap, Json(req)
     for sql in ["DELETE FROM records WHERE account = ?1", "DELETE FROM sessions WHERE account = ?1", "DELETE FROM accounts WHERE id = ?1"] {
         tx.execute(sql, params![account])?;
     }
+    social::forget(&tx, account)?;
     tx.commit()?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -536,6 +556,13 @@ async fn events(
             _ => None,
         });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// The app's live connection (presence, parties, chat). Needs a username: it's how others see you.
+async fn ws(State(s): State<AppState>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
+    let account = account_of(&s, &headers)?;
+    let username = social::username_of(&s, account)?.ok_or(ApiError(StatusCode::CONFLICT, "pick a username first"))?;
+    Ok(upgrade.on_upgrade(move |socket| party::run(s, account, username, socket)))
 }
 
 fn require_admin(s: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {

@@ -22,6 +22,14 @@ fn list_and_remove() {
 }
 
 #[test]
+fn preview_hosts() {
+    assert_eq!(parse(&["preview", "add", "ayush"]).unwrap(), AdminCommand::PreviewAdd("ayush".into()));
+    assert_eq!(parse(&["preview", "remove", "ayush"]).unwrap(), AdminCommand::PreviewRemove("ayush".into()));
+    assert_eq!(parse(&["preview", "list"]).unwrap(), AdminCommand::PreviewList);
+    assert!(parse(&["preview", "add"]).is_err());
+}
+
+#[test]
 fn anything_else_explains_usage() {
     let err = parse(&["frobnicate"]).unwrap_err();
     assert!(err.contains("add <manifest-url>") && err.contains("list") && err.contains("remove <id>"));

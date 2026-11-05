@@ -21,7 +21,7 @@ use relix_server::{Config, Mailer, app};
 fn checked(res: reqwest::Response) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
     match res.status() {
         reqwest::StatusCode::UNAUTHORIZED => Err("the server rejected RELIX_ADMIN_TOKEN (or has no admin token set)".into()),
-        reqwest::StatusCode::NOT_FOUND => Err("no published addon with that id; see `list`".into()),
+        reqwest::StatusCode::NOT_FOUND => Err("not found: no addon with that id (see `list`) or no account with that username".into()),
         s if !s.is_success() => Err(format!("server error {s}").into()),
         _ => Ok(res),
     }
@@ -65,6 +65,23 @@ async fn admin(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         AdminCommand::Remove(id) => {
             checked(http.delete(format!("{server}/admin/addons/{id}")).bearer_auth(&token).send().await?)?;
             println!("removed #{id}");
+        }
+        AdminCommand::PreviewAdd(name) => {
+            checked(http.put(format!("{server}/admin/preview/{name}")).bearer_auth(&token).send().await?)?;
+            println!("{name} can host Watch Together parties");
+        }
+        AdminCommand::PreviewRemove(name) => {
+            checked(http.delete(format!("{server}/admin/preview/{name}")).bearer_auth(&token).send().await?)?;
+            println!("{name} can no longer host");
+        }
+        AdminCommand::PreviewList => {
+            let names: Vec<String> = checked(http.get(format!("{server}/admin/preview")).bearer_auth(&token).send().await?)?.json().await?;
+            if names.is_empty() {
+                println!("no one can host yet");
+            }
+            for n in names {
+                println!("{n}");
+            }
         }
     }
     Ok(())
