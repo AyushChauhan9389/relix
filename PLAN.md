@@ -72,3 +72,25 @@ Targeted tests only: addon routing and extra encoding, sync merge rules, and ser
 2. **Library:** library, continue-watching, search, discover, subtitles.
 3. **Accounts:** server, sync, password login on every device.
 4. **Polish:** auto-play the next episode, more player features, design pass.
+
+## Watch Together (closed preview), decided 2026-11-05
+
+Built and released in one go, after testing on a real machine. ADR 0010.
+
+- **Usernames:** unique, 3-20 characters (letters, digits, `_`), changeable. New sign-ups pick one, and existing accounts are asked once.
+- **Friends:**
+  - Requests by username: send, accept, decline, remove, block.
+  - Presence: friends see you online and what you're watching. Either can be hidden in Settings.
+  - Invites: invite friends to a party.
+  - No direct messages.
+- **Who can host:** only accounts enabled with `relix-server admin preview add <username>`. Anyone signed in and invited can join.
+- **Party:** "Watch together" on a movie or episode page asks for a link and shows the title's poster and name. The party is private: join by invite link or code, or by invite from the friends list. No public parties in the preview.
+- **Links:** a Google Drive "anyone with the link" share link is converted to a direct stream; any direct `http(s)` video URL also works. The link is checked before the party starts.
+- **Sync:**
+  - Host-only control by default; the host can open control to everyone.
+  - Drift beyond about 1.5 s is corrected, and late joiners jump to the party's position.
+  - Everyone waits while anyone buffers.
+  - The host role passes to the longest-present member, and the party ends when everyone leaves.
+- **Chat:** a side panel in the player. Messages live in server memory only, while the party lasts.
+- **After a party:** the host can delete the Drive file by hand. It goes to Drive's trash. This needs Relix connected to the host's Google Drive (OAuth, full Drive scope, Google Cloud project in testing mode).
+- **Transport:** one WebSocket per signed-in app (presence, parties, chat). Party state is held in the server's memory, so a server restart ends running parties.
