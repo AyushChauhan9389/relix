@@ -155,7 +155,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         // The header scrolls above the grid, which builds only its visible rows.
         let header = rect()
                     .width(Size::fill())
-                    .padding(Gaps::new(theme().top, 0., 14., 0.))
+                    .padding(Gaps::new(crate::theme::top(), 0., 14., 0.))
                     .spacing(14.)
                     .child(label().text(title).font_size(32.).font_weight(FontWeight::BOLD))
                     .child(chip_row(catalog_row, list.iter().enumerate().map(
@@ -185,7 +185,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     .into_element();
         rect()
             .expanded()
-            .padding(Gaps::new(0., 48., 0., 48.))
+            .padding(Gaps::new(0., crate::theme::side(), 0., crate::theme::side()))
             .child(poster_grid(page, header, Rc::new(shown), Rc::default(), first_load, footer))
     }
 }
@@ -258,9 +258,11 @@ fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, cur
     let ratings = [(None, "Any"), (Some(6.), "6+"), (Some(7.), "7+"), (Some(8.), "8+")];
 
     rect()
+        .width(Size::fill())
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(24.)
+        .content(Content::wrap_spacing(14.))
         .maybe(!years.is_empty() && !genres_are_years, |el| {
             el.child(field(
                 "Years",
@@ -349,6 +351,7 @@ fn chip_row(row: Scroller, chips: Vec<Element>) -> Element {
             ScrollView::new_controlled(row.controller)
                 .direction(Direction::Horizontal)
                 .scroll_with_arrows(false)
+                .drag_scrolling(false)
                 .show_scrollbar(false)
                 .child(rect().horizontal().padding(Gaps::new_all(4.)).spacing(8.).children(chips)),
         ))

@@ -18,6 +18,17 @@ serde = "1.0.229"
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 
+[dev-dependencies]
+# Headless runs with touch input, to check how scrolling feels on phones.
+freya-testing = "=0.5.0-rc.13"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Opens links (Intent.ACTION_VIEW); Freya's Android support uses the same version.
+jni = "0.22.4"
+# Android has no system root store reqwest can read without a Java helper, so HTTPS uses these roots.
+webpki-root-certs = "1.0.11"
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+
 [build-dependencies]
 winresource = "0.1.34"
 

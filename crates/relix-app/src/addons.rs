@@ -1,7 +1,7 @@
 use freya::prelude::*;
 use relix_proto::addon::{Addon, Manifest, base_url, manifest_url};
 
-use crate::focus::Focusable;
+use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::home::button;
 use crate::{Ctx, get, stremio};
 use crate::motion::busy;
@@ -15,6 +15,8 @@ pub struct Addons;
 impl Component for Addons {
     fn render(&self) -> impl IntoElement {
         let ctx = use_consume::<Ctx>();
+        let page = use_scroller();
+        use_page_scroller(page);
         let mut url = use_state(String::new);
         let mut status = use_state(|| None::<String>);
         let addons = ctx.addons.read().clone();
@@ -51,11 +53,11 @@ impl Component for Addons {
             }
         };
 
-        ScrollView::new()
+        page.wrap(ScrollView::new_controlled(page.controller).scroll_with_arrows(false).drag_scrolling(false)
             .child(
             rect()
                 .width(Size::fill())
-                .padding(Gaps::new(theme().top, 48., 48., 48.))
+                .padding(Gaps::new(crate::theme::top(), crate::theme::side(), 48., crate::theme::side()))
                 .spacing(16.)
                 .child(label().text("Addons").font_size(32.).font_weight(FontWeight::BOLD))
                 .child(
@@ -107,7 +109,7 @@ impl Component for Addons {
                     )
                 })
                 .child(StremioPanel),
-            )
+            ))
             .into_element()
     }
 }
@@ -182,17 +184,24 @@ fn action(ctx: &Ctx, addons: &[Addon], text: &'static str, edit: impl Fn(&mut Ve
 
 /// Opens `url` in the system browser.
 pub fn open_in_browser(url: &str) {
-    let mut cmd = if cfg!(windows) {
-        // Not `cmd /C start`: cmd reads `|` and `&` in addon URLs (Torrentio's `providers=a|b`) as commands.
-        let mut c = std::process::Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-    } else {
-        std::process::Command::new("xdg-open")
+    // Android has no browser command: ask the system to view the link (an Intent).
+    #[cfg(target_os = "android")]
+    let opened = crate::android_view(url);
+    #[cfg(not(target_os = "android"))]
+    let opened = {
+        let mut cmd = if cfg!(windows) {
+            // Not `cmd /C start`: cmd reads `|` and `&` in addon URLs (Torrentio's `providers=a|b`) as commands.
+            let mut c = std::process::Command::new("rundll32");
+            c.arg("url.dll,FileProtocolHandler");
+            c
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open")
+        } else {
+            std::process::Command::new("xdg-open")
+        };
+        cmd.arg(url).spawn().map(drop).map_err(|e| e.to_string())
     };
-    if let Err(e) = cmd.arg(url).spawn() {
+    if let Err(e) = opened {
         crate::log!("opening {}: {e}", crate::debug::host(url));
     }
 }
@@ -257,7 +266,8 @@ impl Component for StremioPanel {
                         .child(action("Disconnect", "disconnect", false)),
                 ),
             None => rect()
-                .width(Size::px(560.))
+                .width(Size::fill())
+                .max_width(Size::px(560.))
                 .spacing(10.)
                 .child(Input::new(email).width(Size::fill()).placeholder("Stremio email"))
                 .child(Input::new(password).width(Size::fill()).placeholder("Stremio password").mode(InputMode::new_password()))

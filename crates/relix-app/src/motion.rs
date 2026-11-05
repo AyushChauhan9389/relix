@@ -41,12 +41,18 @@ impl Component for FadeIn {
             conf.on_creation(OnCreation::Run);
             AnimNum::new(0., 1.).time(ENTER_MS).ease(Ease::Out).function(Function::Cubic)
         });
+        // Phones skip it for images: a list mounts posters as they scroll into view, and a fading
+        // one is drawn through its own offscreen layer, so every scroll paid for a row of them.
+        if !self.fill && crate::theme::phone() {
+            return self.child.clone();
+        }
         let v = t.get().value();
         rect()
             .maybe(self.fill, |el| el.expanded())
             .opacity(v)
             .offset_y(self.rise * (1. - v))
             .child(self.child.clone())
+            .into_element()
     }
 
     fn render_key(&self) -> DiffKey {

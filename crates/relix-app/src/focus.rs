@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use freya::animation::*;
 use freya::prelude::*;
@@ -49,22 +50,93 @@ pub fn next_focus<K>(from: Area, candidates: &[(K, Area)], dir: Dir) -> Option<&
 pub struct Scroller {
     pub controller: ScrollController,
     viewport: State<Area>,
+    touch: State<TouchDrag>,
 }
 
 pub fn use_scroller() -> Scroller {
-    Scroller { controller: use_scroll_controller(ScrollConfig::default), viewport: use_state(Area::default) }
+    Scroller { controller: use_scroll_controller(ScrollConfig::default), viewport: use_state(Area::default), touch: use_state(TouchDrag::default) }
 }
 
+/// A finger dragging a view. Freya's own touch scrolling measures speed between touch events,
+/// which Android delivers in bursts microseconds apart, so its flings flew off: views here turn
+/// it off (`drag_scrolling(false)`) and [`Scroller::wrap`] scrolls them instead.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct TouchDrag {
+    /// Where the finger went down, and where the view was then.
+    from: Option<(CursorPoint, (f32, f32))>,
+    /// Up/down or sideways, decided once the finger has moved: a row scrolls sideways while the
+    /// page around it scrolls up and down, never both.
+    vertical: Option<bool>,
+    /// The latest speed sample: when, where the finger was, and its speed (points a second).
+    sample: Option<(Instant, CursorPoint, (f64, f64))>,
+    /// Counts touches, so a fling still running stops when the finger comes back.
+    generation: u32,
+}
+
+/// How far a finger moves before it's a drag rather than a tap.
+const SLOP: f64 = 8.;
+/// Speed is measured over at least this long, never between two events of one burst.
+const SAMPLE: Duration = Duration::from_millis(16);
+
 impl Scroller {
-    /// Wraps the scroll view in a rect that measures the viewport.
+    /// Wraps the scroll view in a rect that measures the viewport and scrolls it by touch.
     pub fn wrap(self, view: impl IntoElement) -> Rect {
         let mut viewport = self.viewport;
+        let (mut touch, controller) = (self.touch, self.controller);
         // Size events also come on relayouts that change nothing; only real changes notify readers.
         rect()
             .expanded()
             .on_sized(move |e: Event<SizedEventData>| {
                 if *viewport.peek() != e.area {
                     viewport.set(e.area)
+                }
+            })
+            .on_pointer_down(move |e: Event<PointerEventData>| {
+                if !matches!(e.data(), PointerEventData::Touch(_)) {
+                    return;
+                }
+                let (at, pos) = (e.global_location(), controller.position());
+                let generation = touch.peek().generation + 1;
+                touch.set(TouchDrag { from: Some((at, (pos.x, pos.y))), vertical: None, sample: Some((Instant::now(), at, (0., 0.))), generation });
+            })
+            .on_global_pointer_move(move |e: Event<PointerEventData>| {
+                let drag = *touch.peek();
+                let Some((start, (x0, y0))) = drag.from else { return };
+                let at = e.global_location();
+                let (dx, dy) = (at.x - start.x, at.y - start.y);
+                let vertical = match drag.vertical {
+                    Some(v) => v,
+                    None if dx.abs().max(dy.abs()) > SLOP => dy.abs() > dx.abs(),
+                    None => return,
+                };
+                let mut controller = controller;
+                if vertical {
+                    controller.scroll_to_y((y0 as f64 + dy) as i32);
+                } else {
+                    controller.scroll_to_x((x0 as f64 + dx) as i32);
+                }
+                let now = Instant::now();
+                let sample = match drag.sample {
+                    Some((t, p, _)) if now - t >= SAMPLE => {
+                        let secs = (now - t).as_secs_f64();
+                        Some((now, at, ((at.x - p.x) / secs, (at.y - p.y) / secs)))
+                    }
+                    other => other,
+                };
+                touch.set(TouchDrag { vertical: Some(vertical), sample, ..drag });
+            })
+            .on_global_pointer_up(move |_: Event<PointerEventData>| {
+                let drag = *touch.peek();
+                if drag.from.is_none() {
+                    return;
+                }
+                touch.set(TouchDrag { from: None, ..drag });
+                // A finger that stopped before lifting doesn't throw the view.
+                let (Some(vertical), Some((t, _, (vx, vy)))) = (drag.vertical, drag.sample) else { return };
+                if t.elapsed() < Duration::from_millis(100) {
+                    let pos = controller.position();
+                    let (from, speed) = if vertical { (pos.y, vy) } else { (pos.x, vx) };
+                    fling(controller, touch, drag.generation, vertical, from, speed as f32);
                 }
             })
             .child(view)
@@ -98,6 +170,39 @@ impl Scroller {
             }
         }
     }
+}
+
+/// Lets a thrown view coast to a stop: it starts at the finger's speed and travels about a
+/// third of a second's worth, easing out.
+fn fling(mut controller: ScrollController, touch: State<TouchDrag>, generation: u32, vertical: bool, from: f32, speed: f32) {
+    const MAX_SPEED: f32 = 8000.;
+    let speed = speed.clamp(-MAX_SPEED, MAX_SPEED);
+    if speed.abs() < 300. {
+        return;
+    }
+    let distance = speed * 0.3;
+    // An ease-out cubic starts at 3 × distance / time, so this time starts it at the finger's speed.
+    let time = 3. * distance / speed;
+    // One step per frame the display shows (Freya's ticker), not on a timer: a timer drifts
+    // against a 90/120 Hz screen and the coast judders.
+    let (ticker, window) = (RenderingTicker::get(), Platform::get().current_window());
+    spawn(async move {
+        let started = Instant::now();
+        loop {
+            window.send(UserEvent::RequestRedraw);
+            ticker.tick().await;
+            if touch.peek().generation != generation {
+                return;
+            }
+            let t = (started.elapsed().as_secs_f32() / time).min(1.);
+            let at = (from + distance * (1. - (1. - t).powi(3))) as i32;
+            let moved = if vertical { controller.scroll_to_y(at) } else { controller.scroll_to_x(at) };
+            // Done, or stopped at an end.
+            if t >= 1. || !moved {
+                return;
+            }
+        }
+    });
 }
 
 #[derive(Clone)]
@@ -174,11 +279,13 @@ pub struct Focusable {
     pub radius: f32,
     /// How much it grows when hovered or focused (posters grow more).
     pub grow: f32,
+    /// Its width in its parent, when it should stretch (its child then fills it).
+    pub width: Option<Size>,
 }
 
 impl Focusable {
     pub fn new(child: impl Into<Element>, on_press: impl Into<EventHandler<()>>) -> Self {
-        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6., grow: 1.04 }
+        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6., grow: 1.04, width: None }
     }
 }
 
@@ -196,6 +303,9 @@ impl Component for Focusable {
         let (on_press, row) = (self.on_press.clone(), self.row);
         let pressed = self.on_press.clone();
         let mut hovered = use_state(|| false);
+        // Where a touch went down: lifting the finger after dragging (scrolling a row or the page,
+        // swiping the hero) is a scroll, not a tap.
+        let down = use_hook(|| Rc::new(std::cell::Cell::new(None::<CursorPoint>)));
         // Hover or focus lifts it a little, eased both ways.
         let lifted = *hovered.read() || focus().is_focused();
         let grow = self.grow;
@@ -207,6 +317,7 @@ impl Component for Focusable {
         rect()
             .a11y_id(id)
             .a11y_focusable(true)
+            .map(self.width.clone(), |el, w| el.width(w))
             .corner_radius(self.radius)
             .scale((1. + (grow - 1.) * l, 1. + (grow - 1.) * l))
             .on_pointer_enter(move |_| hovered.set(true))
@@ -218,7 +329,18 @@ impl Component for Focusable {
                     hovered.set(false);
                 }
             })
-            .on_press(move |_| on_press.call(()))
+            .on_pointer_down({
+                let down = down.clone();
+                move |e: Event<PointerEventData>| down.set(Some(e.global_location()))
+            })
+            .on_press(move |e: Event<PressEventData>| {
+                if let (PressEventData::Touch(t), Some(from)) = (e.data(), down.get())
+                    && is_drag(from, t.global_location)
+                {
+                    return;
+                }
+                on_press.call(())
+            })
             .border(
                 Border::new()
                     // Freya only reports keyboard focus after Tab, so ring any focus; spatial focus is keyboard-driven.
@@ -230,9 +352,21 @@ impl Component for Focusable {
     }
 }
 
+/// A touch that travelled this far (logical pixels) was a drag, not a tap.
+fn is_drag(from: CursorPoint, to: CursorPoint) -> bool {
+    (to - from).length() > 12.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_short_touch_is_a_tap() {
+        assert!(!is_drag((100., 100.).into(), (105., 103.).into()));
+        assert!(is_drag((100., 100.).into(), (60., 102.).into()), "a swipe across a row");
+        assert!(is_drag((100., 100.).into(), (100., 140.).into()), "a scroll down the page");
+    }
 
     fn area(x: f32, y: f32, w: f32, h: f32) -> Area {
         Area::new((x, y).into(), (w, h).into())
@@ -286,5 +420,66 @@ mod tests {
             ("p2", area(364., 700., 150., 225.)),
         ];
         assert_eq!(next_focus(area(220., 470., 120., 44.), &cands, Dir::Down), Some(&"p1"));
+    }
+}
+
+#[cfg(test)]
+mod touch {
+    use std::cell::RefCell;
+
+    use freya_testing::prelude::*;
+
+    use super::*;
+
+    thread_local! {
+        static PAGE: RefCell<Option<ScrollController>> = const { RefCell::new(None) };
+    }
+
+    fn page() -> impl IntoElement {
+        let page = use_scroller();
+        PAGE.with(|c| *c.borrow_mut() = Some(page.controller));
+        page.wrap(
+            ScrollView::new_controlled(page.controller)
+                .drag_scrolling(false)
+                .children((0..60).map(|i| rect().height(Size::px(80.)).width(Size::fill()).child(label().text(format!("row {i}"))).into_element())),
+        )
+    }
+
+    /// Drags up 500 pixels on a 2.75× phone (~182 points) in ten moves, `gap` apart, holds still
+    /// for `rest`, then lets go; returns where the page was at release and once it settled.
+    fn drag(gap: Duration, rest: Duration) -> (f32, f32) {
+        // The app runs inside Tokio (main.rs); the fling's timer needs it.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _rt = rt.enter();
+        let (mut t, _) = TestingRunner::new(page, Size2D::new(1080., 2340.), |_| {}, 2.75);
+        t.sync_and_update();
+        let y = || PAGE.with(|c| c.borrow().unwrap()).position().y;
+        t.press_touch((500., 1500.));
+        for step in 1..=10 {
+            std::thread::sleep(gap);
+            t.move_touch((500., 1500. - 50. * step as f64));
+        }
+        std::thread::sleep(rest);
+        let released = t.run_in(y);
+        t.release_touch((500., 1000.));
+        t.poll(Duration::from_millis(16), Duration::from_millis(1200));
+        (released, t.run_in(y))
+    }
+
+    #[test]
+    fn the_page_follows_the_finger() {
+        // A burst of moves (as Android sends them) lands exactly under the finger, and a finger
+        // that stopped before lifting doesn't throw the page.
+        let (released, settled) = drag(Duration::ZERO, Duration::from_millis(150));
+        assert!((released + 181.8).abs() < 2., "follows the finger: {released}");
+        assert!((settled - released).abs() < 2., "no throw after resting: {settled}");
+    }
+
+    #[test]
+    fn a_flick_coasts_a_little_further() {
+        // ~18 points every 20ms is about 900 points a second: it should coast ~270 more.
+        let (released, settled) = drag(Duration::from_millis(20), Duration::ZERO);
+        let coast = released - settled;
+        assert!((150. ..450.).contains(&coast), "coasted {coast} past {released}");
     }
 }

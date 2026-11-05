@@ -15,7 +15,7 @@ use crate::home::{backdrop, button, layer, play_button, title_art};
 use crate::library::{Progress, WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
-use crate::theme::theme;
+use crate::theme::{phone, side, theme, top};
 
 
 /// A title's page: header, episodes (series only) and the stream list for the chosen video.
@@ -358,7 +358,8 @@ impl Component for Detail {
                     .center()
                     .spacing(14.)
                     .child(label().text("Couldn't load this title").font_size(26.).font_weight(FontWeight::BOLD))
-                    .child(paragraph().width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(
+                    .padding(Gaps::new(0., side(), 0., side()))
+                    .child(paragraph().width(Size::fill()).max_width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(
                         if no_meta_addon {
                             "None of your addons can show details for it."
                         } else {
@@ -415,9 +416,15 @@ impl Component for Detail {
             (if resumes { "Resume".into() } else { "Play".into() }, Box::new(move |()| autoplay.set(Some(id.clone()))))
         };
 
+        // A list in the panel scrolls by itself beside the info; on phones the whole page scrolls instead.
+        let phone = phone();
+        let list = move |content: Rect| -> Element {
+            if phone { content.into() } else { page.wrap(ScrollView::new_controlled(page.controller).scroll_with_arrows(false).drag_scrolling(false).child(content)).into() }
+        };
         let panel: Element = if showing_streams {
             rect()
-                .expanded()
+                .width(Size::fill())
+                .height(if phone { Size::auto() } else { Size::fill() })
                 .spacing(12.)
                 .maybe(is_series, |el| {
                     el.child(
@@ -431,9 +438,9 @@ impl Component for Detail {
                             })),
                     )
                 })
-                .child(page.wrap(
-                    ScrollView::new_controlled(page.controller)
-                        .scroll_with_arrows(false)
+                .child(list(
+                    rect()
+                        .width(Size::fill())
                         .maybe_child(play_error.read().clone().map(|e| {
                             paragraph().width(Size::fill()).font_size(15.).color(crate::theme::ERROR).span(e)
                         }))
@@ -445,7 +452,8 @@ impl Component for Detail {
                 .into()
         } else {
             rect()
-                .expanded()
+                .width(Size::fill())
+                .height(if phone { Size::auto() } else { Size::fill() })
                 .spacing(12.)
                 .child(season_switcher(&all_seasons, current_season, season))
                 .child({
@@ -472,20 +480,50 @@ impl Component for Detail {
                         },
                     ))
                 })
-                .child(page.wrap(
-                    ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
-                        rect().width(Size::fill()).spacing(6.).children(episodes.iter().map(|ep| {
-                            let id = ep.id.clone();
-                            let progress = current.as_ref().filter(|w| w.video_id == ep.id && !w.up_next).map(WatchState::fraction);
-                            let row = episode_row(ep, watched_now.contains(&ep.id), progress);
-                            Focusable::new(row, move |()| video.set(Some(id.clone()))).into_element()
-                        })),
-                    ),
-                ))
+                .child(list(rect().width(Size::fill()).spacing(6.).children(episodes.iter().map(|ep| {
+                    let id = ep.id.clone();
+                    let progress = current.as_ref().filter(|w| w.video_id == ep.id && !w.up_next).map(WatchState::fraction);
+                    let row = episode_row(ep, watched_now.contains(&ep.id), progress);
+                    Focusable::new(row, move |()| video.set(Some(id.clone()))).into_element()
+                }))))
                 .into()
         };
 
-        let narrow = *page_w.read() < 1050.;
+        let narrow = phone || *page_w.read() < 1050.;
+        let panel_box = rect()
+            .width(if narrow { Size::fill() } else { Size::px(460.) })
+            .height(if phone { Size::auto() } else if narrow { Size::flex(1.) } else { Size::fill() })
+            .padding(Gaps::new_all(if phone { 12. } else { 16. }))
+            .corner_radius(12.)
+            .background(theme().panel)
+            // Switching episodes / streams (or seasons) slides the new content in.
+            // On phones the panel is as tall as its content, so the fade mustn't fill the screen.
+            .child({
+                let mut fade = FadeIn::page(panel);
+                fade.fill = !phone;
+                fade.key(format!("{showing_streams}-{current_season:?}-{picked:?}"))
+            });
+        let info = info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play);
+        // Phones: one column that scrolls as a whole. Wider: info beside (or above) a panel that scrolls itself.
+        let content: Element = if phone {
+            page.wrap(
+                ScrollView::new_controlled(page.controller)
+                    .scroll_with_arrows(false)
+                    .drag_scrolling(false)
+                    .child(rect().width(Size::fill()).padding(Gaps::new(top(), side(), 24., side())).spacing(20.).child(info).child(panel_box)),
+            )
+            .into()
+        } else {
+            rect()
+                .expanded()
+                .maybe(!narrow, |el| el.horizontal())
+                .content(Content::Flex)
+                .padding(Gaps::new(top() - 8., 40., 32., 48.))
+                .spacing(if narrow { 20. } else { 40. })
+                .child(info)
+                .child(panel_box)
+                .into()
+        };
         rect()
             .expanded()
             .on_sized(move |e: Event<SizedEventData>| {
@@ -501,25 +539,7 @@ impl Component for Detail {
             .child(layer().layer(20).background((0, 0, 0, 0.45)))
             // Deeper on the text side, so labels read on bright backdrops too (as on Home's hero).
             .child(layer().layer(21).background(LinearGradient::new().angle(270.).stop(((0, 0, 0, 0.7), 0.)).stop(((0, 0, 0, 0.), 65.))))
-            .child(
-                layer()
-                    .layer(40)
-                    .maybe(!narrow, |el| el.horizontal())
-                    .content(Content::Flex)
-                    .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
-                    .spacing(if narrow { 20. } else { 40. })
-                    .child(info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play))
-                    .child(
-                        rect()
-                            .width(if narrow { Size::fill() } else { Size::px(460.) })
-                            .height(if narrow { Size::flex(1.) } else { Size::fill() })
-                            .padding(Gaps::new_all(16.))
-                            .corner_radius(12.)
-                            .background(theme().panel)
-                            // Switching episodes ↔ streams (or seasons) slides the new content in.
-                            .child(FadeIn::page(panel).key(format!("{showing_streams}-{current_season:?}-{picked:?}"))),
-                    ),
-            )
+            .child(layer().layer(40).child(content))
             .into_element()
     }
 }
@@ -588,6 +608,7 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
     let directors = meta.people("director", "Directors");
     let (makers_title, makers) = if directors.is_empty() { ("Created by", meta.people("writer", "Writers")) } else { ("Directed by", directors) };
     let mut on_play = on_play;
+    let text_w = if phone() { Size::fill() } else { Size::px(640.) };
 
     rect()
         // Beside the panel it fills the height with its content at the bottom; stacked it's as tall as it needs.
@@ -610,7 +631,7 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
                 .maybe_child(meta.rating().map(|r| label().text(format!("★ {r}")).font_size(16.).font_weight(FontWeight::BOLD).color((245, 197, 24)))),
         )
         .maybe(!meta.genres.is_empty(), |el| {
-            el.child(rect().horizontal().spacing(8.).children(meta.genres.iter().take(4).map(|g| {
+            el.child(rect().width(Size::fill()).horizontal().spacing(8.).content(Content::wrap_spacing(8.)).children(meta.genres.iter().take(4).map(|g| {
                 rect()
                     .padding(Gaps::new(4., 12., 4., 12.))
                     .corner_radius(14.)
@@ -620,26 +641,34 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
             })))
         })
         .maybe_child(meta.description.clone().map(|d| {
-            paragraph().width(Size::px(640.)).max_lines(5).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
+            paragraph().width(text_w.clone()).max_lines(5).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
         }))
-        .maybe_child(people("Cast", meta.people("cast", "Cast")).map(|p| p.width(Size::px(640.))))
-        .maybe_child(people(makers_title, makers).map(|p| p.width(Size::px(640.))))
-        .child(
-            rect()
-                .horizontal()
-                .spacing(12.)
-                .padding(Gaps::new(8., 0., 0., 0.))
-                .child(Focusable::new(play_button(play_label.clone()), move |()| on_play(())))
-                .child(Focusable::new(
-                    button(if in_list { "✓ My List" } else { "+ My List" }, theme().secondary, (255, 255, 255)),
-                    toggle_list,
-                ))
-                // YouTube needs a downloader to play in mpv, so trailers open in the browser.
-                .maybe_child(meta.trailer_streams.first().map(|t| {
-                    let url = format!("https://www.youtube.com/watch?v={}", t.yt_id);
-                    Focusable::new(button("Trailer", theme().secondary, (255, 255, 255)), move |()| crate::addons::open_in_browser(&url))
-                })),
-        )
+        .maybe_child(people("Cast", meta.people("cast", "Cast")).map(|p| p.width(text_w.clone())))
+        .maybe_child(people(makers_title, makers).map(|p| p.width(text_w.clone())))
+        .child({
+            // Phones: Play across the width, the other buttons sharing a row under it.
+            let phone = phone();
+            let wide = |b: Rect, on_press: EventHandler<()>| {
+                if phone {
+                    Focusable { width: Some(Size::flex(1.)), ..Focusable::new(b.width(Size::fill()).main_align(Alignment::Center), on_press) }
+                } else {
+                    Focusable::new(b, on_press)
+                }
+            };
+            let play = wide(play_button(play_label.clone()), EventHandler::new(move |()| on_play(())));
+            let list = wide(button(if in_list { "✓ My List" } else { "+ My List" }, theme().secondary, (255, 255, 255)), EventHandler::new(toggle_list));
+            // YouTube needs a downloader to play in mpv, so trailers open in the browser.
+            let trailer = meta.trailer_streams.first().map(|t| {
+                let url = format!("https://www.youtube.com/watch?v={}", t.yt_id);
+                wide(button("Trailer", theme().secondary, (255, 255, 255)), EventHandler::new(move |()| crate::addons::open_in_browser(&url)))
+            });
+            let row = || rect().width(Size::fill()).horizontal().content(Content::Flex).spacing(12.);
+            if phone {
+                rect().width(Size::fill()).spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(row().child(play)).child(row().child(list).maybe_child(trailer))
+            } else {
+                rect().horizontal().spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer)
+            }
+        })
 }
 
 fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
@@ -704,6 +733,18 @@ fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
 
 /// The title page's layout in pulsing blocks, while its details load.
 fn loading_page() -> Rect {
+    if phone() {
+        let line = |pct: f32, h: f32| Placeholder::new(Size::percent(pct), h);
+        return rect()
+            .expanded()
+            .padding(Gaps::new(top(), side(), 24., side()))
+            .spacing(16.)
+            .child(line(70., 90.))
+            .child(line(45., 16.))
+            .child(line(100., 14.))
+            .child(line(90., 14.))
+            .child(rect().horizontal().spacing(12.).child(Placeholder::new(Size::px(120.), 40.)).child(Placeholder::new(Size::px(130.), 40.)));
+    }
     let episode = || {
         rect()
             .horizontal()
@@ -717,7 +758,7 @@ fn loading_page() -> Rect {
         .expanded()
         .horizontal()
         .content(Content::Flex)
-        .padding(Gaps::new(theme().top - 8., 40., 32., 48.))
+        .padding(Gaps::new(top() - 8., 40., 32., 48.))
         .spacing(40.)
         .child(
             rect()

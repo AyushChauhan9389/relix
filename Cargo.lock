@@ -1798,6 +1798,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "freya-testing"
+version = "0.5.0-rc.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "139d4988bc276b418b52050e41dd3daf677b9916726cfaaf88626a770f56f5c5"
+dependencies = [
+ "accesskit",
+ "freya-clipboard",
+ "freya-components",
+ "freya-core",
+ "freya-engine",
+ "futures-channel",
+ "ragnarok",
+ "torin",
+]
+
+[[package]]
 name = "freya-winit"
 version = "0.5.0-rc.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4222,7 +4238,9 @@ dependencies = [
  "freya",
  "freya-core",
  "freya-skia-safe",
+ "freya-testing",
  "gilrs",
+ "jni",
  "libmpv2",
  "relix-proto",
  "reqwest 0.13.5",
@@ -4230,6 +4248,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "webpki-root-certs",
+ "winit",
  "winresource",
 ]
 

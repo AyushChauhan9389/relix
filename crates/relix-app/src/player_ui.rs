@@ -112,6 +112,9 @@ impl Component for Player {
 
         let Some(np) = ctx.now_playing.read().clone() else { return rect().expanded().background((0, 0, 0)).into_element() };
         let status = ctx.player_status.read().clone();
+        // Phones: touch-sized controls kept clear of the system bars; the video itself fills the screen.
+        let phone = crate::theme::phone();
+        let safe = *ctx.safe.read();
         let r = np.video.clone();
         let wake = move || {
             let (mut active, mut visible) = (active, visible);
@@ -122,13 +125,26 @@ impl Component for Player {
         rect()
             .expanded()
             .background((0, 0, 0))
-            .on_global_pointer_move(move |_| wake())
+            // A touch also moves the pointer, which would show the controls a tap is meant to hide.
+            .maybe(!phone, |el| el.on_global_pointer_move(move |_| wake()))
             .child(VideoView {
                 renderer: r.clone(),
                 // A click pauses or plays, a double click toggles fullscreen (and undoes the pause).
+                // On phones a tap shows or hides the controls instead, as phone players do.
                 on_press: EventHandler::new({
                     let (r, ctx) = (r.clone(), ctx.clone());
                     move |()| {
+                        if phone {
+                            menu.set(None);
+                            let mut active = active;
+                            if *visible.peek() {
+                                active.set(Instant::now() - HIDE_AFTER);
+                                visible.set(false);
+                            } else {
+                                wake();
+                            }
+                            return;
+                        }
                         let paused = ctx.player_status.peek().paused;
                         let _ = r.mpv().set_property("pause", !paused);
                         menu.set(None);
@@ -152,12 +168,12 @@ impl Component for Player {
             })
             .maybe(o > 0.01, |el| {
                 // Own layers above the video: Freya doesn't order siblings on one layer.
-                el.child(top_bar(&ctx, &np.title, &np.episode).opacity(o).layer(1))
-                    .child(bottom_bar(&ctx, &r, &status, np.has_next, menu).opacity(o).layer(1))
-                    .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu).opacity(o).layer(2)))
+                el.child(top_bar(&ctx, &np.title, &np.episode, phone, &safe).opacity(o).layer(1))
+                    .child(bottom_bar(&ctx, &r, &status, np.has_next, menu, phone, &safe).opacity(o).layer(1))
+                    .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
             .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
-                el.child(next_card(&ctx, status.duration - status.position))
+                el.child(next_card(&ctx, status.duration - status.position, phone, &safe))
             })
             .into_element()
     }
@@ -209,7 +225,7 @@ fn layer_center() -> Rect {
     rect().position(Position::new_absolute().top(0.).left(0.)).width(Size::percent(100.)).height(Size::percent(100.)).center()
 }
 
-fn top_bar(ctx: &Ctx, title: &str, episode: &str) -> Rect {
+fn top_bar(ctx: &Ctx, title: &str, episode: &str, phone: bool, safe: &Gaps) -> Rect {
     let ctx = ctx.clone();
     rect()
         .position(Position::new_absolute().top(0.).left(0.))
@@ -217,8 +233,9 @@ fn top_bar(ctx: &Ctx, title: &str, episode: &str) -> Rect {
         // A fixed height: Freya draws gradients on sized rects.
         .height(Size::px(140.))
         .horizontal()
-        .spacing(16.)
-        .padding(Gaps::new(24., 40., 0., 32.))
+        .content(Content::Flex)
+        .spacing(if phone { 8. } else { 16. })
+        .padding(if phone { Gaps::new(10. + safe.top(), 16. + safe.right(), 0., 8. + safe.left()) } else { Gaps::new(24., 40., 0., 32.) })
         .background(LinearGradient::new().angle(0.).stop(((0, 0, 0, 0.8), 0.)).stop(((0, 0, 0, 0.), 100.)))
         .child(icon_button(ICON_BACK, 30., false, None, move |()| {
             if let Some(p) = ctx.player.peek().as_ref() {
@@ -228,12 +245,13 @@ fn top_bar(ctx: &Ctx, title: &str, episode: &str) -> Rect {
         .child(
             rect()
                 .spacing(2.)
-                .child(label().text(title.to_owned()).font_size(22.).font_weight(FontWeight::BOLD))
+                .width(Size::flex(1.))
+                .child(label().text(title.to_owned()).font_size(if phone { 17. } else { 22. }).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis))
                 .maybe(!episode.is_empty(), |el| el.child(label().text(episode.to_owned()).font_size(15.).color((200, 200, 200)))),
         )
 }
 
-fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu: State<Option<Menu>>) -> Rect {
+fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu: State<Option<Menu>>, phone: bool, safe: &Gaps) -> Rect {
     let pct = if s.duration > 0. { s.position / s.duration * 100. } else { 0. };
     let seek = r.clone();
     let timeline = rect()
@@ -267,8 +285,8 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         }))
         .child(icon_button(ICON_BACK10, 30., false, Some("10"), move |()| drop(back.mpv().command("seek", &["-10", "relative"]))))
         .child(icon_button(ICON_FWD10, 30., false, Some("10"), move |()| drop(fwd.mpv().command("seek", &["10", "relative"]))))
-        .child(icon_button(volume_icon, 28., false, None, move |()| drop(mute.mpv().set_property("mute", !muted))))
-        .child(
+        .maybe(!phone, |el| el.child(icon_button(volume_icon, 28., false, None, move |()| drop(mute.mpv().set_property("mute", !muted)))))
+        .maybe(!phone, |el| el.child(
             // Freya's slider runs 0-100; it maps onto 0-150% volume.
             rect().width(Size::px(160.)).child(
                 Slider::new({
@@ -281,7 +299,7 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
                 .value(if muted { 0. } else { (s.volume * *ctx.volume_boost.read()).min(MAX_VOLUME) / MAX_VOLUME * 100. })
                 .size(Size::fill()),
             ),
-        );
+        ));
     let toggle_menu = move |m: Menu| {
         let mut menu = menu;
         let open = *menu.peek() == Some(m);
@@ -300,13 +318,15 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         })
         .child(icon_button(ICON_CC, 28., false, None, move |()| toggle_menu(Menu::Tracks)))
         .child(icon_button(ICON_SPEED, 28., false, None, move |()| toggle_menu(Menu::Speed)))
-        .child(icon_button(
-            if *ctx.fullscreen.read() { ICON_EXIT_FULLSCREEN } else { ICON_FULLSCREEN },
-            28.,
-            false,
-            None,
-            move |()| fs_ctx.toggle_fullscreen(),
-        ));
+        .maybe(!phone, |el| {
+            el.child(icon_button(
+                if *ctx.fullscreen.read() { ICON_EXIT_FULLSCREEN } else { ICON_FULLSCREEN },
+                28.,
+                false,
+                None,
+                move |()| fs_ctx.toggle_fullscreen(),
+            ))
+        });
 
     rect()
         .position(Position::new_absolute().bottom(0.).left(0.))
@@ -314,7 +334,7 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         .height(Size::px(220.))
         .main_align(Alignment::End)
         .spacing(10.)
-        .padding(Gaps::new(0., 40., 24., 40.))
+        .padding(if phone { Gaps::new(0., 12. + safe.right(), 10. + safe.bottom(), 12. + safe.left()) } else { Gaps::new(0., 40., 24., 40.) })
         .background(LinearGradient::new().angle(0.).stop(((0, 0, 0, 0.), 0.)).stop(((0, 0, 0, 0.9), 100.)))
         .child(timeline)
         .child(
@@ -331,7 +351,7 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
 }
 
 /// Subtitles and audio, or playback speed, above the bottom-right buttons.
-fn menu_panel(ctx: &Ctx, m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Menu>>) -> Rect {
+fn menu_panel(ctx: &Ctx, m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State<Option<Menu>>, phone: bool, safe: &Gaps) -> Rect {
     // A fixed height (Freya paints backgrounds on sized boxes); long lists scroll inside it.
     let rows = match m {
         // The subtitle style column has 3 rows.
@@ -344,22 +364,39 @@ fn menu_panel(ctx: &Ctx, m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State
         Menu::Tracks => 2.,
         Menu::Speed => 1.,
     };
-    let panel = rect()
-        .position(Position::new_absolute().bottom(110.).right(40.))
-        .width(Size::px(columns * 300. + (columns - 1.) * 24. + 32.))
-        .height(Size::px(list_h + 64.))
-        .padding(Gaps::new_all(16.))
-        .corner_radius(12.)
-        .background((20, 20, 20, 0.96))
-        .border(Border::new().fill((255, 255, 255, 0.08)).width(1.))
-        .horizontal()
-        .spacing(24.);
-    let column = |title: &'static str, items: Vec<Element>| {
+    // Phones: a sheet across the bottom with the columns one under another, scrolling together.
+    let panel = if phone {
         rect()
-            .width(Size::px(300.))
-            .spacing(8.)
-            .child(label().text(title).font_size(13.).color(theme().muted))
-            .child(ScrollView::new().height(Size::px(list_h)).children(items))
+            .position(Position::new_absolute().bottom(0.).left(0.))
+            .width(Size::percent(100.))
+            .height(Size::percent(65.))
+            .padding(Gaps::new(16., 16. + safe.right(), 8. + safe.bottom(), 16. + safe.left()))
+    } else {
+        rect()
+            .position(Position::new_absolute().bottom(110.).right(40.))
+            .width(Size::px(columns * 300. + (columns - 1.) * 24. + 32.))
+            .height(Size::px(list_h + 64.))
+            .padding(Gaps::new_all(16.))
+            .horizontal()
+            .spacing(24.)
+    }
+    .corner_radius(12.)
+    .background((20, 20, 20, 0.96))
+    .border(Border::new().fill((255, 255, 255, 0.08)).width(1.));
+    let column = |title: &'static str, items: Vec<Element>| {
+        let head = label().text(title).font_size(13.).color(theme().muted);
+        if phone {
+            rect().width(Size::fill()).spacing(8.).child(head).children(items)
+        } else {
+            rect().width(Size::px(300.)).spacing(8.).child(head).child(ScrollView::new().height(Size::px(list_h)).children(items))
+        }
+    };
+    let panel_with = move |panel: Rect, columns: Vec<Rect>| -> Rect {
+        if phone {
+            panel.child(ScrollView::new().spacing(20.).children(columns.into_iter().map(Rect::into_element)))
+        } else {
+            panel.children(columns.into_iter().map(Rect::into_element))
+        }
     };
     let option = |text: String, selected: bool, on: Box<dyn Fn()>| {
         MenuOption { text, selected, on_press: EventHandler::new(move |()| on()) }.into_element()
@@ -391,19 +428,21 @@ fn menu_panel(ctx: &Ctx, m: Menu, r: &Rc<VideoRenderer>, s: &Status, menu: State
                 .chain(s.subs.iter().map(|t| option(t.title.clone(), s.sid == Some(t.id), pick("sid", Some(t)))))
                 .collect();
             let audio = s.audio.iter().map(|t| option(t.title.clone(), s.aid == Some(t.id), pick("aid", Some(t)))).collect();
-            panel
-                .child(column("Subtitles", subs))
-                .maybe(s.audio.len() > 1, |el| el.child(column("Audio", audio)))
-                .child(column("Subtitle style", subtitle_style(ctx, r)))
+            let mut columns = vec![column("Subtitles", subs)];
+            if s.audio.len() > 1 {
+                columns.push(column("Audio", audio));
+            }
+            columns.push(column("Subtitle style", subtitle_style(ctx, r)));
+            panel_with(panel, columns)
         }
-        Menu::Speed => panel.child(column("Speed", SPEEDS.iter().map(|&v| {
+        Menu::Speed => panel_with(panel, vec![column("Speed", SPEEDS.iter().map(|&v| {
             let r = r.clone();
             option(if v == 1. { "Normal".into() } else { format!("{v}x") }, s.speed == v, Box::new(move || {
                 let _ = r.mpv().set_property("speed", v);
                 let mut menu = menu;
                 menu.set(None);
             }))
-        }).collect())),
+        }).collect())]),
     }
 }
 
@@ -499,10 +538,11 @@ impl Component for MenuOption {
     }
 }
 
-fn next_card(ctx: &Ctx, left: f64) -> Rect {
+fn next_card(ctx: &Ctx, left: f64, phone: bool, safe: &Gaps) -> Rect {
     let ctx = ctx.clone();
+    let (bottom, right) = if phone { (100. + safe.bottom(), 16. + safe.right()) } else { (140., 40.) };
     rect()
-        .position(Position::new_absolute().bottom(140.).right(40.))
+        .position(Position::new_absolute().bottom(bottom).right(right))
         .layer(2)
         .child(FadeIn::page(
             rect()

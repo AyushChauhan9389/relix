@@ -1,6 +1,19 @@
-// ponytail: links the vendored Windows libmpv (vendor/mpv, see PLAN.md); Linux/macOS use the system libmpv.
+// ponytail: links the vendored Windows libmpv (vendor/mpv, see PLAN.md) or Android's fetched one; Linux/macOS use the system libmpv.
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // Android links the libmpv that packaging/android/fetch-mpv.sh put where the APK takes it from.
+    if os == "android" {
+        let abi = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+            Ok("aarch64") => "arm64-v8a",
+            Ok(arch) => panic!("no libmpv for Android on {arch}: fetch-mpv.sh only gets arm64-v8a"),
+            Err(e) => panic!("{e}"),
+        };
+        let libs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/android/app/src/main/jniLibs").join(abi);
+        println!("cargo:rustc-link-search=native={}", libs.display());
+        println!("cargo:rerun-if-changed={}", libs.join("libmpv.so").display());
+        return;
+    }
+    if os != "windows" {
         return;
     }
     // The logo as the exe's icon in Explorer (the window icon is set at runtime).

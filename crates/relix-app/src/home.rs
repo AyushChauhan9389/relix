@@ -8,14 +8,30 @@ use relix_proto::addon::{Addon, CatalogResponse, MetaPreview, ResourceRequest};
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, HOVER_MS, Placeholder};
 use crate::{Ctx, Route};
-use crate::theme::theme;
+use crate::theme::{PHONE_BAR_H, phone, side, theme, top};
 
-const POSTER_W: f32 = 150.;
-const POSTER_H: f32 = 225.;
-const HERO_H: f32 = 600.;
+/// Poster size: smaller on phones, so three fit across.
+fn poster_w() -> f32 {
+    if phone() { 108. } else { 150. }
+}
+
+fn poster_h() -> f32 {
+    poster_w() * 1.5
+}
+
+/// The window's height, for the phone hero that has to fit a phone on its side.
+fn window_h() -> f32 {
+    Platform::get().current_window().root_size.peek().height
+}
+
+fn hero_h() -> f32 {
+    if phone() { (window_h() - TAB_BAR_H).clamp(240., 480.) } else { 600. }
+}
 const NAV_H: f32 = 68.;
 const FEATURED: usize = 5;
 const ROTATE_EVERY: Duration = Duration::from_secs(8);
+/// How far a finger moves across the hero to change title (logical pixels).
+const SWIPE: f64 = 40.;
 
 /// What each poster in a row's virtual list needs.
 type RowData = (Vec<MetaPreview>, Vec<f32>, Scroller, bool, std::collections::HashSet<String>, EventHandler<()>);
@@ -70,7 +86,7 @@ impl Component for Home {
                 |item, (featured, rows, loading)| {
                     if item.index == 0 && theme().sidebar {
                         // The Stremio look has no hero: just room under its top bar.
-                        rect().height(Size::px(theme().top - 24.)).into()
+                        rect().height(Size::px(top() - 24.)).into()
                     } else if item.index == 0 {
                         Hero { items: featured.clone(), loading: *loading }.into()
                     } else {
@@ -80,8 +96,9 @@ impl Component for Home {
                 page.controller,
             )
             .scroll_with_arrows(false)
+            .drag_scrolling(false)
             .length(len)
-            .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { theme().top - 24. } else { HERO_H }))),
+            .item_size(ItemSize::Dynamic(Callback::new(|i| if i > 0 { row_h() } else if theme().sidebar { top() - 24. } else { hero_h() }))),
         )
         .into_element()
     }
@@ -195,6 +212,9 @@ impl Component for Hero {
         // The ticker outlives this render, and rows arrive after mount, so it reads the count from state.
         let mut count = use_state(|| len);
         count.set_if_modified(len);
+        // A swipe moves to the next or previous title and holds off the next automatic turn.
+        let mut swiped = use_state(|| false);
+        let swipe_from = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(None::<f64>)));
 
         use_hook(move || {
             let focused = Platform::get().current_window().is_app_focused;
@@ -202,6 +222,10 @@ impl Component for Hero {
                 loop {
                     tokio::time::sleep(ROTATE_EVERY).await;
                     let (i, len) = (*index.peek(), *count.peek());
+                    if *swiped.peek() {
+                        swiped.set(false);
+                        continue;
+                    }
                     // Behind other windows or minimized, Relix shouldn't spend anything redrawing.
                     if len > 1 && *focused.peek() {
                         prev.set(i);
@@ -222,18 +246,18 @@ impl Component for Hero {
             // Nothing to feature and nothing coming (offline, or catalogs without art): stay still,
             // since a pulse that never ends keeps the window redrawing.
             if !self.loading {
-                return rect().width(Size::fill()).height(Size::px(theme().top + 40.)).into_element();
+                return rect().width(Size::fill()).height(Size::px(top() + 40.)).into_element();
             }
             // Featured titles still loading: the hero's shape, pulsing.
             return rect()
                 .width(Size::fill())
-                .height(Size::px(HERO_H))
-                .padding(Gaps::new(theme().top + 40., 48., 110., 48.))
+                .height(Size::px(hero_h()))
+                .padding(Gaps::new(top() + 40., side(), if phone() { 48. } else { 110. }, side()))
                 .main_align(Alignment::End)
                 .spacing(16.)
-                .child(Placeholder::new(Size::px(380.), 90.))
-                .child(Placeholder::new(Size::px(520.), 18.))
-                .child(Placeholder::new(Size::px(460.), 18.))
+                .child(Placeholder::new(wide(380.), 90.))
+                .child(Placeholder::new(wide(520.), 18.))
+                .child(Placeholder::new(wide(460.), 18.))
                 .child(rect().horizontal().spacing(12.).child(Placeholder::new(Size::px(110.), 44.)).child(Placeholder::new(Size::px(150.), 44.)))
                 .into_element();
         };
@@ -241,8 +265,27 @@ impl Component for Hero {
 
         rect()
             .width(Size::fill())
-            .height(Size::px(HERO_H))
+            .height(Size::px(hero_h()))
             .overflow(Overflow::Clip)
+            .on_pointer_down({
+                let from = swipe_from.clone();
+                move |e: Event<PointerEventData>| {
+                    if matches!(e.data(), PointerEventData::Touch(_)) {
+                        from.set(Some(e.global_location().x));
+                    }
+                }
+            })
+            // Global, so a swipe still counts when the finger ends up outside the hero.
+            .on_global_pointer_up(move |e: Event<PointerEventData>| {
+                let Some(x) = swipe_from.take() else { return };
+                let dx = e.global_location().x - x;
+                if dx.abs() > SWIPE && len > 1 {
+                    let i = *index.peek();
+                    prev.set(i);
+                    index.set(if dx < 0. { (i + 1) % len } else { (i + len - 1) % len });
+                    swiped.set(true);
+                }
+            })
             // Freya doesn't order siblings on the same layer, so every stacked piece gets its own.
             .maybe_child(behind.map(|m| backdrop(m.background.as_deref()).layer(1)))
             .child(backdrop(meta.background.as_deref()).layer(2).opacity(fade.get().value()))
@@ -285,15 +328,29 @@ fn shade() -> Rect {
         ))
 }
 
+/// A placeholder line `px` wide, or that share of a phone's width.
+fn wide(px: f32) -> Size {
+    if phone() { Size::percent(px / 5.6) } else { Size::px(px) }
+}
+
+/// A phone held sideways.
+fn short() -> bool {
+    phone() && window_h() < 500.
+}
+
 fn details(meta: &MetaPreview, autoplay: State<Option<String>>) -> Rect {
-    rect()
-        .position(Position::new_absolute().left(48.).bottom(110.))
-        .width(Size::px(560.))
-        .spacing(16.)
+    let base = if phone() {
+        // Full width over the bottom of the picture.
+        rect().position(Position::new_absolute().left(0.).bottom(if short() { 24. } else { 40. })).width(Size::percent(100.)).padding(Gaps::new(0., side(), 0., side()))
+    } else {
+        rect().position(Position::new_absolute().left(48.).bottom(110.)).width(Size::px(560.))
+    };
+    base.spacing(if phone() { 12. } else { 16. })
         .child(title_art(meta.logo.as_deref(), &meta.name))
-        .maybe_child(meta.release_info.clone().map(|r| label().text(r).font_size(16.).color((70, 211, 105))))
-        .maybe_child(meta.description.clone().map(|d| {
-            paragraph().max_lines(3).text_overflow(TextOverflow::Ellipsis).font_size(17.).span(d)
+        // A phone on its side has room for the title and buttons only.
+        .maybe_child(meta.release_info.clone().filter(|_| !short()).map(|r| label().text(r).font_size(16.).color((70, 211, 105))))
+        .maybe_child(meta.description.clone().filter(|_| !short()).map(|d| {
+            paragraph().width(Size::fill()).max_lines(3).text_overflow(TextOverflow::Ellipsis).font_size(if phone() { 15. } else { 17. }).span(d)
         }))
         .child(
             rect()
@@ -323,15 +380,16 @@ fn play_title(meta: &MetaPreview, mut autoplay: State<Option<String>>) -> EventH
 
 /// The title's logo, or its name when the addon has no logo.
 pub fn title_art(logo: Option<&str>, name: &str) -> Element {
-    let text = |name: String| label().text(name).font_size(56.).font_weight(FontWeight::BOLD).into();
+    let text = |name: String| paragraph().width(Size::fill()).max_lines(2).font_size(if phone() { 34. } else { 56. }).font_weight(FontWeight::BOLD).span(name).into();
+    let (w, h) = if phone() { (260., 96.) } else { (420., 150.) };
     match logo.and_then(|u| Url::parse(u).ok()) {
         Some(url) => {
             let name = name.to_owned();
             ImageViewer::new(url)
-                .width(Size::px(420.))
-                .height(Size::px(150.))
+                .width(Size::px(w))
+                .height(Size::px(h))
                 .aspect_ratio(AspectRatio::Min)
-                .loading_placeholder(Placeholder::new(Size::px(320.), 100.))
+                .loading_placeholder(Placeholder::new(Size::px(w * 0.75), h * 0.66))
                 .error_renderer(move |_| text(name.clone()))
                 .into()
         }
@@ -348,10 +406,10 @@ pub fn button_owned(text: String, bg: impl Into<Color>, fg: impl Into<Color>) ->
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(10.)
-        .padding(Gaps::new(10., 24., 10., 24.))
+        .padding(if phone() { Gaps::new(9., 18., 9., 18.) } else { Gaps::new(10., 24., 10., 24.) })
         .corner_radius(theme().radius.min(8.))
         .background(bg.into())
-        .child(label().text(text).font_size(18.).font_weight(FontWeight::BOLD).color(fg.into()))
+        .child(label().text(text).font_size(if phone() { 16. } else { 18. }).font_weight(FontWeight::BOLD).color(fg.into()))
 }
 
 /// The Play button: a drawn triangle (font glyphs render lopsided) and the look's Play colours.
@@ -362,11 +420,11 @@ pub fn play_button(text: String) -> Rect {
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(10.)
-        .padding(Gaps::new(10., 26., 10., 20.))
+        .padding(if phone() { Gaps::new(9., 20., 9., 16.) } else { Gaps::new(10., 26., 10., 20.) })
         .corner_radius(theme().radius.min(8.))
         .background(bg)
         .child(SvgViewer::new(TRIANGLE.as_bytes()).width(Size::px(20.)).height(Size::px(20.)).fill(fg))
-        .child(label().text(text).font_size(18.).font_weight(FontWeight::BOLD).color(fg))
+        .child(label().text(text).font_size(if phone() { 16. } else { 18. }).font_weight(FontWeight::BOLD).color(fg))
 }
 
 pub fn chip(text: String, active: bool) -> Rect {
@@ -386,7 +444,7 @@ pub fn chip(text: String, active: bool) -> Rect {
 
 fn dots(len: usize, current: usize) -> Rect {
     rect()
-        .position(Position::new_absolute().right(48.).bottom(110.))
+        .position(Position::new_absolute().right(side()).bottom(if phone() { 18. } else { 110. }))
         .horizontal()
         .spacing(6.)
         .children((0..len).map(|i| {
@@ -453,7 +511,7 @@ impl Component for PosterRow {
         let loading = self.row.loading;
         rect()
             .height(Size::px(row_h()))
-            .padding(Gaps::new(12., 48., 12., 48.))
+            .padding(Gaps::new(12., side(), 12., side()))
             .spacing(10.)
             .child(if self.row.title.is_empty() {
                 Placeholder::new(Size::px(200.), 22.).into_element()
@@ -475,7 +533,7 @@ impl Component for PosterRow {
                                 load_more.call(());
                             }
                             let card: Element = if *loading {
-                                Placeholder::new(Size::px(POSTER_W), POSTER_H).into()
+                                Placeholder::new(Size::px(poster_w()), poster_h()).into()
                             } else {
                                 let m = &metas[item.index];
                                 poster(m, progress.get(item.index).copied(), new.contains(&m.id), Some(*row))
@@ -486,8 +544,9 @@ impl Component for PosterRow {
                     )
                     .direction(Direction::Horizontal)
                     .scroll_with_arrows(false)
+                    .drag_scrolling(false)
                     .length(len)
-                    .item_size(POSTER_W + 8.),
+                    .item_size(poster_w() + 8.),
                 ),
             )
     }
@@ -516,8 +575,8 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
     // Shown when there's no poster or it fails to load.
     let blank = |name: String| -> Element {
         rect()
-            .width(Size::px(POSTER_W))
-            .height(Size::px(POSTER_H))
+            .width(Size::px(poster_w()))
+            .height(Size::px(poster_h()))
             .padding(Gaps::new_all(8.))
             .background(theme().placeholder)
             .center()
@@ -531,10 +590,10 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
         .child(match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
             Some(url) => FadeIn::image(
                 ImageViewer::new(url)
-                    .width(Size::px(POSTER_W))
-                    .height(Size::px(POSTER_H))
+                    .width(Size::px(poster_w()))
+                    .height(Size::px(poster_h()))
                     // A soft grey card until the poster arrives.
-                    .loading_placeholder(Placeholder::new(Size::px(POSTER_W), POSTER_H))
+                    .loading_placeholder(Placeholder::new(Size::px(poster_w()), poster_h()))
                     .error_renderer(move |_| blank(name.clone())),
             )
             .into(),
@@ -558,16 +617,16 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
     };
     let has_strip = strip.is_some();
     let art = rect()
-        .width(Size::px(POSTER_W))
+        .width(Size::px(poster_w()))
         .spacing(6.)
-        .child(rect().width(Size::px(POSTER_W)).height(Size::px(POSTER_H)).child(art))
+        .child(rect().width(Size::px(poster_w())).height(Size::px(poster_h())).child(art))
         .maybe(has_strip, |el| el.child(rect().width(Size::fill()).height(Size::px(STRIP_H)).main_align(Alignment::Center).child(strip.unwrap())));
     let card = Focusable { row, radius: theme().radius, grow: 1.08, ..Focusable::new(art, open_title(meta)) };
     if !theme().sidebar {
         return card.into();
     }
     rect()
-        .width(Size::px(POSTER_W))
+        .width(Size::px(poster_w()))
         .spacing(8.)
         .child(card)
         .child(label().text(meta.name.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
@@ -605,10 +664,10 @@ pub fn poster_grid(
 ) -> Element {
     const GAP: f32 = 8.;
     let header_h = use_state(|| 200f32);
-    let cols = ((page.width() + GAP) / (POSTER_W + GAP)).floor().max(1.) as usize;
+    let cols = ((page.width() + GAP) / (poster_w() + GAP)).floor().max(1.) as usize;
     let titled = theme().sidebar;
     // A fixed row height (the Stremio look adds a title line), so the list knows where rows sit.
-    let row_h = POSTER_H + if titled { 30. } else { 0. } + STRIP_H + 6. + 16.;
+    let row_h = poster_h() + if titled { 30. } else { 0. } + STRIP_H + 6. + 16.;
     let rows = if placeholders { 2 } else { metas.len().div_ceil(cols) };
     let len = 1 + rows + usize::from(footer.is_some());
     page.wrap(
@@ -640,7 +699,7 @@ pub fn poster_grid(
                         .into();
                 }
                 let cells: Vec<Element> = if *placeholders {
-                    (0..*cols).map(|_| Placeholder::new(Size::px(POSTER_W), POSTER_H).into_element()).collect()
+                    (0..*cols).map(|_| Placeholder::new(Size::px(poster_w()), poster_h()).into_element()).collect()
                 } else {
                     metas.iter().skip(item_index * cols).take(*cols).map(|m| poster(m, None, new.contains(&m.id), None)).collect()
                 };
@@ -649,6 +708,7 @@ pub fn poster_grid(
             page.controller,
         )
         .scroll_with_arrows(false)
+        .drag_scrolling(false)
         .length(len)
         .item_size(ItemSize::Dynamic(Callback::new(move |i| match i {
             0 => *header_h.peek(),
@@ -682,7 +742,8 @@ fn nothing_to_show(ctx: &Ctx) -> Rect {
         .center()
         .spacing(14.)
         .child(label().text(title).font_size(26.).font_weight(FontWeight::BOLD))
-        .child(paragraph().width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(text))
+        .padding(Gaps::new(0., side(), 0., side()))
+        .child(paragraph().width(Size::fill()).max_width(Size::px(460.)).text_align(TextAlign::Center).font_size(16.).color(theme().muted).span(text))
         .child(action)
 }
 
@@ -714,7 +775,7 @@ mod tests {
 /// A row's height: posters, plus the title under each one in the Stremio look.
 fn row_h() -> f32 {
     // Room for the strip under posters (progress bar or "NEW EPISODE") too.
-    POSTER_H + STRIP_H + 6. + if theme().sidebar { 88. } else { 60. }
+    poster_h() + STRIP_H + 6. + if theme().sidebar { 88. } else { 60. }
 }
 
 /// The strip under a poster: progress bar or "NEW EPISODE".
@@ -735,6 +796,7 @@ pub fn top_bar(ctx: &Ctx) -> Rect {
             Link::new(Route::Search).child(
                 rect()
                     .width(Size::px(440.))
+                    .max_width(Size::percent(100.))
                     .height(Size::px(40.))
                     .padding(Gaps::new(0., 14., 0., 14.))
                     .horizontal()
@@ -799,6 +861,49 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
         .child(item(NavLink::Account, ICON_ACCOUNT, "Account", Route::Account))
 }
+
+/// The phone layout's top bar: logo, Series and Movies, and Account.
+pub fn phone_top_bar(active: Option<NavLink>) -> Rect {
+    let link = move |which: NavLink, text: &'static str, to: Route| NavItem { text, to, active: active == Some(which) };
+    let account = if active == Some(NavLink::Account) { (255, 255, 255) } else { (220, 220, 220) };
+    rect()
+        .position(Position::new_absolute().top(0.).left(0.))
+        .width(Size::percent(100.))
+        .height(Size::px(PHONE_BAR_H))
+        .padding(Gaps::new(0., 10., 0., 14.))
+        .horizontal()
+        .content(Content::Flex)
+        .cross_align(Alignment::Center)
+        .spacing(20.)
+        .background(theme().bg)
+        .child(Link::new(Route::Home).child(logo(36.)))
+        .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
+        .child(link(NavLink::Movies, "Movies", Route::Browse { kind: "movie".into() }))
+        .child(rect().width(Size::flex(1.)))
+        .child(Link::new(Route::Account).child(
+            rect().padding(Gaps::new_all(8.)).child(SvgViewer::new(ICON_ACCOUNT.as_bytes()).width(Size::px(24.)).height(Size::px(24.)).stroke(account)),
+        ))
+}
+
+/// The phone layout's bottom tabs, in both looks.
+pub fn tab_bar(active: Option<NavLink>) -> Rect {
+    let item = move |which: NavLink, icon: &'static str, text: &'static str, to: Route| SideItem { icon, text, to, active: active == Some(which) };
+    rect()
+        .width(Size::fill())
+        .height(Size::px(TAB_BAR_H))
+        .horizontal()
+        .main_align(Alignment::SpaceEvenly)
+        .cross_align(Alignment::Center)
+        .background(theme().bg)
+        .border(Border::new().fill(theme().border).width(BorderWidth { top: 1., right: 0., bottom: 0., left: 0. }))
+        .child(item(NavLink::Home, ICON_HOME, "Home", Route::Home))
+        .child(item(NavLink::Search, ICON_SEARCH, "Search", Route::Search))
+        .child(item(NavLink::MyList, ICON_LIBRARY, "My List", Route::MyList))
+        .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
+        .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
+}
+
+pub const TAB_BAR_H: f32 = 60.;
 
 /// A sidebar link: grey pill and white when current, lighter on hover.
 #[derive(PartialEq)]

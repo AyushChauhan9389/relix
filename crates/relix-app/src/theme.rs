@@ -86,6 +86,35 @@ pub const ERROR: Rgb = (229, 9, 20);
 
 thread_local! {
     static LOOK: Cell<Look> = const { Cell::new(Look::Netflix) };
+    static PHONE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a window of this size (logical pixels) gets the phone layout: any phone, either way up.
+pub fn is_phone_size(w: f32, h: f32) -> bool {
+    w < 700. || h < 500.
+}
+
+/// The phone layout: bottom tabs, small posters, stacked pages. Shell sets it from the window size
+/// and remounts every page when it changes, so reading it while rendering is always current.
+pub fn phone() -> bool {
+    PHONE.with(Cell::get)
+}
+
+pub fn set_phone(phone: bool) {
+    PHONE.with(|p| p.set(phone));
+}
+
+/// The phone layout's top bar height.
+pub const PHONE_BAR_H: f32 = 52.;
+
+/// Pages' left and right margin.
+pub fn side() -> f32 {
+    if phone() { 16. } else { 48. }
+}
+
+/// Space above page content, under the top bar that floats over it.
+pub fn top() -> f32 {
+    if phone() { PHONE_BAR_H + 12. } else { theme().top }
 }
 
 /// The current look's palette. Shell remounts every page when the look changes, so reading it

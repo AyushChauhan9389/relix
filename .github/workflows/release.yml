@@ -1,6 +1,7 @@
 # Run by hand (Actions → Release → Run workflow) after bumping version in crates/relix-app/Cargo.toml.
-# Builds Windows (setup .exe, .msi, portable .exe, portable .zip) and Linux (.deb, portable .tar.gz),
-# makes the GitHub release, and publishes the portable builds for auto-update.
+# Builds Windows (setup .exe, .msi, portable .exe, portable .zip), Linux (.deb, portable .tar.gz) and
+# Android (.apk), makes the GitHub release, and publishes the desktop builds for auto-update
+# (Android updates by installing the new APK over the old one).
 name: Release
 
 on: workflow_dispatch
@@ -131,8 +132,56 @@ jobs:
           name: signer
           path: target/release/relix-server
 
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      # Gradle's toolchain (packaging/android/gradle/gradle-daemon-jvm.properties).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # The runner has the SDK and NDK; the app compiles against Android 16 (API 36).
+      - name: Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      - name: libmpv for Android
+        run: sh packaging/android/fetch-mpv.sh
+      - name: Build the APK
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          RELIX_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          # Every release must carry the same signature, or Android won't install it over the last.
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::The ANDROID_KEYSTORE secret is missing: Android releases must be signed with Relix's key."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/relix-release.jks"
+          trap 'rm -f "$RUNNER_TEMP/relix-release.jks"' EXIT
+          export RELIX_KEYSTORE="$RUNNER_TEMP/relix-release.jks" ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          (cd packaging/android && ./gradlew assembleRelease --no-daemon)
+          mkdir -p dist
+          cp packaging/android/app/build/outputs/apk/release/app-release.apk "dist/Relix-$V-android-arm64.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          compression-level: 0
+          path: dist/Relix-*.apk
+
   publish:
-    needs: [check, windows, linux]
+    needs: [check, windows, linux, android]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.check.outputs.version }}

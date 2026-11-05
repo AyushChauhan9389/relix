@@ -171,10 +171,11 @@ impl Component for Account {
 
         rect()
             .expanded()
-            .padding(Gaps::new(theme().top, 48., 48., 48.))
+            .padding(Gaps::new(crate::theme::top(), crate::theme::side(), 48., crate::theme::side()))
             .child(
                 rect()
-                    .width(Size::px(560.))
+                    .width(Size::fill())
+                    .max_width(Size::px(560.))
                     .spacing(16.)
                     .child(label().text("Account").font_size(32.).font_weight(FontWeight::BOLD))
                     .child(body)

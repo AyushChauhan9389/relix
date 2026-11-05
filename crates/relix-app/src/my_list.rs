@@ -30,7 +30,7 @@ impl Component for MyList {
 
         let header = rect()
             .width(Size::fill())
-            .padding(Gaps::new(theme().top, 0., 16., 0.))
+            .padding(Gaps::new(crate::theme::top(), 0., 16., 0.))
             .spacing(16.)
             .child(label().text("My List").font_size(32.).font_weight(FontWeight::BOLD))
             .maybe(titles.is_empty(), |el| {
@@ -39,7 +39,7 @@ impl Component for MyList {
             .into_element();
         rect()
             .expanded()
-            .padding(Gaps::new(0., 48., 0., 48.))
+            .padding(Gaps::new(0., crate::theme::side(), 0., crate::theme::side()))
             .child(poster_grid(page, header, Rc::new(titles), Rc::new(new), false, None))
     }
 }

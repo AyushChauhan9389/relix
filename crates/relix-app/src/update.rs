@@ -9,7 +9,8 @@ use relix_proto::update::{UpdateManifest, is_newer, signed_message, verify};
 use crate::{Ctx, data_dir, get};
 
 /// The release signing key's public half, set when building releases; no key, no updates.
-const PUBLIC_KEY: Option<&str> = option_env!("RELIX_UPDATE_PUBKEY");
+/// Android apps are updated by their store or a new APK, never by swapping their own files.
+const PUBLIC_KEY: Option<&str> = if cfg!(target_os = "android") { None } else { option_env!("RELIX_UPDATE_PUBKEY") };
 
 /// Builds without the update key (development and test builds) never update themselves.
 pub fn enabled() -> bool {

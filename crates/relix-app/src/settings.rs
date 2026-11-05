@@ -16,6 +16,7 @@ impl Component for Settings {
         let page = use_scroller();
         use_page_scroller(page);
         let current = *ctx.look.read();
+        let phone = crate::theme::phone();
         let mut checking = use_state(|| false);
         let mut found = use_state(|| None::<String>);
         let mut debug_on = use_state(debug::enabled);
@@ -51,10 +52,10 @@ impl Component for Settings {
         };
 
         page.wrap(
-            ScrollView::new_controlled(page.controller).scroll_with_arrows(false).child(
+            ScrollView::new_controlled(page.controller).scroll_with_arrows(false).drag_scrolling(false).child(
                 rect()
                     .width(Size::fill())
-                    .padding(Gaps::new(theme().top, 48., 48., 48.))
+                    .padding(Gaps::new(crate::theme::top(), crate::theme::side(), 48., crate::theme::side()))
                     .spacing(12.)
                     .child(label().text("Settings").font_size(32.).font_weight(FontWeight::BOLD))
                     .child(label().text("APPEARANCE").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
@@ -63,14 +64,15 @@ impl Component for Settings {
                             .width(Size::fill())
                             .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
-                            .horizontal()
+                            .maybe(!phone, |el| el.horizontal())
                             .content(Content::Flex)
-                            .cross_align(Alignment::Center)
+                            .cross_align(if phone { Alignment::Start } else { Alignment::Center })
+                            .spacing(12.)
                             .corner_radius(theme().radius)
                             .background(theme().surface)
                             .child(
                                 rect()
-                                    .width(Size::flex(1.))
+                                    .width(if phone { Size::fill() } else { Size::flex(1.) })
                                     .spacing(4.)
                                     .child(label().text("Theme").font_size(16.).font_weight(FontWeight::BOLD))
                                     .child(label().text("Netflix: top bar and featured titles. Stremio: sidebar and titled posters.").font_size(13.).color(theme().muted)),
@@ -92,15 +94,15 @@ impl Component for Settings {
                             .width(Size::fill())
                             .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
-                            .horizontal()
+                            .maybe(!phone, |el| el.horizontal())
                             .content(Content::Flex)
-                            .cross_align(Alignment::Center)
+                            .cross_align(if phone { Alignment::Start } else { Alignment::Center })
                             .spacing(12.)
                             .corner_radius(theme().radius)
                             .background(theme().surface)
                             .child(
                                 rect()
-                                    .width(Size::flex(1.))
+                                    .width(if phone { Size::fill() } else { Size::flex(1.) })
                                     .spacing(4.)
                                     .child(label().text(format!("Relix {}", env!("CARGO_PKG_VERSION"))).font_size(16.).font_weight(FontWeight::BOLD))
                                     .child(if *checking.read() {
@@ -138,15 +140,15 @@ impl Component for Settings {
                             .width(Size::fill())
                             .max_width(Size::px(720.))
                             .padding(Gaps::new_all(18.))
-                            .horizontal()
+                            .maybe(!phone, |el| el.horizontal())
                             .content(Content::Flex)
-                            .cross_align(Alignment::Center)
+                            .cross_align(if phone { Alignment::Start } else { Alignment::Center })
                             .spacing(12.)
                             .corner_radius(theme().radius)
                             .background(theme().surface)
                             .child(
                                 rect()
-                                    .width(Size::flex(1.))
+                                    .width(if phone { Size::fill() } else { Size::flex(1.) })
                                     .spacing(4.)
                                     .child(label().text("Debug mode").font_size(16.).font_weight(FontWeight::BOLD))
                                     .child(
@@ -159,7 +161,8 @@ impl Component for Settings {
                                             .color(theme().muted),
                                     ),
                             )
-                            .maybe(*debug_on.read(), |el| {
+                            // Android keeps app data private: no file manager can open it.
+                            .maybe(*debug_on.read() && !cfg!(target_os = "android"), |el| {
                                 el.child(Focusable::new(button("Open folder", theme().raised, (255, 255, 255)), |()| {
                                     crate::addons::open_in_browser(&crate::data_dir().to_string_lossy())
                                 }))

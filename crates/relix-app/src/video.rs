@@ -5,7 +5,7 @@
 use std::any::Any;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CString, c_void};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -129,6 +129,7 @@ fn gl_proc(_: &(), name: &str) -> *mut c_void {
 
 #[cfg(not(windows))]
 fn gl_proc(_: &(), name: &str) -> *mut c_void {
+    use std::ffi::c_char;
     // Freya uses EGL on Wayland and GLX first on X11: look functions up the way the current context
     // was made. shortcut: Linux only; macOS needs CGL lookup when a Mac build exists.
     unsafe extern "C" {
@@ -143,10 +144,12 @@ fn gl_proc(_: &(), name: &str) -> *mut c_void {
         let handle = dlopen(lib.as_ptr(), RTLD_LAZY);
         if handle.is_null() { std::ptr::null_mut() } else { dlsym(handle, sym.as_ptr()) }
     };
+    // Android always draws with EGL, which it names without the version.
+    let egl = if cfg!(target_os = "android") { c"libEGL.so" } else { c"libEGL.so.1" };
     unsafe {
-        let current = sym(c"libEGL.so.1", c"eglGetCurrentContext");
+        let current = sym(egl, c"eglGetCurrentContext");
         if !current.is_null() && !std::mem::transmute::<*mut c_void, GetContext>(current)().is_null() {
-            let get = sym(c"libEGL.so.1", c"eglGetProcAddress");
+            let get = sym(egl, c"eglGetProcAddress");
             return if get.is_null() { get } else { std::mem::transmute::<*mut c_void, GetProc>(get)(name.as_ptr()) };
         }
         let get = [c"libGLX.so.0", c"libGL.so.1"].into_iter().map(|lib| sym(lib, c"glXGetProcAddressARB")).find(|p| !p.is_null());

@@ -5,3 +5,9 @@ chat.txt
 *.db-shm
 *.db-wal
 /dist
+# Android build (packaging/android): fetched and built libraries, Gradle output.
+/packaging/android/app/src/main/jniLibs
+/packaging/android/.gradle
+/packaging/android/build
+/packaging/android/app/build
+/packaging/android/local.properties

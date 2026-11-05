@@ -173,6 +173,31 @@ pub fn library_missing() -> bool {
     false
 }
 
+/// Hands Android's JVM to FFmpeg, which needs it for MediaCodec (hardware decoding) and mpv's
+/// AudioTrack output. Without it video decodes in software.
+#[cfg(target_os = "android")]
+pub fn android_init(vm: *mut std::ffi::c_void) {
+    use std::ffi::{c_char, c_void};
+    unsafe extern "C" {
+        fn dlopen(file: *const c_char, flags: i32) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+    type SetVm = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
+    const RTLD_NOW: i32 = 2;
+    // mpv-android's libmpv ships FFmpeg as its own libraries; other builds link it into libmpv.
+    for lib in [c"libavcodec.so", c"libmpv.so"] {
+        unsafe {
+            let handle = dlopen(lib.as_ptr(), RTLD_NOW);
+            let set = if handle.is_null() { handle } else { dlsym(handle, c"av_jni_set_java_vm".as_ptr()) };
+            if !set.is_null() {
+                std::mem::transmute::<*mut c_void, SetVm>(set)(vm, std::ptr::null_mut());
+                return;
+            }
+        }
+    }
+    crate::log!("player: av_jni_set_java_vm not found, decoding in software");
+}
+
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
 /// With `video`, mpv renders for Relix to draw in its own window (video.rs): it's handed the
@@ -195,7 +220,8 @@ pub fn play(
 ) -> libmpv2::Result<(Progress, Option<Ended>)> {
     let embedded = video.is_some();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
-        init.set_option("hwdec", "auto-safe")?;
+        // Android: MediaCodec, copied back so it draws through the same GL path (video.rs).
+        init.set_option("hwdec", if cfg!(target_os = "android") { "mediacodec-copy" } else { "auto-safe" })?;
         if let Some(lang) = &prefs.audio_lang {
             init.set_option("alang", lang.as_str())?;
         }
