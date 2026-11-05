@@ -116,14 +116,17 @@ impl Component for Player {
         let phone = crate::theme::phone();
         let safe = *ctx.safe.read();
         let r = np.video.clone();
+        let (party, chat_open) = (*ctx.social.party_player.read(), *ctx.social.chat_open.read());
         let wake = move || {
             let (mut active, mut visible) = (active, visible);
             active.set(Instant::now());
             visible.set(true);
         };
 
-        rect()
-            .expanded()
+        let with_panel = party && chat_open;
+        let player = rect()
+            .width(if with_panel { Size::flex(1.) } else { Size::fill() })
+            .height(Size::fill())
             .background((0, 0, 0))
             // A touch also moves the pointer, which would show the controls a tap is meant to hide.
             .maybe(!phone, |el| el.on_global_pointer_move(move |_| wake()))
@@ -146,7 +149,7 @@ impl Component for Player {
                             return;
                         }
                         let paused = ctx.player_status.peek().paused;
-                        let _ = r.mpv().set_property("pause", !paused);
+                        crate::social::set_paused(&ctx, r.mpv(), !paused);
                         menu.set(None);
                         if last_click.peek().is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
                             ctx.toggle_fullscreen();
@@ -162,8 +165,8 @@ impl Component for Player {
             .maybe(status.loaded && (status.buffering || status.seeking), |el| el.child(layer_center().layer(1).child(spinner())))
             .maybe(status.loaded && status.paused, |el| {
                 el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
-                    let r = r.clone();
-                    move |()| drop(r.mpv().set_property("pause", false))
+                    let (r, ctx) = (r.clone(), ctx.clone());
+                    move |()| crate::social::set_paused(&ctx, r.mpv(), false)
                 })))
             })
             .maybe(o > 0.01, |el| {
@@ -175,7 +178,26 @@ impl Component for Player {
             .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
                 el.child(next_card(&ctx, status.duration - status.position, phone, &safe))
             })
-            .into_element()
+            // Watch Together: a button that brings the chat panel back.
+            .maybe(party && !chat_open && o > 0.01, |el| {
+                let mut open = ctx.social.chat_open;
+                el.child(
+                    rect()
+                        .position(Position::new_absolute().top(if phone { 10. + safe.top() } else { 28. }).right(if phone { 16. + safe.right() } else { 40. }))
+                        .opacity(o)
+                        .layer(2)
+                        .child(crate::focus::Focusable::new(
+                            rect().padding(Gaps::new(8., 16., 8., 16.)).corner_radius(999.).background((0, 0, 0, 0.6)).child(label().text("Chat").font_size(15.).font_weight(FontWeight::BOLD)),
+                            move |()| open.set(true),
+                        )),
+                )
+            });
+        // Watch Together's panel sits beside the video, so it never covers the controls.
+        if with_panel {
+            rect().expanded().horizontal().content(Content::Flex).background((0, 0, 0)).child(player).child(crate::together::ChatPanel).into_element()
+        } else {
+            player.into_element()
+        }
     }
 }
 
@@ -253,7 +275,7 @@ fn top_bar(ctx: &Ctx, title: &str, episode: &str, phone: bool, safe: &Gaps) -> R
 
 fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu: State<Option<Menu>>, phone: bool, safe: &Gaps) -> Rect {
     let pct = if s.duration > 0. { s.position / s.duration * 100. } else { 0. };
-    let seek = r.clone();
+    let (seek, seek_ctx) = (r.clone(), ctx.clone());
     let timeline = rect()
         .width(Size::fill())
         .horizontal()
@@ -262,7 +284,10 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         .spacing(16.)
         .child(
             rect().width(Size::flex(1.)).child(
-                Slider::new(move |v: f64| drop(seek.mpv().command("seek", &[&format!("{v:.3}"), "absolute-percent+exact"])))
+                Slider::new(move |v: f64| {
+                    let duration = seek_ctx.player_status.peek().duration;
+                    crate::social::seek_to(&seek_ctx, seek.mpv(), v / 100. * duration);
+                })
                     .value(pct)
                     .size(Size::fill()),
             ),
@@ -276,15 +301,20 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
     let volume_icon = if muted || s.volume == 0. { ICON_MUTED } else if s.volume < 50. { ICON_VOLUME_LOW } else { ICON_VOLUME };
     let next_ctx = ctx.clone();
     let fs_ctx = ctx.clone();
+    let (toggle_ctx, back_ctx, fwd_ctx) = (ctx.clone(), ctx.clone(), ctx.clone());
     let left = rect()
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(10.)
         .child(icon_button(if paused { ICON_PLAY } else { ICON_PAUSE }, 30., true, None, move |()| {
-            drop(toggle.mpv().set_property("pause", !paused))
+            crate::social::set_paused(&toggle_ctx, toggle.mpv(), !paused)
         }))
-        .child(icon_button(ICON_BACK10, 30., false, Some("10"), move |()| drop(back.mpv().command("seek", &["-10", "relative"]))))
-        .child(icon_button(ICON_FWD10, 30., false, Some("10"), move |()| drop(fwd.mpv().command("seek", &["10", "relative"]))))
+        .child(icon_button(ICON_BACK10, 30., false, Some("10"), move |()| {
+            crate::social::seek_by(&back_ctx, back.mpv(), -10.)
+        }))
+        .child(icon_button(ICON_FWD10, 30., false, Some("10"), move |()| {
+            crate::social::seek_by(&fwd_ctx, fwd.mpv(), 10.)
+        }))
         .maybe(!phone, |el| el.child(icon_button(volume_icon, 28., false, None, move |()| drop(mute.mpv().set_property("mute", !muted)))))
         .maybe(!phone, |el| el.child(
             // Freya's slider runs 0-100; it maps onto 0-150% volume.
@@ -629,9 +659,9 @@ pub fn key(ctx: &Ctx, key: &Key) -> bool {
     let Some(np) = ctx.now_playing.peek().clone() else { return false };
     let (mpv, s) = (np.video.mpv(), ctx.player_status.peek().clone());
     match key {
-        Key::Character(c) if c == " " => drop(mpv.set_property("pause", !s.paused)),
-        Key::Named(NamedKey::ArrowLeft) => drop(mpv.command("seek", &["-10", "relative"])),
-        Key::Named(NamedKey::ArrowRight) => drop(mpv.command("seek", &["10", "relative"])),
+        Key::Character(c) if c == " " => crate::social::set_paused(ctx, mpv, !s.paused),
+        Key::Named(NamedKey::ArrowLeft) => crate::social::seek_by(ctx, mpv, -10.),
+        Key::Named(NamedKey::ArrowRight) => crate::social::seek_by(ctx, mpv, 10.),
         // Read the boost into a value first: a borrow taken inside the call's arguments lives until the
         // statement ends, and set_volume writes the same State (that panicked above 100%).
         Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {

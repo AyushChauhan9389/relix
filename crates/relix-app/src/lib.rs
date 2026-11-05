@@ -19,6 +19,8 @@ mod player;
 mod player_ui;
 mod search;
 mod settings;
+mod social;
+mod together;
 mod store;
 mod stremio;
 mod sync;
@@ -38,6 +40,7 @@ use account::Account;
 use addons::Addons;
 use browse::{Browse, BrowseCatalog};
 use detail::Detail;
+use together::Friends;
 use focus::{Dir, Registry};
 use home::{Home, Row};
 use my_list::MyList;
@@ -384,6 +387,8 @@ pub struct Ctx {
     pub update: State<Option<update::Ready>>,
     /// Space the system's bars and the camera cutout cover (top, right, bottom, left), Android only.
     pub safe: State<Gaps>,
+    /// Friends and Watch Together.
+    pub social: social::Social,
 }
 
 impl Ctx {
@@ -503,6 +508,7 @@ impl Ctx {
 
     pub fn sync_soon(&self) {
         self.sync.notify_one();
+        social::wake();
     }
 
     /// Persists the addon list and rebuilds Home's rows from it.
@@ -567,6 +573,7 @@ fn app() -> impl IntoElement {
     });
     let admin_enabled =
         use_state(|| store.get::<bool>(&profile, "settings", "admin_addons_enabled").ok().flatten().unwrap_or(true));
+    let social = social::Social::new();
     let ctx = use_provide_context(|| Ctx {
         // No overall timeout: the sync event stream and update downloads run long. The read timeout
         // still ends a stalled one (the server sends keep-alives every 15s).
@@ -592,6 +599,7 @@ fn app() -> impl IntoElement {
         widgets,
         update: use_state(|| None),
         safe: use_state(Gaps::default),
+        social,
     });
 
     use_hook({
@@ -599,6 +607,7 @@ fn app() -> impl IntoElement {
         move || {
             spawn(update::check(ctx.clone()));
             spawn(library::find_new_episodes(ctx.clone()));
+            spawn(social::run(ctx.clone()));
             spawn(sync::run(ctx));
         }
     });
@@ -706,6 +715,8 @@ pub enum Route {
         MyList,
         #[route("/settings")]
         Settings,
+        #[route("/friends")]
+        Friends,
 }
 
 /// "Relix x.y.z is ready · Restart", bottom-right, once an update has downloaded.
@@ -737,6 +748,14 @@ fn handle_key(ctx: &Ctx, registry: &Registry, key: &Key) {
     // F11 toggles fullscreen anywhere, like Stremio.
     if *key == Key::Named(NamedKey::F11) {
         ctx.toggle_fullscreen();
+        return;
+    }
+    // Typing in the party's chat: keys are the text field's; Esc closes the panel.
+    if ctx.player.peek().is_some() && *ctx.social.party_player.peek() && *ctx.social.chat_open.peek() {
+        if *key == Key::Named(NamedKey::Escape) {
+            let mut open = ctx.social.chat_open;
+            open.set(false);
+        }
         return;
     }
     // While video plays, Esc stops it and the rest go to mpv's controls.
@@ -815,6 +834,8 @@ impl Component for Shell {
                 if let Some(tx) = &presence {
                     let _ = tx.send(watching);
                 }
+                // Friends see it too (social::send_presence follows the privacy settings).
+                social::send_presence(&ctx);
             }
         });
         // Android's Back arrives from the activity (MainActivity.kt); it does what Esc does.
@@ -914,6 +935,7 @@ impl Component for Shell {
                 el.child(if sidebar { home::sidebar(active) } else { home::nav(active, &ctx, size.width < 1000.) }.layer(Layer::OverlayLevel(2)))
             })
             .maybe_child(update.filter(|_| !playing).map(|ready| update_banner(&ready).layer(Layer::OverlayLevel(2))))
+            .maybe_child(together::invite_toast(&ctx).filter(|_| !playing).map(|t| t.layer(Layer::OverlayLevel(2))))
             // mpv draws over this; black keeps the page from flashing through while it starts and stops.
             .maybe(playing, |el| el.child(rect().position(Position::new_absolute().top(0.).left(0.)).width(Size::percent(100.)).height(Size::percent(100.)).layer(Layer::OverlayLevel(3)).child(player_ui::Player)))
     }

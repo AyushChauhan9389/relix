@@ -47,6 +47,8 @@ impl Component for Detail {
         let mut streams_for = use_state(|| None::<String>);
         // Set from the moment Play is pressed until playback ends, so a second press can't start a second player.
         let mut starting = use_state(|| false);
+        // The "Watch together" dialog.
+        let mut together = use_state(|| false);
         // Home's Play opened this page.
         let from_hero = use_hook({
             let (title, id) = (ctx.autoplay_title, self.id.clone());
@@ -416,6 +418,26 @@ impl Component for Detail {
             (if resumes { "Resume".into() } else { "Play".into() }, Box::new(move |()| autoplay.set(Some(id.clone()))))
         };
 
+        // Watch Together (preview hosts only): the picked episode, else the one Play would start.
+        let party_title = ctx.social.me.read().as_ref().filter(|m| m.can_host).map(|_| {
+            let episode = if is_series {
+                picked_video
+                    .clone()
+                    .or_else(|| current.as_ref().and_then(|w| meta.videos.iter().find(|v| v.id == w.video_id)).cloned())
+                    .or_else(|| all_seasons.iter().find(|(n, _)| *n > 0).and_then(|(_, eps)| eps.first()).cloned())
+            } else {
+                None
+            };
+            relix_proto::social::PartyTitle {
+                id: episode.as_ref().map_or_else(|| meta.id.clone(), |v| v.id.clone()),
+                kind: meta.r#type.clone(),
+                name: meta.name.clone(),
+                poster: meta.background.clone().or_else(|| meta.poster.clone()),
+                episode: episode.as_ref().map(episode_label).unwrap_or_default(),
+            }
+        });
+        let on_together = party_title.is_some().then(|| EventHandler::new(move |()| together.set(true)));
+
         // A list in the panel scrolls by itself beside the info; on phones the whole page scrolls instead.
         let phone = phone();
         let list = move |content: Rect| -> Element {
@@ -503,7 +525,7 @@ impl Component for Detail {
                 fade.fill = !phone;
                 fade.key(format!("{showing_streams}-{current_season:?}-{picked:?}"))
             });
-        let info = info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play);
+        let info = info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play, on_together);
         // Phones: one column that scrolls as a whole. Wider: info beside (or above) a panel that scrolls itself.
         let content: Element = if phone {
             page.wrap(
@@ -540,6 +562,7 @@ impl Component for Detail {
             // Deeper on the text side, so labels read on bright backdrops too (as on Home's hero).
             .child(layer().layer(21).background(LinearGradient::new().angle(270.).stop(((0, 0, 0, 0.7), 0.)).stop(((0, 0, 0, 0.), 65.))))
             .child(layer().layer(40).child(content))
+            .maybe_child(party_title.filter(|_| *together.read()).map(|title| layer().layer(Layer::OverlayLevel(2)).child(crate::together::StartParty { title, open: together })))
             .into_element()
     }
 }
@@ -593,7 +616,15 @@ fn short_label(v: &Video) -> String {
 }
 
 /// The title's details on the left of the page.
-fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut(()) + 'static, play_label: String, on_play: Box<dyn FnMut(())>) -> Rect {
+fn info_column(
+    meta: &Meta,
+    narrow: bool,
+    in_list: bool,
+    toggle_list: impl FnMut(()) + 'static,
+    play_label: String,
+    on_play: Box<dyn FnMut(())>,
+    on_together: Option<EventHandler<()>>,
+) -> Rect {
     let facts: Vec<String> = [meta.release_info.clone(), meta.runtime.clone()].into_iter().flatten().collect();
     let people = |title: &str, names: Vec<String>| {
         (!names.is_empty()).then(|| {
@@ -662,11 +693,18 @@ fn info_column(meta: &Meta, narrow: bool, in_list: bool, toggle_list: impl FnMut
                 let url = format!("https://www.youtube.com/watch?v={}", t.yt_id);
                 wide(button("Trailer", theme().secondary, (255, 255, 255)), EventHandler::new(move |()| crate::addons::open_in_browser(&url)))
             });
+            let together = on_together.map(|h| wide(button("Watch together", theme().secondary, (255, 255, 255)), h));
             let row = || rect().width(Size::fill()).horizontal().content(Content::Flex).spacing(12.);
             if phone {
-                rect().width(Size::fill()).spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(row().child(play)).child(row().child(list).maybe_child(trailer))
+                rect()
+                    .width(Size::fill())
+                    .spacing(12.)
+                    .padding(Gaps::new(8., 0., 0., 0.))
+                    .child(row().child(play))
+                    .child(row().child(list).maybe_child(trailer))
+                    .maybe_child(together.map(|t| row().child(t)))
             } else {
-                rect().horizontal().spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer)
+                rect().horizontal().spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer).maybe_child(together)
             }
         })
 }

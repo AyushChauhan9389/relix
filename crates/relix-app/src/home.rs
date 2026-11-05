@@ -114,6 +114,7 @@ pub enum NavLink {
     Search,
     Settings,
     Account,
+    Friends,
 }
 
 /// The nav link to highlight on `route`, if it has one.
@@ -127,6 +128,7 @@ pub fn active_link(route: &Route) -> Option<NavLink> {
         Route::Search => Some(NavLink::Search),
         Route::Settings => Some(NavLink::Settings),
         Route::Account => Some(NavLink::Account),
+        Route::Friends => Some(NavLink::Friends),
         Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } => None,
     }
 }
@@ -181,6 +183,7 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
         .child(link(NavLink::Movies, "Movies", Route::Browse { kind: "movie".into() }))
         .child(link(NavLink::MyList, "My List", Route::MyList))
+        .child(link(NavLink::Friends, "Friends", Route::Friends))
         .child(rect().width(Size::flex(1.)))
         .child(
             rect()
@@ -834,6 +837,7 @@ const ICON_ADDONS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white"
 const ICON_SETTINGS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>"#;
 const ICON_FULLSCREEN: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>"#;
 const ICON_EXIT_FULLSCREEN: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>"#;
+const ICON_FRIENDS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-5.5 6.5-5.5s6.5 2 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5c2.5 0 4.5 1.5 4.5 4.5"/></svg>"#;
 const ICON_ACCOUNT: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>"#;
 
 /// Stremio's left rail: wordmark, then icon links; the current one sits on a grey pill.
@@ -857,6 +861,7 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .child(item(NavLink::Movies, ICON_MOVIES, "Movies", Route::Browse { kind: "movie".into() }))
         .child(item(NavLink::Series, ICON_SERIES, "Series", Route::Browse { kind: "series".into() }))
         .child(item(NavLink::MyList, ICON_LIBRARY, "Library", Route::MyList))
+        .child(item(NavLink::Friends, ICON_FRIENDS, "Friends", Route::Friends))
         .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
         .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
         .child(item(NavLink::Account, ICON_ACCOUNT, "Account", Route::Account))
@@ -879,6 +884,7 @@ pub fn phone_top_bar(active: Option<NavLink>) -> Rect {
         .child(Link::new(Route::Home).child(logo(36.)))
         .child(link(NavLink::Series, "Series", Route::Browse { kind: "series".into() }))
         .child(link(NavLink::Movies, "Movies", Route::Browse { kind: "movie".into() }))
+        .child(link(NavLink::Friends, "Friends", Route::Friends))
         .child(rect().width(Size::flex(1.)))
         .child(Link::new(Route::Account).child(
             rect().padding(Gaps::new_all(8.)).child(SvgViewer::new(ICON_ACCOUNT.as_bytes()).width(Size::px(24.)).height(Size::px(24.)).stroke(account)),

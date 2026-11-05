@@ -134,6 +134,9 @@ impl Component for Settings {
                                 None => rect().into_element(),
                             }),
                     )
+                    .child(label().text("FRIENDS").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
+                    .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
+                    .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))
                     .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
@@ -174,5 +177,51 @@ impl Component for Settings {
                     ),
             ),
         )
+    }
+}
+
+/// A friends privacy switch (a synced setting); friends see the change right away.
+#[derive(PartialEq)]
+struct Privacy {
+    key: &'static str,
+    default: bool,
+    title: &'static str,
+    about: &'static str,
+}
+
+fn privacy(key: &'static str, default: bool, title: &'static str, about: &'static str) -> Privacy {
+    Privacy { key, default, title, about }
+}
+
+impl Component for Privacy {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        let (key, default) = (self.key, self.default);
+        let mut on = use_state(|| ctx.store.get::<bool>(&ctx.profile, "settings", key).ok().flatten().unwrap_or(default));
+        rect()
+            .width(Size::fill())
+            .max_width(Size::px(720.))
+            .padding(Gaps::new_all(18.))
+            .horizontal()
+            .content(Content::Flex)
+            .cross_align(Alignment::Center)
+            .spacing(12.)
+            .corner_radius(theme().radius)
+            .background(theme().surface)
+            .child(
+                rect()
+                    .width(Size::flex(1.))
+                    .spacing(4.)
+                    .child(label().text(self.title).font_size(16.).font_weight(FontWeight::BOLD))
+                    .child(label().text(self.about).font_size(13.).color(theme().muted)),
+            )
+            .child(Switch::new(WritableSetter::new(on.into_readable(), move |value| {
+                if let Err(e) = ctx.store.put(&ctx.profile, "settings", key, &value) {
+                    crate::log!("saving setting: {e}");
+                }
+                on.set(value);
+                crate::social::send_presence(&ctx);
+                ctx.sync_soon();
+            })))
     }
 }

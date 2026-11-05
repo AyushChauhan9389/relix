@@ -34,7 +34,7 @@ pub fn account(store: &Store) -> Option<Account> {
 }
 
 /// Sends a request; a failed one becomes the server's error message.
-async fn send<B: Serialize>(
+pub(crate) async fn send<B: Serialize>(
     http: &reqwest::Client,
     method: Method,
     url: String,
@@ -57,7 +57,7 @@ async fn send<B: Serialize>(
     Ok(res)
 }
 
-async fn call<B: Serialize, T: DeserializeOwned>(
+pub(crate) async fn call<B: Serialize, T: DeserializeOwned>(
     http: &reqwest::Client,
     url: String,
     token: Option<&str>,
