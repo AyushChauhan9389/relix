@@ -68,15 +68,15 @@ impl Component for Addons {
                         .spacing(12.)
                         .cross_align(Alignment::Center)
                         .child(
-                            Input::new(url)
-                                .width(Size::flex(1.))
+                            rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(url)
+                                .width(Size::fill())
                                 .placeholder("Paste an addon link (https://…/manifest.json or stremio://…)")
                                 .on_submit({
                                     let install = install.clone();
                                     move |text: String| install(text)
-                                }),
+                                }))),
                         )
-                        .child(button("Install", theme().primary.0, theme().primary.1).on_press(move |_| install(url.read().clone()))),
+                        .child(Focusable::new(button("Install", theme().primary.0, theme().primary.1), move |()| install(url.read().clone()))),
                 )
                 // "Installing…" spins; results are plain text.
                 .maybe_child(status.read().clone().map(|s| {
@@ -143,7 +143,7 @@ fn card(ctx: &Ctx, addons: &[Addon], i: usize, addon: &Addon) -> Rect {
                 .maybe(i > 0, |el| el.child(action(ctx, addons, "↑ Up", move |l| l.swap(i, i - 1))))
                 .maybe(i < last, |el| el.child(action(ctx, addons, "↓ Down", move |l| l.swap(i, i + 1))))
                 .map(configure_url, |el, url| {
-                    el.child(label().text("Configure").font_size(14.).color((230, 230, 230)).on_press(move |_| open_in_browser(&url)))
+                    el.child(Focusable::new(label().text("Configure").font_size(14.).color((230, 230, 230)), move |()| open_in_browser(&url)))
                 })
                 .child(action(ctx, addons, "Remove", move |l| {
                     l.remove(i);
@@ -173,9 +173,9 @@ fn admin_card(addon: &Addon, on: bool) -> Rect {
 }
 
 /// A text button that edits the addon list and saves it.
-fn action(ctx: &Ctx, addons: &[Addon], text: &'static str, edit: impl Fn(&mut Vec<Addon>) + 'static) -> Label {
+fn action(ctx: &Ctx, addons: &[Addon], text: &'static str, edit: impl Fn(&mut Vec<Addon>) + 'static) -> Focusable {
     let (ctx, list) = (ctx.clone(), addons.to_vec());
-    label().text(text).font_size(14.).color((230, 230, 230)).on_press(move |_| {
+    Focusable::new(label().text(text).font_size(14.).color((230, 230, 230)), move |()| {
         let mut list = list.clone();
         edit(&mut list);
         ctx.save_addons(list);
@@ -269,8 +269,8 @@ impl Component for StremioPanel {
                 .width(Size::fill())
                 .max_width(Size::px(560.))
                 .spacing(10.)
-                .child(Input::new(email).width(Size::fill()).placeholder("Stremio email"))
-                .child(Input::new(password).width(Size::fill()).placeholder("Stremio password").mode(InputMode::new_password()))
+                .child(crate::focus::Field(Input::new(email).width(Size::fill()).placeholder("Stremio email")))
+                .child(crate::focus::Field(Input::new(password).width(Size::fill()).placeholder("Stremio password").mode(InputMode::new_password())))
                 .child(action("Connect Stremio account", "connect", true)),
         };
 

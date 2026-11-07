@@ -101,7 +101,7 @@ impl Component for Friends {
             body.child(heading("YOUR USERNAME")).child(
                 card()
                     .child(paragraph().font_size(14.).color(theme().muted).span("Friends find you by it. 3 to 20 letters, digits or _."))
-                    .child(Input::new(name).width(Size::fill()).placeholder("username").on_submit(move |_| submit.clone()(())))
+                    .child(crate::focus::Field(Input::new(name).width(Size::fill()).placeholder("username").on_submit(move |_| submit.clone()(()))))
                     .child(rect().horizontal().spacing(10.).child(Focusable::new(button("Save", theme().primary.0, theme().primary.1), EventHandler::new(save))).maybe(*renaming.read(), |el| {
                         el.child(Focusable::new(button("Cancel", theme().raised, (255, 255, 255)), move |()| renaming.set(false)))
                     })),
@@ -158,7 +158,7 @@ impl Component for Friends {
                     }))
                     .child(
                         row()
-                            .child(rect().width(Size::flex(1.)).child(Input::new(code).width(Size::fill()).placeholder("Party code").on_submit(move |_| submit_join.clone()(()))))
+                            .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(code).width(Size::fill()).placeholder("Party code").on_submit(move |_| submit_join.clone()(())))))
                             .child(Focusable::new(button("Join", theme().primary.0, theme().primary.1), EventHandler::new(join))),
                     )
                     .children(invites.into_iter().map(|i| {
@@ -178,7 +178,7 @@ impl Component for Friends {
             .child(
                 card().child(
                     row()
-                        .child(rect().width(Size::flex(1.)).child(Input::new(add).width(Size::fill()).placeholder("Their username").on_submit(move |_| submit_add.clone()(()))))
+                        .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(add).width(Size::fill()).placeholder("Their username").on_submit(move |_| submit_add.clone()(())))))
                         .child(Focusable::new(button("Send request", theme().primary.0, theme().primary.1), EventHandler::new(send_request))),
                 ),
             )
@@ -339,7 +339,7 @@ impl Component for ChatPanel {
             )
             .child(
                 row()
-                    .child(rect().width(Size::flex(1.)).child(Input::new(text).width(Size::fill()).placeholder("Say something").on_submit(move |_| send2.clone()())))
+                    .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(text).width(Size::fill()).placeholder("Say something").on_submit(move |_| send2.clone()()))))
                     .child(small("Send", move |()| send())),
             )
             .into_element()
@@ -405,7 +405,7 @@ impl Component for StartParty {
                     .child(paragraph().width(Size::fill()).font_size(14.).color(theme().muted).span(
                         "Paste a Google Drive share link (shared as \"Anyone with the link\") or a direct video link. Everyone in the party streams it from there.",
                     ))
-                    .child(Input::new(link).width(Size::fill()).placeholder("https://drive.google.com/file/d/…").on_submit(move |_| submit.clone()(())))
+                    .child(crate::focus::Field(Input::new(link).width(Size::fill()).placeholder("https://drive.google.com/file/d/…").on_submit(move |_| submit.clone()(()))))
                     .maybe_child(error.read().clone().map(|e| paragraph().width(Size::fill()).font_size(14.).color(ERROR).span(e)))
                     .child(
                         rect()

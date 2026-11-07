@@ -9,7 +9,7 @@
     <application
         android:hasCode="true"
         android:icon="@drawable/ic_launcher"
-        android:banner="@drawable/ic_launcher"
+        android:banner="@drawable/banner"
         android:label="Relix"
         android:theme="@style/Theme.AppCompat.NoActionBar">
         <activity

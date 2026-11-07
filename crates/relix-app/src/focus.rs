@@ -147,6 +147,19 @@ impl Scroller {
         self.viewport.read().width()
     }
 
+    /// Glides the view most of a screen up or down; returns whether it can go further that way.
+    fn step(self, down: bool) -> bool {
+        let (vp, pos) = (*self.viewport.peek(), self.controller.position());
+        let by = vp.height() * 0.6;
+        let to = if down { pos.y - by } else { pos.y + by };
+        // Already at the top (positions run negative going down).
+        if !down && pos.y >= 0. {
+            return false;
+        }
+        glide(self.controller, true, pos.y, to.min(0.));
+        true
+    }
+
     /// Glides the view so `area` is inside it (with `top_inset` clear of the nav).
     fn reveal(self, area: Area, dir: Direction, top_inset: f32) {
         let vp = *self.viewport.peek();
@@ -212,6 +225,13 @@ struct Entry {
     row: Option<Scroller>,
     /// What Enter does, so a gamepad's A button can press it too.
     on_press: EventHandler<()>,
+    /// One of the player's controls: while video plays only these are reachable, since the page
+    /// under the player stays mounted.
+    in_player: bool,
+    /// A text field: Left and Right move its cursor, only Up and Down leave it.
+    text: bool,
+    /// The control a remote focuses first in the player (play/pause).
+    primary: bool,
 }
 
 /// Every mounted focusable and the current page's vertical scroller.
@@ -219,27 +239,46 @@ struct Entry {
 pub struct Registry {
     entries: Rc<RefCell<HashMap<AccessibilityId, Entry>>>,
     page: Rc<RefCell<Option<Scroller>>>,
+    /// The player's primary control takes focus as soon as it mounts (the controls were hidden).
+    pending_primary: Rc<std::cell::Cell<bool>>,
 }
 
+/// Provided by the player, so the focusables inside it know they're its controls.
+#[derive(Clone)]
+pub struct InPlayer;
+
 impl Registry {
-    /// Handles arrow keys; returns whether focus moved.
-    pub fn navigate(&self, dir: Dir) -> bool {
+    /// Handles arrow keys among the page's focusables, or the player's; returns whether focus moved.
+    pub fn navigate(&self, dir: Dir, in_player: bool) -> bool {
         let focused = *Platform::get().current_window().focused_accessibility_id.peek();
         let entries = self.entries.borrow();
-        let target = match entries.get(&focused) {
+        let in_scope = |e: &Entry| e.in_player == in_player;
+        let target = match entries.get(&focused).filter(|e| in_scope(e)) {
+            Some(from) if from.text && matches!(dir, Dir::Left | Dir::Right) => return false,
             Some(from) => {
                 let others: Vec<(AccessibilityId, Area)> =
-                    entries.iter().filter(|(id, _)| **id != focused).map(|(id, e)| (*id, e.area)).collect();
+                    entries.iter().filter(|(id, e)| **id != focused && in_scope(e)).map(|(id, e)| (*id, e.area)).collect();
                 next_focus(from.area, &others, dir).copied()
             }
-            // Nothing focused yet (id 0 is the window root, so not a text input): start at the top-left.
-            None if focused == AccessibilityId(0) => entries
+            // Nothing focused here yet (id 0 is the window root; anything else unknown is a text
+            // input that keeps its keys): start at the top-left.
+            None if focused == AccessibilityId(0) || entries.contains_key(&focused) => entries
                 .iter()
+                .filter(|(_, e)| in_scope(e))
                 .min_by(|a, b| (a.1.area.min_y(), a.1.area.min_x()).partial_cmp(&(b.1.area.min_y(), b.1.area.min_x())).unwrap())
                 .map(|(id, _)| *id),
             None => None,
         };
-        let Some(target) = target else { return false };
+        let Some(target) = target else {
+            drop(entries);
+            // Rows off-screen aren't built yet (virtual lists): scroll that way, so the next press
+            // finds them.
+            let page = *self.page.borrow();
+            return match (page, dir) {
+                (Some(page), Dir::Up | Dir::Down) if !in_player => page.step(dir == Dir::Down),
+                _ => false,
+            };
+        };
         let entry = entries[&target].clone();
         drop(entries);
         target.request_focus();
@@ -250,6 +289,21 @@ impl Registry {
             page.reveal(entry.area, Direction::Vertical, TOP_INSET);
         }
         true
+    }
+
+    /// Whether one of the player's controls has focus.
+    pub fn player_focused(&self) -> bool {
+        let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+        self.entries.borrow().get(&focused).is_some_and(|e| e.in_player)
+    }
+
+    /// Focuses the player's play/pause button, now or as soon as the controls show.
+    pub fn focus_player(&self) {
+        let primary = self.entries.borrow().iter().find(|(_, e)| e.in_player && e.primary).map(|(id, _)| *id);
+        match primary {
+            Some(id) => id.request_focus(),
+            None => self.pending_primary.set(true),
+        }
     }
 
     /// Presses the focused item (a gamepad's A button); returns whether something was focused.
@@ -281,11 +335,13 @@ pub struct Focusable {
     pub grow: f32,
     /// Its width in its parent, when it should stretch (its child then fills it).
     pub width: Option<Size>,
+    /// The player's play/pause button ([`Registry::focus_player`]).
+    pub primary: bool,
 }
 
 impl Focusable {
     pub fn new(child: impl Into<Element>, on_press: impl Into<EventHandler<()>>) -> Self {
-        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6., grow: 1.04, width: None }
+        Self { child: child.into(), on_press: on_press.into(), row: None, radius: 6., grow: 1.04, width: None, primary: false }
     }
 }
 
@@ -294,6 +350,8 @@ impl Component for Focusable {
         let id = use_a11y();
         let focus = use_focus(id);
         let registry = use_consume::<Registry>();
+        let in_player = use_try_consume::<InPlayer>().is_some();
+        let primary = self.primary;
         use_drop({
             let registry = registry.clone();
             move || {
@@ -323,7 +381,11 @@ impl Component for Focusable {
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set(false))
             .on_sized(move |e: Event<SizedEventData>| {
-                let moved = registry.entries.borrow_mut().insert(id, Entry { area: e.area, row, on_press: pressed.clone() }).is_some_and(|old| old.area != e.area);
+                let entry = Entry { area: e.area, row, on_press: pressed.clone(), in_player, text: false, primary };
+                let moved = registry.entries.borrow_mut().insert(id, entry).is_some_and(|old| old.area != e.area);
+                if primary && registry.pending_primary.replace(false) {
+                    id.request_focus();
+                }
                 // A resize or scroll moves it without a pointer-leave; the next pointer move re-hovers it.
                 if moved && *hovered.peek() {
                     hovered.set(false);
@@ -349,6 +411,43 @@ impl Component for Focusable {
                     .alignment(BorderAlignment::Outer),
             )
             .child(self.child.clone())
+    }
+}
+
+/// A text field the arrow keys can reach, so a TV remote can get to it (its soft keyboard opens
+/// on focus). Up and Down leave it; Left and Right stay with its cursor.
+#[derive(PartialEq)]
+pub struct Field(pub Input);
+
+impl Component for Field {
+    fn render(&self) -> impl IntoElement {
+        let id = use_a11y();
+        let registry = use_consume::<Registry>();
+        let in_player = use_try_consume::<InPlayer>().is_some();
+        use_drop({
+            let registry = registry.clone();
+            move || {
+                registry.entries.borrow_mut().remove(&id);
+            }
+        });
+        rect()
+            .width(Size::fill())
+            .on_sized(move |e: Event<SizedEventData>| {
+                let on_press = EventHandler::new(move |()| id.request_focus());
+                registry.entries.borrow_mut().insert(id, Entry { area: e.area, row: None, on_press, in_player, text: true, primary: false });
+            })
+            .child(self.0.clone().a11y_id(id).on_pre_key_down(|e: Event<KeyboardEventData>| match &e.key {
+                // Up and Down pass through to the arrow-key focus (lib.rs) instead of the field
+                // keeping them; otherwise Freya's default: the field takes the key.
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => false,
+                Key::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::Shift) => true,
+                Key::Named(NamedKey::Tab) => false,
+                _ => {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    true
+                }
+            }))
     }
 }
 

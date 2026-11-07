@@ -92,10 +92,10 @@ impl Component for Account {
                 form.set(to)
             })
         };
-        let field = |label_text: &'static str, el: Input| {
+        let field = |label_text: &'static str, el: crate::focus::Field| {
             rect().width(Size::fill()).spacing(6.).child(label().text(label_text).font_size(14.).color(theme().muted)).child(el)
         };
-        let password_field = |label_text: &'static str| field(label_text, Input::new(password).width(Size::fill()).mode(InputMode::new_password()));
+        let password_field = |label_text: &'static str| field(label_text, crate::focus::Field(Input::new(password).width(Size::fill()).mode(InputMode::new_password())));
         let row = || rect().horizontal().spacing(12.);
         // Read for its subscription: sync status changes whenever the account does.
         let status = ctx.sync_status.read().clone();
@@ -138,13 +138,13 @@ impl Component for Account {
             (None, Form::Verify) => rect()
                 .spacing(14.)
                 .child(label().text("Check your email").font_size(22.).font_weight(FontWeight::BOLD))
-                .child(field("Code from your email", Input::new(code).width(Size::fill()).placeholder("123456")))
+                .child(field("Code from your email", crate::focus::Field(Input::new(code).width(Size::fill()).placeholder("123456"))))
                 .child(action("Verify", true, "verify")),
             (None, Form::Forgot) => rect()
                 .spacing(14.)
                 .child(label().text("Reset your password").font_size(22.).font_weight(FontWeight::BOLD))
                 .child(paragraph().font_size(15.).color(theme().muted).span("We'll email you a code to set a new password."))
-                .child(field("Email", Input::new(email).width(Size::fill())))
+                .child(field("Email", crate::focus::Field(Input::new(email).width(Size::fill()))))
                 .child(row().child(action("Send code", true, "forgot")))
                 .child(switch("‹ Back to sign in", Form::SignIn)),
             (None, Form::Reset) => rect()
@@ -154,7 +154,7 @@ impl Component for Account {
                     "If {} has an account, a code is on its way. It signs your other devices out.",
                     email.read().trim()
                 )))
-                .child(field("Code from your email", Input::new(code).width(Size::fill()).placeholder("123456")))
+                .child(field("Code from your email", crate::focus::Field(Input::new(code).width(Size::fill()).placeholder("123456"))))
                 .child(password_field("New password"))
                 .child(row().child(action("Set new password", true, "reset")).child(action("Send again", false, "forgot")))
                 .child(switch("‹ Back to sign in", Form::SignIn)),
@@ -163,7 +163,7 @@ impl Component for Account {
                 .child(paragraph().font_size(15.).color(theme().muted).span(
                     "An account keeps your addons, My List, progress and settings on Relix's servers, so they follow you to every device.",
                 ))
-                .child(field("Email", Input::new(email).width(Size::fill())))
+                .child(field("Email", crate::focus::Field(Input::new(email).width(Size::fill()))))
                 .child(password_field("Password"))
                 .child(row().child(action("Sign in", true, "sign_in")).child(action("Create account", false, "sign_up")))
                 .child(switch("Forgot password?", Form::Forgot)),

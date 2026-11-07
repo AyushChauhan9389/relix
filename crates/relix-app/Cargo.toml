@@ -31,6 +31,10 @@ jni = "0.22.4"
 webpki-root-certs = "1.0.11"
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 
+# libmpv's bundled bindings are for 64-bit; 32-bit ARM (older Android TVs) generates its own.
+[target.'cfg(target_arch = "arm")'.dependencies]
+libmpv2-sys = { version = "4.0.1", features = ["use-bindgen"] }
+
 [build-dependencies]
 winresource = "0.1.34"
 

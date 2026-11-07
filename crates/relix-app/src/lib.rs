@@ -221,7 +221,7 @@ fn run(config: LaunchConfig) {
     let _rt = rt.enter();
     // Posters and backdrops stay on the GPU: at Skia's default 256 MiB, scrolling back evicted
     // and re-uploaded them, which showed as stutter.
-    let config = config.with_gpu_resource_cache_limit(GpuResourceCacheLimit::from_mb(512)).with_window(
+    let config = config.with_gpu_resource_cache_limit(GpuResourceCacheLimit::from_mb(gpu_cache_mb())).with_window(
         WindowConfig::new(app)
             .with_title("Relix")
             .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon.png")))
@@ -234,6 +234,15 @@ fn run(config: LaunchConfig) {
     #[cfg(not(debug_assertions))]
     let config = if debug::enabled() { config.with_plugin(freya::metrics::MetricsPlugin::default().with_visible_performance(true)) } else { config };
     launch(config)
+}
+
+/// Skia's GPU cache: 512 MiB, or an eighth of the memory on smaller devices (a 1 GB TV shares it
+/// with the video decoder; a full cache there gets Relix killed).
+fn gpu_cache_mb() -> usize {
+    let total_kb = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|m| m.lines().find_map(|l| l.strip_prefix("MemTotal:")?.trim().strip_suffix("kB")?.trim().parse::<usize>().ok()));
+    total_kb.map_or(512, |kb| (kb / 1024 / 8).clamp(96, 512))
 }
 
 /// Release builds have no console (and Android none at all), so a panic would vanish: keep it in crash.log too.
@@ -378,6 +387,11 @@ pub struct Ctx {
     /// Gain on top of mpv's 100% volume (player_ui::set_volume), 1 when not boosted.
     pub volume_boost: State<f64>,
     pub video_frame: State<u64>,
+    /// When the viewer last moved the mouse or pressed a key in the player; its controls show a
+    /// while after (player_ui).
+    pub player_active: State<std::time::Instant>,
+    /// The player's open menu (subtitles, speed), if any.
+    pub player_menu: State<Option<player_ui::Menu>>,
     pub fullscreen: State<bool>,
     /// Netflix or Stremio look (synced setting).
     pub look: State<Look>,
@@ -469,6 +483,9 @@ impl Ctx {
         status.set(player::Status::default());
         let mut boost = self.volume_boost;
         boost.set(1.);
+        let (mut active, mut menu) = (self.player_active, self.player_menu);
+        active.set(std::time::Instant::now());
+        menu.set(None);
         now.set(Some(NowPlaying {
             video,
             title: overlay.title,
@@ -566,6 +583,8 @@ fn app() -> impl IntoElement {
     let player_status = use_state(player::Status::default);
     let volume_boost = use_state(|| 1.);
     let video_frame = use_state(|| 0);
+    let player_active = use_state(std::time::Instant::now);
+    let player_menu = use_state(|| None);
     let fullscreen = use_state(|| false);
     let admin_addons = use_state(|| {
         let cached = store.meta("admin_addons").ok().flatten();
@@ -594,6 +613,8 @@ fn app() -> impl IntoElement {
         player_status,
         volume_boost,
         video_frame,
+        player_active,
+        player_menu,
         fullscreen,
         look,
         widgets,
@@ -758,12 +779,10 @@ fn handle_key(ctx: &Ctx, registry: &Registry, key: &Key) {
         }
         return;
     }
-    // While video plays, Esc stops it and the rest go to mpv's controls.
+    // While video plays, keys go to the player; Esc it doesn't use (to close its controls) stops it.
     if ctx.player.peek().is_some() {
-        if *key == Key::Named(NamedKey::Escape) {
+        if !player_ui::key(ctx, registry, key) && *key == Key::Named(NamedKey::Escape) {
             ctx.player_escape();
-        } else {
-            player_ui::key(ctx, key);
         }
         return;
     }
@@ -789,7 +808,7 @@ fn handle_key(ctx: &Ctx, registry: &Registry, key: &Key) {
         }
         _ => return,
     };
-    registry.navigate(dir);
+    registry.navigate(dir, false);
 }
 
 impl Component for Shell {
@@ -881,7 +900,9 @@ impl Component for Shell {
                     while let Some(pad) = rx.recv().await {
                         match pad {
                             gamepad::Pad::Key(key) => handle_key(&ctx, &registry, &key),
-                            gamepad::Pad::Press if ctx.player.peek().is_some() => handle_key(&ctx, &registry, &Key::Character(" ".into())),
+                            gamepad::Pad::Press if ctx.player.peek().is_some() && !registry.player_focused() => {
+                                handle_key(&ctx, &registry, &Key::Character(" ".into()))
+                            }
                             gamepad::Pad::Press => drop(registry.press()),
                         }
                     }

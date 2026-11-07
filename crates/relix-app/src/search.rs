@@ -75,7 +75,7 @@ impl Component for Search {
                     rect()
                         .width(Size::fill())
                         .padding(Gaps::new(crate::theme::top(), crate::theme::side(), 16., crate::theme::side()))
-                        .child(Input::new(query).width(Size::fill()).placeholder("Titles, people, genres").auto_focus(true)),
+                        .child(crate::focus::Field(Input::new(query).width(Size::fill()).placeholder("Titles, people, genres").auto_focus(true))),
                 )
                 .maybe(*searched.read() && results.is_empty(), |el| {
                     el.child(rect().padding(Gaps::new(24., crate::theme::side(), 0., crate::theme::side())).child(label().text("No matches yet.").color(theme().muted)))

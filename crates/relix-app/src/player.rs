@@ -222,6 +222,11 @@ pub fn play(
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         // Android: MediaCodec, copied back so it draws through the same GL path (video.rs).
         init.set_option("hwdec", if cfg!(target_os = "android") { "mediacodec-copy" } else { "auto-safe" })?;
+        // mpv's default read-ahead (~200 MB) is a fifth of a small TV's memory.
+        if cfg!(target_os = "android") {
+            init.set_option("demuxer-max-bytes", "64MiB")?;
+            init.set_option("demuxer-max-back-bytes", "16MiB")?;
+        }
         if let Some(lang) = &prefs.audio_lang {
             init.set_option("alang", lang.as_str())?;
         }
