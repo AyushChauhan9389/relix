@@ -299,7 +299,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"/></svg>
         Download for Windows
       </a>
-      <a class="btn light download-linux" href="#download">Download for Linux</a>
+      <a class="btn light download-other" href="#download">Download for Linux</a>
     </div>
   </section>
 </main>
@@ -312,7 +312,13 @@
 </footer>
 
 <script>
-  // Every Download button points at the newest build the server lists for its OS.
+  // Every Download button points at the newest build the server lists for its OS. The main ones
+  // offer the visitor's own OS (Linux or Windows, the builds there are); the other one, the rest.
+  const ua = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
+  const linux = /linux/i.test(ua) && !/android/i.test(navigator.userAgent);
+  const [mine, other] = linux ? ["Linux", "Windows"] : ["Windows", "Linux"];
+  document.querySelectorAll(".download").forEach(a => a.lastChild.textContent = a.lastChild.textContent.replace("Windows", mine));
+  document.querySelectorAll(".download-other").forEach(a => a.textContent = "Download for " + other);
   const manifest = url => fetch(url).then(r => r.ok ? r.json() : Promise.reject());
   const link = (latest, selector) => latest
     .then(m => document.querySelectorAll(selector).forEach(a => {
@@ -321,8 +327,9 @@
     }))
     .catch(() => {});
   // Windows builds published before per-OS manifests only have latest.json.
-  link(manifest("/update/latest?os=windows").catch(() => manifest("/update/latest")), ".download");
-  link(manifest("/update/latest?os=linux"), ".download-linux");
+  const latest = os => os === "Windows" ? manifest("/update/latest?os=windows").catch(() => manifest("/update/latest")) : manifest("/update/latest?os=linux");
+  link(latest(mine), ".download");
+  link(latest(other), ".download-other");
 
   const nav = document.getElementById("nav");
   const onScroll = () => nav.classList.toggle("scrolled", scrollY > 40);
