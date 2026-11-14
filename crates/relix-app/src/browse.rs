@@ -40,10 +40,21 @@ impl Component for BrowseCatalog {
     }
 }
 
+/// What a Browse screen had when it was left: opening a title unmounts it, and Back should return
+/// to the same catalog, filters, loaded titles and scroll position, without loading again.
+#[derive(Clone, Default)]
+struct Remembered {
+    picked: usize,
+    filter: Filter,
+    items: Rc<Vec<MetaPreview>>,
+    skips: Vec<usize>,
+    more: bool,
+    scroll_y: i32,
+}
+
 thread_local! {
-    /// The catalog and filters each Browse screen had, so coming back from a title keeps them
-    /// (opening a title unmounts the screen). Keyed by the route's (type, catalog).
-    static REMEMBERED: std::cell::RefCell<std::collections::HashMap<(String, usize), (usize, Filter)>> = Default::default();
+    /// Keyed by the route's (type, catalog).
+    static REMEMBERED: std::cell::RefCell<std::collections::HashMap<(String, usize), Remembered>> = Default::default();
 }
 
 fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
@@ -57,21 +68,44 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         // Movies <-> Series reuses this component with a new `kind`.
         let kind = use_reactive(kind_name);
         let mut last_kind = use_state(|| kind_name.clone());
-        let remembered = REMEMBERED.with(|r| r.borrow().get(&(kind_name.clone(), start)).cloned());
-        let mut picked = use_state(|| remembered.as_ref().map_or(start, |r| r.0));
-        let mut filter = use_state(|| remembered.map(|r| r.1).unwrap_or_default());
+        let route = (kind_name.clone(), start);
+        let saved = use_hook({
+            let route = route.clone();
+            move || REMEMBERED.with(|r| r.borrow().get(&route).cloned())
+        });
+        // Back from a title: the titles are already here, so the first load is skipped.
+        let restored = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(saved.as_ref().is_some_and(|s| !s.items.is_empty()))));
+        let mut picked = use_state(|| saved.as_ref().map_or(start, |s| s.picked));
+        let mut filter = use_state(|| saved.as_ref().map(|s| s.filter.clone()).unwrap_or_default());
+        let mut items = use_state(|| saved.as_ref().map(|s| s.items.to_vec()).unwrap_or_default());
+        // Items received per request so far: the next page's `skip` for each.
+        let mut skips = use_state(|| saved.as_ref().map(|s| s.skips.clone()).unwrap_or_default());
+        let mut more = use_state(|| saved.as_ref().is_some_and(|s| s.more));
+        let mut loading = use_state(|| !restored.get());
+        use_hook({
+            let (mut controller, y) = (page.controller, saved.as_ref().map_or(0, |s| s.scroll_y));
+            move || controller.scroll_to_y(y)
+        });
+        // Kept up to date, so leaving at any moment is remembered. The titles are copied only when
+        // they change, the scroll position on its own as it moves.
         use_side_effect({
-            let route = (kind_name.clone(), start);
+            let route = route.clone();
             move || {
-                let now = (*picked.read(), filter.read().clone());
-                REMEMBERED.with(|r| r.borrow_mut().insert(route.clone(), now));
+                let (picked, filter, items, skips, more) = (*picked.read(), filter.read().clone(), Rc::new(items.read().clone()), skips.read().clone(), *more.read());
+                REMEMBERED.with(|r| {
+                    let mut r = r.borrow_mut();
+                    let scroll_y = r.get(&route).map_or(0, |s| s.scroll_y);
+                    r.insert(route.clone(), Remembered { picked, filter, items, skips, more, scroll_y });
+                });
             }
         });
-        let mut items = use_state(Vec::<MetaPreview>::new);
-        // Items received per request so far: the next page's `skip` for each.
-        let mut skips = use_state(Vec::<usize>::new);
-        let mut more = use_state(|| false);
-        let mut loading = use_state(|| true);
+        use_side_effect({
+            let (route, controller) = (route.clone(), page.controller);
+            move || {
+                let (_, y): (i32, i32) = controller.into();
+                REMEMBERED.with(|r| r.borrow_mut().entry(route.clone()).or_default().scroll_y = y);
+            }
+        });
         // Why the last page didn't load (shown instead of "Nothing in this catalog").
         let mut failed = use_state(|| None::<String>);
         // Bumped on every fresh load, so answers for an older filter are dropped.
@@ -188,6 +222,9 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     last_kind.set(k);
                     picked.set(0);
                     filter.set(Filter::default());
+                    return;
+                }
+                if restored.replace(false) {
                     return;
                 }
                 load(true);
