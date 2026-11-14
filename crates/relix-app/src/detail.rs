@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, Placeholder, busy};
-use crate::home::{backdrop, button, layer, play_button, title_art};
+use crate::home::{backdrop, button, button_owned, layer, play_button, title_art};
 use crate::library::{Progress, WatchState, is_finished, next_video, now, preview, record_playback};
 use crate::player::Ended;
 use crate::{Ctx, get, player};
@@ -67,6 +67,9 @@ impl Component for Detail {
         });
         let mut in_list = use_state(|| {
             store.get::<Option<MetaPreview>>(&profile, "library", &self.id).ok().flatten().flatten().is_some()
+        });
+        let mut refused = use_state(|| {
+            store.get::<Option<MetaPreview>>(&profile, "not_interested", &self.id).ok().flatten().flatten().is_some()
         });
 
         // Plays a stream of the chosen video, resuming where it stopped, and records where it stops.
@@ -247,6 +250,30 @@ impl Component for Detail {
                         ctx.sync_soon();
                     }
                     Err(e) => crate::log!("saving My List: {e}"),
+                }
+            }
+        };
+
+        // "Not interested": out of every TMDB suggestion, and titles like it rank lower in For You.
+        // Pressed again, it undoes that.
+        let toggle_refused = {
+            let ctx = ctx.clone();
+            move |()| {
+                let Some(m) = meta.peek().clone() else { return };
+                let refuse = !*refused.peek();
+                match ctx.store.put(&ctx.profile, "not_interested", &m.id, &refuse.then(|| preview(&m))) {
+                    Ok(()) => {
+                        refused.set(refuse);
+                        if refuse {
+                            // Gone from Home's suggestions now; For You reweighs on its next load.
+                            let mut rows = ctx.rows;
+                            for row in rows.write().iter_mut().filter(|r| r.id.starts_with("tmdb/")) {
+                                row.metas.retain(|x| x.id != m.id);
+                            }
+                        }
+                        ctx.sync_soon();
+                    }
+                    Err(e) => crate::log!("saving Not interested: {e}"),
                 }
             }
         };
@@ -435,7 +462,17 @@ impl Component for Detail {
                 episode: episode.as_ref().map(episode_label).unwrap_or_default(),
             }
         });
-        let on_together = party_title.is_some().then(|| EventHandler::new(move |()| together.set(true)));
+        let mut extra = vec![];
+        if party_title.is_some() {
+            extra.push(("Watch together".to_owned(), EventHandler::new(move |()| together.set(true))));
+        }
+        // TMDB knows titles by their IMDb ids.
+        if crate::tmdb::enabled() && meta.id.starts_with("tt") {
+            let route = crate::Route::Similar { kind: meta.r#type.clone(), id: meta.id.clone() };
+            extra.push(("More like this".to_owned(), EventHandler::new(move |()| drop(RouterContext::get().push(route.clone())))));
+            let label = if *refused.read() { "✓ Not interested" } else { "Not interested" };
+            extra.push((label.to_owned(), EventHandler::new(toggle_refused)));
+        }
 
         // A list in the panel scrolls by itself beside the info; on phones the whole page scrolls instead.
         let phone = phone();
@@ -524,7 +561,7 @@ impl Component for Detail {
                 fade.fill = !phone;
                 fade.key(format!("{showing_streams}-{current_season:?}-{picked:?}"))
             });
-        let info = info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play, on_together);
+        let info = info_column(&meta, narrow, *in_list.read(), toggle_list, play_label, on_play, extra);
         // Phones: one column that scrolls as a whole. Wider: info beside (or above) a panel that scrolls itself.
         let content: Element = if phone {
             page.wrap(
@@ -622,7 +659,8 @@ fn info_column(
     toggle_list: impl FnMut(()) + 'static,
     play_label: String,
     on_play: Box<dyn FnMut(())>,
-    on_together: Option<EventHandler<()>>,
+    // Buttons after My List and Trailer: Watch together, More like this, Not interested.
+    extra: Vec<(String, EventHandler<()>)>,
 ) -> Rect {
     let facts: Vec<String> = [meta.release_info.clone(), meta.runtime.clone()].into_iter().flatten().collect();
     let people = |title: &str, names: Vec<String>| {
@@ -692,7 +730,7 @@ fn info_column(
                 let url = format!("https://www.youtube.com/watch?v={}", t.yt_id);
                 wide(button("Trailer", theme().secondary, (255, 255, 255)), EventHandler::new(move |()| crate::addons::open_in_browser(&url)))
             });
-            let together = on_together.map(|h| wide(button("Watch together", theme().secondary, (255, 255, 255)), h));
+            let extra: Vec<Element> = extra.into_iter().map(|(text, h)| wide(button_owned(text, theme().secondary, (255, 255, 255)), h).into_element()).collect();
             let row = || rect().width(Size::fill()).horizontal().content(Content::Flex).spacing(12.);
             if phone {
                 rect()
@@ -701,9 +739,10 @@ fn info_column(
                     .padding(Gaps::new(8., 0., 0., 0.))
                     .child(row().child(play))
                     .child(row().child(list).maybe_child(trailer))
-                    .maybe_child(together.map(|t| row().child(t)))
+                    .children(extra.chunks(2).map(|pair| row().children(pair.to_vec()).into_element()).collect::<Vec<_>>())
             } else {
-                rect().horizontal().spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer).maybe_child(together)
+                // Wraps: with every button it's wider than the column.
+                rect().width(Size::fill()).horizontal().content(Content::wrap_spacing(12.)).spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer).children(extra)
             }
         })
 }

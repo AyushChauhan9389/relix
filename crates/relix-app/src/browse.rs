@@ -115,6 +115,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     // TMDB filters on its side: one request per page, numbered from 1.
                     let page = if reset { 1 } else { skips.peek().first().copied().unwrap_or(0) + 1 };
                     let (f, kind) = (filter.peek().clone(), kind.peek().clone());
+                    let hidden: HashSet<String> = crate::library::not_interested(&ctx.store, &ctx.profile).into_iter().map(|m| m.id).collect();
                     loading.set(true);
                     spawn_in_scope(async move {
                         let found = crate::tmdb::discover(&ctx.http, &kind, &f, page as u32).await;
@@ -126,7 +127,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                                 more.set(has_more);
                                 skips.set(vec![page]);
                                 let seen: HashSet<String> = items.peek().iter().map(|m| m.id.clone()).collect();
-                                items.write().extend(metas.into_iter().filter(|m| !seen.contains(&m.id)));
+                                items.write().extend(metas.into_iter().filter(|m| !seen.contains(&m.id) && !hidden.contains(&m.id)));
                             }
                             Err(e) => {
                                 crate::log!("browse: {e}");
@@ -449,4 +450,53 @@ fn chip_row(row: Scroller, chips: Vec<Element>) -> Element {
                 .child(rect().horizontal().padding(Gaps::new_all(4.)).spacing(8.).children(chips)),
         ))
         .into()
+}
+
+/// "More like this" for one title: TMDB's titles like it, ranked as For You ranks (tmdb::more_like).
+#[derive(PartialEq)]
+pub struct Similar {
+    pub kind: String,
+    pub id: String,
+}
+
+impl Component for Similar {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        let page = use_scroller();
+        use_page_scroller(page);
+        let mut items = use_state(Vec::<MetaPreview>::new);
+        let mut loading = use_state(|| true);
+        let mut failed = use_state(|| false);
+        use_hook({
+            let (ctx, seed) = (ctx.clone(), crate::tmdb::Seed { imdb: self.id.clone(), kind: self.kind.clone(), weight: 1 });
+            move || {
+                spawn(async move {
+                    let hidden: HashSet<String> = crate::library::not_interested(&ctx.store, &ctx.profile).into_iter().map(|m| m.id).collect();
+                    match crate::tmdb::more_like(&ctx.http, &seed).await {
+                        Ok(found) => items.set(found.into_iter().filter(|m| m.id != seed.imdb && !hidden.contains(&m.id)).collect()),
+                        Err(e) => {
+                            crate::log!("more like this: {e}");
+                            failed.set(true);
+                        }
+                    }
+                    loading.set(false);
+                });
+            }
+        });
+        let shown = items.read().clone();
+        let header = rect()
+            .width(Size::fill())
+            .padding(Gaps::new(crate::theme::top(), 0., 14., 0.))
+            .spacing(14.)
+            .child(Focusable::new(label().text("‹ Back").font_size(16.).color((225, 225, 225)), |()| freya::router::RouterContext::get().go_back()))
+            .child(label().text("More like this").font_size(32.).font_weight(FontWeight::BOLD))
+            .maybe(!*loading.read() && shown.is_empty(), |el| {
+                el.child(label().text(if *failed.read() { "Couldn't reach TMDB. Check your connection." } else { "TMDB has nothing like this one yet." }).color(theme().muted))
+            })
+            .into_element();
+        rect()
+            .expanded()
+            .padding(Gaps::new(0., crate::theme::side(), 0., crate::theme::side()))
+            .child(poster_grid(page, header, Rc::new(shown), Rc::default(), *loading.read(), None))
+    }
 }

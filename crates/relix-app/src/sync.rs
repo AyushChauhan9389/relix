@@ -193,7 +193,7 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
         let mut addons = ctx.addons;
         addons.set(ctx.store.get(&ctx.profile, "addons", "list").ok().flatten().unwrap_or_default());
         spawn(load_rows(ctx.clone()));
-    } else if admin_changed || changed.iter().any(|k| k == "settings") {
+    } else if admin_changed || changed.iter().any(|k| k == "settings" || k == "not_interested") {
         spawn(load_rows(ctx.clone()));
     } else if changed.iter().any(|k| ["progress", "library", "watched"].contains(&k.as_str())) {
         ctx.refresh_local_rows();

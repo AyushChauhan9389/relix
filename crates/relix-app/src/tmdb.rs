@@ -150,12 +150,14 @@ pub async fn trending(http: &reqwest::Client, kind: &str) -> Result<Vec<MetaPrev
 type ImdbIds = std::collections::BTreeMap<(&'static str, u64), Option<String>>;
 static IMDB: std::sync::Mutex<ImdbIds> = std::sync::Mutex::new(ImdbIds::new());
 
-/// A title the viewer watched or saved: what recommendations start from. `weight` is how much it
-/// says about their taste (a finished title counts double).
+/// A title the viewer watched, saved or turned down: what recommendations start from. `weight`
+/// is how much it says about their taste (a finished title counts double; "Not interested" is
+/// negative, pushing titles like it down).
+#[derive(Clone)]
 pub struct Seed {
     pub imdb: String,
     pub kind: String,
-    pub weight: u32,
+    pub weight: i32,
 }
 
 #[derive(Deserialize)]
@@ -177,37 +179,44 @@ async fn find(http: &reqwest::Client, imdb: &str, kind: &str) -> Option<Found> {
     if kind == "series" { r.tv_results } else { r.movie_results }.into_iter().next()
 }
 
-/// "Because you watched X": TMDB's recommendations for one title (from what its viewers also liked).
-pub async fn because(http: &reqwest::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
-    let found = find(http, &seed.imdb, &seed.kind).await.ok_or("not on TMDB")?;
+/// TMDB's lists for one seed: what its viewers also liked (weighted double) and what's similar.
+async fn lists_for(http: &reqwest::Client, seed: &Seed) -> Vec<(i32, Vec<Item>)> {
+    let Some(found) = find(http, &seed.imdb, &seed.kind).await else { return vec![] };
     let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
-    let page: Page = get(http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)).await?;
-    Ok(with_imdb_ids(http, &seed.kind, page.results).await)
+    let (recs, similar) = tokio::join!(
+        get::<Page>(http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)),
+        get::<Page>(http, format!("{API}/{tmdb_kind}/{}/similar", found.id)),
+    );
+    [(2, recs), (1, similar)].into_iter().filter_map(|(w, page)| page.ok().map(|p| (w * seed.weight, p.results))).collect()
+}
+
+/// "More like this" and "Because you watched X": titles like one title, ranked.
+pub async fn more_like(http: &reqwest::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
+    let lists = lists_for(http, seed).await;
+    if lists.is_empty() {
+        return Err("not on TMDB".into());
+    }
+    Ok(with_imdb_ids(http, &seed.kind, rank(lists)).await)
 }
 
 /// "For You": what viewers of several of the seeds (one type) also liked, ranked by how many
-/// seeds point to it, how high, and how much each seed says (item-based collaborative filtering:
-/// TMDB's recommendations do the learning).
+/// seeds point to it, how high, its rating, and how much each seed says (item-based
+/// collaborative filtering: TMDB's recommendations do the learning). Turned-down seeds subtract.
 pub async fn for_you(http: &reqwest::Client, kind: &str, seeds: &[Seed]) -> Result<Vec<MetaPreview>, String> {
     let mut set = JoinSet::new();
     for seed in seeds {
-        let (http, seed) = (http.clone(), Seed { imdb: seed.imdb.clone(), kind: seed.kind.clone(), weight: seed.weight });
-        set.spawn(async move {
-            let found = find(&http, &seed.imdb, &seed.kind).await?;
-            let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
-            let page: Page = get(&http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)).await.ok()?;
-            Some((seed.weight, page.results))
-        });
+        let (http, seed) = (http.clone(), seed.clone());
+        set.spawn(async move { lists_for(&http, &seed).await });
     }
     let mut lists = vec![];
-    while let Some(Ok(list)) = set.join_next().await {
-        lists.extend(list);
+    while let Some(Ok(more)) = set.join_next().await {
+        lists.extend(more);
     }
     Ok(with_imdb_ids(http, kind, rank(lists)).await)
 }
 
 /// The 20 titles the lists agree on most: each list adds its weight, more for a higher place.
-fn rank(lists: Vec<(u32, Vec<Item>)>) -> Vec<Item> {
+fn rank(lists: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
     let mut scores: std::collections::HashMap<u64, (f32, Item)> = Default::default();
     for (weight, items) in lists {
         for (place, item) in items.into_iter().enumerate() {
@@ -219,6 +228,7 @@ fn rank(lists: Vec<(u32, Vec<Item>)>) -> Vec<Item> {
         }
     }
     let mut ranked: Vec<(f32, Item)> = scores.into_values().collect();
+    ranked.retain(|(score, _)| *score > 0.);
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
     ranked.into_iter().take(20).map(|(_, item)| item).collect()
 }
@@ -280,6 +290,8 @@ mod tests {
         // A top-rated title low on a list beats a poorly rated one at the top.
         let rated = |id, v| Item { vote_average: Some(v), ..item(id) };
         assert_eq!(rank(vec![(1, vec![rated(5, 5.5), rated(6, 8.4)])])[0].id, 6);
+        // "Not interested" pushes what it points to out.
+        assert_eq!(rank(vec![(1, vec![item(8), item(9)]), (-2, vec![item(8)])]).iter().map(|i| i.id).collect::<Vec<_>>(), [9]);
     }
 
     #[test]
@@ -296,7 +308,3 @@ mod tests {
         assert!(any.contains("/discover/tv?") && any.contains("with_genres=35|80") && any.contains("sort_by=name.asc"), "{any}");
     }
 }
-
-
-
-

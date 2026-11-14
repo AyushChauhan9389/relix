@@ -135,7 +135,7 @@ pub fn active_link(route: &Route) -> Option<NavLink> {
         Route::Settings => Some(NavLink::Settings),
         Route::Account => Some(NavLink::Account),
         Route::Friends => Some(NavLink::Friends),
-        Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } => None,
+        Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } | Route::Similar { .. } => None,
     }
 }
 

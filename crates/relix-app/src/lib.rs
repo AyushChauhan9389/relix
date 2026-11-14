@@ -40,7 +40,7 @@ use tokio::task::JoinSet;
 
 use account::Account;
 use addons::Addons;
-use browse::{Browse, BrowseCatalog};
+use browse::{Browse, BrowseCatalog, Similar};
 use detail::Detail;
 use together::Friends;
 use focus::{Dir, Registry};
@@ -694,31 +694,32 @@ pub async fn load_rows(mut ctx: Ctx) {
     // Recommendations from what this profile watched, then TMDB's trending titles, then every
     // addon's home catalogs. Titles already watched or saved are left out of recommendations.
     if tmdb::enabled() {
-        let (seeds, seen) = library::taste_seeds(&ctx.store, &ctx.profile);
-        let seen = std::sync::Arc::new(seen);
-        let unseen = |seen: &std::collections::HashSet<String>, metas: Vec<MetaPreview>| metas.into_iter().filter(|m| !seen.contains(&m.id)).collect::<Vec<_>>();
+        let taste = library::taste(&ctx.store, &ctx.profile);
+        let (seen, hidden) = (std::sync::Arc::new(taste.seen), std::sync::Arc::new(taste.hidden));
+        let keep = |out: &std::collections::HashSet<String>, metas: Vec<MetaPreview>| metas.into_iter().filter(|m| !out.contains(&m.id)).collect::<Vec<_>>();
         for (kind, title) in [("movie", "For You · Movies"), ("series", "For You · Series")] {
             // shortcut: the 8 most recent titles of a type make the taste; weigh older ones in if it feels narrow.
-            let picked: Vec<tmdb::Seed> = seeds.iter().filter(|(s, _)| s.kind == kind).take(8).map(|(s, _)| tmdb::Seed { imdb: s.imdb.clone(), kind: s.kind.clone(), weight: s.weight }).collect();
-            if picked.len() < 2 {
+            let liked: Vec<tmdb::Seed> = taste.seeds.iter().filter(|(s, _)| s.kind == kind).take(8).map(|(s, _)| s.clone()).collect();
+            if liked.len() < 2 {
                 continue;
             }
+            let picked: Vec<tmdb::Seed> = liked.into_iter().chain(taste.avoid.iter().filter(|s| s.kind == kind).cloned()).collect();
             let id = format!("tmdb/for-you/{kind}");
             rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
             let (http, seen) = (ctx.http.clone(), seen.clone());
-            set.spawn(async move { (id, tmdb::for_you(&http, kind, &picked).await.map(|m| unseen(&seen, m))) });
+            set.spawn(async move { (id, tmdb::for_you(&http, kind, &picked).await.map(|m| keep(&seen, m))) });
         }
-        for (seed, name) in seeds.into_iter().take(2) {
+        for (seed, name) in taste.seeds.into_iter().take(2) {
             let id = format!("tmdb/because/{}", seed.imdb);
             rows.push(Row { id: id.clone(), title: format!("Because you watched {name}"), metas: vec![], progress: vec![], loading: true, next: None });
             let (http, seen) = (ctx.http.clone(), seen.clone());
-            set.spawn(async move { (id, tmdb::because(&http, &seed).await.map(|m| unseen(&seen, m))) });
+            set.spawn(async move { (id, tmdb::more_like(&http, &seed).await.map(|m| keep(&seen, m))) });
         }
         for (kind, title) in [("movie", "Trending Movies"), ("series", "Trending Series")] {
             let id = format!("tmdb/trending/{kind}");
             rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
-            let http = ctx.http.clone();
-            set.spawn(async move { (id, tmdb::trending(&http, kind).await) });
+            let (http, hidden) = (ctx.http.clone(), hidden.clone());
+            set.spawn(async move { (id, tmdb::trending(&http, kind).await.map(|m| keep(&hidden, m))) });
         }
     }
     for addon in &addons {
@@ -794,6 +795,8 @@ mod routes {
             Settings,
             #[route("/friends")]
             Friends,
+            #[route("/similar/:kind/:id")]
+            Similar { kind: String, id: String },
     }
 }
 

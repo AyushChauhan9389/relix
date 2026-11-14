@@ -125,23 +125,45 @@ pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
     rows
 }
 
-/// What recommendations start from: titles the viewer got into (finished, or a quarter in),
-/// most recent first, then My List; and every id they've seen or saved, to leave out.
-pub fn taste_seeds(store: &Store, profile: &str) -> (Vec<(crate::tmdb::Seed, String)>, std::collections::HashSet<String>) {
+/// What recommendations start from (see [`taste`]).
+pub struct Taste {
+    /// Titles the viewer got into (finished, or a quarter in), most recent first, then My List;
+    /// with their names for "Because you watched".
+    pub seeds: Vec<(crate::tmdb::Seed, String)>,
+    /// "Not interested" titles: they count against titles like them.
+    pub avoid: Vec<crate::tmdb::Seed>,
+    /// Every title watched or saved: left out of recommendations.
+    pub seen: std::collections::HashSet<String>,
+    /// "Not interested" titles: left out everywhere TMDB suggests.
+    pub hidden: std::collections::HashSet<String>,
+}
+
+/// The "Not interested" titles (removal writes `null`, so it can sync).
+pub fn not_interested(store: &Store, profile: &str) -> Vec<MetaPreview> {
+    store.list::<Option<MetaPreview>>(profile, "not_interested").unwrap_or_default().into_iter().filter_map(|(_, m)| m).collect()
+}
+
+pub fn taste(store: &Store, profile: &str) -> Taste {
     let mut states: Vec<WatchState> = store.list::<Option<WatchState>>(profile, "progress").unwrap_or_default().into_iter().filter_map(|(_, s)| s).collect();
     states.sort_by_key(|s| std::cmp::Reverse(s.updated));
     let list: Vec<MetaPreview> = store.list::<Option<MetaPreview>>(profile, "library").unwrap_or_default().into_iter().filter_map(|(_, m)| m).collect();
-    let seen = states.iter().map(|s| s.title.id.clone()).chain(list.iter().map(|m| m.id.clone())).collect();
-    let seed = |m: &MetaPreview, weight| (crate::tmdb::Seed { imdb: m.id.clone(), kind: m.r#type.clone(), weight }, m.name.clone());
+    let refused = not_interested(store, profile);
+    let seed = |m: &MetaPreview, weight| crate::tmdb::Seed { imdb: m.id.clone(), kind: m.r#type.clone(), weight };
     let mut seeds: Vec<_> = states
         .iter()
         .filter(|s| s.finished() || s.up_next || s.fraction() >= 0.25)
-        .map(|s| seed(&s.title, if s.finished() || s.up_next { 2 } else { 1 }))
+        .map(|s| (seed(&s.title, if s.finished() || s.up_next { 2 } else { 1 }), s.title.name.clone()))
         .collect();
-    seeds.extend(list.iter().filter(|m| !seeds.iter().any(|(s, _)| s.imdb == m.id)).map(|m| seed(m, 1)).collect::<Vec<_>>());
-    // Only IMDb ids are on TMDB (addons may use their own).
-    seeds.retain(|(s, _)| s.imdb.starts_with("tt"));
-    (seeds, seen)
+    seeds.extend(list.iter().filter(|m| !seeds.iter().any(|(s, _)| s.imdb == m.id)).map(|m| (seed(m, 1), m.name.clone())).collect::<Vec<_>>());
+    let hidden: std::collections::HashSet<String> = refused.iter().map(|m| m.id.clone()).collect();
+    // Only IMDb ids are on TMDB (addons may use their own); a title turned down isn't a seed.
+    seeds.retain(|(s, _)| s.imdb.starts_with("tt") && !hidden.contains(&s.imdb));
+    Taste {
+        seeds,
+        avoid: refused.iter().filter(|m| m.id.starts_with("tt")).map(|m| seed(m, -2)).collect(),
+        seen: states.iter().map(|s| s.title.id.clone()).chain(list.iter().map(|m| m.id.clone())).chain(hidden.iter().cloned()).collect(),
+        hidden,
+    }
 }
 
 /// Looks up the series in Continue Watching (one details request each, at most 30) and marks the
