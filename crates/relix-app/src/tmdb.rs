@@ -122,7 +122,11 @@ struct ExternalIds {
     imdb_id: Option<String>,
 }
 
+/// TMDB allows about 40 requests a second; Home asks for ~150 at once (a page is ~21).
+static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
 async fn get<T: serde::de::DeserializeOwned>(http: &reqwest::Client, url: String) -> Result<T, String> {
+    let _slot = SLOTS.acquire().await.map_err(|e| e.to_string())?;
     let res = http.get(url).bearer_auth(TOKEN.unwrap_or_default()).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.without_url().to_string())?;
     res.error_for_status().map_err(|e| format!("TMDB: {}", e.without_url()))?.json().await.map_err(|e| e.without_url().to_string())
 }
@@ -142,17 +146,102 @@ pub async fn trending(http: &reqwest::Client, kind: &str) -> Result<Vec<MetaPrev
     Ok(with_imdb_ids(http, kind, found.results).await)
 }
 
+/// IMDb ids by (TMDB type, TMDB id); `None` for titles without one.
+type ImdbIds = std::collections::BTreeMap<(&'static str, u64), Option<String>>;
+static IMDB: std::sync::Mutex<ImdbIds> = std::sync::Mutex::new(ImdbIds::new());
+
+/// A title the viewer watched or saved: what recommendations start from. `weight` is how much it
+/// says about their taste (a finished title counts double).
+pub struct Seed {
+    pub imdb: String,
+    pub kind: String,
+    pub weight: u32,
+}
+
+#[derive(Deserialize)]
+struct Found {
+    id: u64,
+}
+
+#[derive(Deserialize)]
+struct FindResults {
+    #[serde(default)]
+    movie_results: Vec<Found>,
+    #[serde(default)]
+    tv_results: Vec<Found>,
+}
+
+/// TMDB's entry for an IMDb id.
+async fn find(http: &reqwest::Client, imdb: &str, kind: &str) -> Option<Found> {
+    let r: FindResults = get(http, format!("{API}/find/{imdb}?external_source=imdb_id")).await.ok()?;
+    if kind == "series" { r.tv_results } else { r.movie_results }.into_iter().next()
+}
+
+/// "Because you watched X": TMDB's recommendations for one title (from what its viewers also liked).
+pub async fn because(http: &reqwest::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
+    let found = find(http, &seed.imdb, &seed.kind).await.ok_or("not on TMDB")?;
+    let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
+    let page: Page = get(http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)).await?;
+    Ok(with_imdb_ids(http, &seed.kind, page.results).await)
+}
+
+/// "For You": what viewers of several of the seeds (one type) also liked, ranked by how many
+/// seeds point to it, how high, and how much each seed says (item-based collaborative filtering:
+/// TMDB's recommendations do the learning).
+pub async fn for_you(http: &reqwest::Client, kind: &str, seeds: &[Seed]) -> Result<Vec<MetaPreview>, String> {
+    let mut set = JoinSet::new();
+    for seed in seeds {
+        let (http, seed) = (http.clone(), Seed { imdb: seed.imdb.clone(), kind: seed.kind.clone(), weight: seed.weight });
+        set.spawn(async move {
+            let found = find(&http, &seed.imdb, &seed.kind).await?;
+            let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
+            let page: Page = get(&http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)).await.ok()?;
+            Some((seed.weight, page.results))
+        });
+    }
+    let mut lists = vec![];
+    while let Some(Ok(list)) = set.join_next().await {
+        lists.extend(list);
+    }
+    Ok(with_imdb_ids(http, kind, rank(lists)).await)
+}
+
+/// The 20 titles the lists agree on most: each list adds its weight, more for a higher place.
+fn rank(lists: Vec<(u32, Vec<Item>)>) -> Vec<Item> {
+    let mut scores: std::collections::HashMap<u64, (f32, Item)> = Default::default();
+    for (weight, items) in lists {
+        for (place, item) in items.into_iter().enumerate() {
+            // TMDB's lists include weak films (Inception's starts with ones rated under 6): a
+            // well-rated title counts several times a mediocre one.
+            let quality = (item.vote_average.unwrap_or(5.) as f32 - 5.).clamp(0.3, 4.);
+            let points = weight as f32 * (1. - place as f32 / 25.) * quality;
+            scores.entry(item.id).or_insert((0., item)).0 += points;
+        }
+    }
+    let mut ranked: Vec<(f32, Item)> = scores.into_values().collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    ranked.into_iter().take(20).map(|(_, item)| item).collect()
+}
+
 async fn with_imdb_ids(http: &reqwest::Client, kind: &str, results: Vec<Item>) -> Vec<MetaPreview> {
     let tmdb_kind = if kind == "series" { "tv" } else { "movie" };
     // TMDB's ids aren't IMDb's: one lookup per title, all at once.
     let mut set = JoinSet::new();
-    for (n, item) in results.iter().enumerate() {
-        let (http, url) = (http.clone(), format!("{API}/{tmdb_kind}/{}/external_ids", item.id));
-        set.spawn(async move { (n, get::<ExternalIds>(&http, url).await.ok().and_then(|e| e.imdb_id).filter(|id| id.starts_with("tt"))) });
-    }
     let mut imdb = vec![None; results.len()];
-    while let Some(Ok((n, id))) = set.join_next().await {
-        imdb[n] = id;
+    for (n, item) in results.iter().enumerate() {
+        // Ids never change: each is looked up once per run.
+        if let Some(known) = IMDB.lock().unwrap().get(&(tmdb_kind, item.id)) {
+            imdb[n] = known.clone();
+            continue;
+        }
+        let (http, url, id) = (http.clone(), format!("{API}/{tmdb_kind}/{}/external_ids", item.id), item.id);
+        set.spawn(async move { (n, id, get::<ExternalIds>(&http, url).await.map(|e| e.imdb_id.filter(|id| id.starts_with("tt")))) });
+    }
+    while let Some(Ok((n, id, found))) = set.join_next().await {
+        if let Ok(found) = found {
+            IMDB.lock().unwrap().insert((tmdb_kind, id), found.clone());
+            imdb[n] = found;
+        }
     }
     let image = |size: &str, path: &Option<String>| path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/{size}{p}"));
     results
@@ -180,6 +269,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn titles_several_seeds_recommend_rank_first() {
+        let item = |id: u64| Item { id, title: id.to_string(), overview: None, poster_path: None, backdrop_path: None, release_date: None, genre_ids: vec![], vote_average: Some(7.) };
+        // 7 is second on two lists; 1 tops just one.
+        let lists = vec![(1, vec![item(1), item(7)]), (1, vec![item(2), item(7)])];
+        assert_eq!(rank(lists).iter().map(|i| i.id).collect::<Vec<_>>(), [7, 1, 2]);
+        // A finished seed (weight 2) outweighs a half-watched one.
+        let lists = vec![(2, vec![item(3)]), (1, vec![item(4)])];
+        assert_eq!(rank(lists)[0].id, 3);
+        // A top-rated title low on a list beats a poorly rated one at the top.
+        let rated = |id, v| Item { vote_average: Some(v), ..item(id) };
+        assert_eq!(rank(vec![(1, vec![rated(5, 5.5), rated(6, 8.4)])])[0].id, 6);
+    }
+
+    #[test]
     fn filters_become_one_discover_query() {
         let f = Filter { genres: vec!["Comedy".into(), "Drama".into()], years: Some((2009, 2010)), min_rating: Some(7.), ..Filter::default() };
         let url = discover_url("movie", &f, 2);
@@ -193,5 +296,7 @@ mod tests {
         assert!(any.contains("/discover/tv?") && any.contains("with_genres=35|80") && any.contains("sort_by=name.asc"), "{any}");
     }
 }
+
+
 
 

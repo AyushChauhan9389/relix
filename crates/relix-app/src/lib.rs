@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use freya::prelude::*;
 use freya::router::*;
-use relix_proto::addon::{Addon, CatalogResponse, Manifest, ResourceRequest, manifest_url, with_admin_addons};
+use relix_proto::addon::{Addon, CatalogResponse, Manifest, MetaPreview, ResourceRequest, manifest_url, with_admin_addons};
 use tokio::task::JoinSet;
 
 use account::Account;
@@ -691,8 +691,29 @@ pub async fn load_rows(mut ctx: Ctx) {
     let addons = ctx.all_addons();
     let mut rows = library::local_rows(&ctx.store, &ctx.profile);
     let mut set = JoinSet::new();
-    // TMDB's trending titles lead, then every addon's home catalogs.
+    // Recommendations from what this profile watched, then TMDB's trending titles, then every
+    // addon's home catalogs. Titles already watched or saved are left out of recommendations.
     if tmdb::enabled() {
+        let (seeds, seen) = library::taste_seeds(&ctx.store, &ctx.profile);
+        let seen = std::sync::Arc::new(seen);
+        let unseen = |seen: &std::collections::HashSet<String>, metas: Vec<MetaPreview>| metas.into_iter().filter(|m| !seen.contains(&m.id)).collect::<Vec<_>>();
+        for (kind, title) in [("movie", "For You · Movies"), ("series", "For You · Series")] {
+            // shortcut: the 8 most recent titles of a type make the taste; weigh older ones in if it feels narrow.
+            let picked: Vec<tmdb::Seed> = seeds.iter().filter(|(s, _)| s.kind == kind).take(8).map(|(s, _)| tmdb::Seed { imdb: s.imdb.clone(), kind: s.kind.clone(), weight: s.weight }).collect();
+            if picked.len() < 2 {
+                continue;
+            }
+            let id = format!("tmdb/for-you/{kind}");
+            rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
+            let (http, seen) = (ctx.http.clone(), seen.clone());
+            set.spawn(async move { (id, tmdb::for_you(&http, kind, &picked).await.map(|m| unseen(&seen, m))) });
+        }
+        for (seed, name) in seeds.into_iter().take(2) {
+            let id = format!("tmdb/because/{}", seed.imdb);
+            rows.push(Row { id: id.clone(), title: format!("Because you watched {name}"), metas: vec![], progress: vec![], loading: true, next: None });
+            let (http, seen) = (ctx.http.clone(), seen.clone());
+            set.spawn(async move { (id, tmdb::because(&http, &seed).await.map(|m| unseen(&seen, m))) });
+        }
         for (kind, title) in [("movie", "Trending Movies"), ("series", "Trending Series")] {
             let id = format!("tmdb/trending/{kind}");
             rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
