@@ -739,6 +739,15 @@ pub async fn load_rows(mut ctx: Ctx) {
             set.spawn(async move { (id, get::<CatalogResponse>(http, url).await.map(|r| r.metas).map_err(|e| e.to_string())) });
         }
     }
+    // Home shows what each row had last time at once; fresh answers replace it as they arrive.
+    let cached: std::collections::HashMap<String, Vec<MetaPreview>> =
+        ctx.store.meta(HOME_CACHE).ok().flatten().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    for row in rows.iter_mut().filter(|r| r.loading) {
+        if let Some(metas) = cached.get(&row.id).filter(|m| !m.is_empty()) {
+            row.metas = metas.clone();
+            row.loading = false;
+        }
+    }
     ctx.rows.set(rows);
     while let Some(joined) = set.join_next().await {
         if !current() {
@@ -753,16 +762,31 @@ pub async fn load_rows(mut ctx: Ctx) {
                 rows[i].metas = metas;
                 rows[i].loading = false;
             }
-            // Failed or empty: the row goes rather than sit blank.
-            Ok(_) => drop(ctx.rows.write().remove(i)),
-            Err(e) => {
-                crate::log!("catalog {id}: {e}");
-                ctx.rows.write().remove(i);
+            // Failed or empty: last time's titles stay; a row with none goes rather than sit blank.
+            res => {
+                if let Err(e) = res {
+                    crate::log!("catalog {id}: {e}");
+                }
+                let mut rows = ctx.rows.write();
+                if rows[i].metas.is_empty() {
+                    rows.remove(i);
+                } else {
+                    rows[i].loading = false;
+                }
             }
         }
     }
     ctx.rows_loading.set(false);
+    let rows = ctx.rows.peek();
+    let keep: std::collections::HashMap<&str, &Vec<MetaPreview>> =
+        rows.iter().filter(|r| !r.id.starts_with("local/") && !r.metas.is_empty()).map(|r| (r.id.as_str(), &r.metas)).collect();
+    if let Err(e) = serde_json::to_string(&keep).map_err(|e| e.to_string()).and_then(|j| ctx.store.set_meta(HOME_CACHE, Some(&j)).map_err(|e| e.to_string())) {
+        crate::log!("saving Home: {e}");
+    }
 }
+
+/// Where Home's last rows are kept (the store's meta table), for showing them at once next start.
+const HOME_CACHE: &str = "home_rows";
 
 // Rust 1.100 flags unreachable code inside Freya's `Routable` derive, not code of ours; the allow
 // has to sit on a module, since the derive's impls are siblings of the enum.
