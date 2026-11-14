@@ -39,17 +39,33 @@ impl Component for BrowseCatalog {
     }
 }
 
+thread_local! {
+    /// The catalog and filters each Browse screen had, so coming back from a title keeps them
+    /// (opening a title unmounts the screen). Keyed by the route's (type, catalog).
+    static REMEMBERED: std::cell::RefCell<std::collections::HashMap<(String, usize), (usize, Filter)>> = Default::default();
+}
+
 fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
     {
         let ctx = use_consume::<Ctx>();
+        // Pages load as tasks of this screen: the footer that asks for one is gone by the time it lands.
+        let scope = use_hook(current_scope_id);
         let page = use_scroller();
         let (catalog_row, genre_row) = (use_scroller(), use_scroller());
         use_page_scroller(page);
         // Movies <-> Series reuses this component with a new `kind`.
         let kind = use_reactive(kind_name);
         let mut last_kind = use_state(|| kind_name.clone());
-        let mut picked = use_state(|| start);
-        let mut filter = use_state(Filter::default);
+        let remembered = REMEMBERED.with(|r| r.borrow().get(&(kind_name.clone(), start)).cloned());
+        let mut picked = use_state(|| remembered.as_ref().map_or(start, |r| r.0));
+        let mut filter = use_state(|| remembered.map(|r| r.1).unwrap_or_default());
+        use_side_effect({
+            let route = (kind_name.clone(), start);
+            move || {
+                let now = (*picked.read(), filter.read().clone());
+                REMEMBERED.with(|r| r.borrow_mut().insert(route.clone(), now));
+            }
+        });
         let mut items = use_state(Vec::<MetaPreview>::new);
         // Items received per request so far: the next page's `skip` for each.
         let mut skips = use_state(Vec::<usize>::new);
@@ -87,7 +103,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                 let page_skips: Vec<usize> = if reset { vec![0; genres.len()] } else { skips.peek().clone() };
                 let addons = ctx.all_addons();
                 loading.set(true);
-                spawn(async move {
+                spawn_in_scope(async move {
                     let mut set = JoinSet::new();
                     for (n, g) in genres.iter().enumerate() {
                         let url = c.discover_request(g.as_deref(), page_skips[n]).url(&addons[i]);
@@ -111,7 +127,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     let fresh: Vec<MetaPreview> = pages.into_iter().flatten().filter(|m| seen.insert(m.id.clone())).collect();
                     items.write().extend(fresh);
                     loading.set(false);
-                });
+                }, scope);
             }
         };
 
@@ -178,7 +194,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     .maybe(!first_load && shown.is_empty() && !*loading.read() && !list.is_empty(), |el| {
                         el.child(
                             label()
-                                .text(if loaded.is_empty() { "Nothing in this catalog." } else { "No titles match these filters. Load more or loosen them." })
+                                .text(if loaded.is_empty() { "Nothing in this catalog." } else { "No titles match these filters yet. Loosen them, or wait while more load." })
                                 .color(theme().muted),
                         )
                     })
@@ -251,9 +267,13 @@ fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, cur
     let (from, to) = f.years.or(bounds).unwrap_or_default();
     let year_select = |value: u32, set: fn(&mut Filter, u32, Option<(u32, u32)>)| {
         let years = years.clone();
-        Select::new().selected_item(value.to_string()).children(years.into_iter().map(move |y| {
+        // Freya's menu has no height limit: a century of years ran off screen and the wheel
+        // scrolled the page instead. The list scrolls inside its own box.
+        let n = years.len() as f32;
+        let items: Vec<Element> = years.into_iter().map(move |y| {
             MenuItem::new().selected(y == value).on_press(move |_| set(&mut filter.write(), y, bounds)).child(y.to_string()).into_element()
-        }))
+        }).collect();
+        Select::new().selected_item(value.to_string()).children([ScrollView::new().width(Size::px(110.)).height(Size::px((n * 36.).min(320.))).children(items).into_element()])
     };
     let ratings = [(None, "Any"), (Some(6.), "6+"), (Some(7.), "7+"), (Some(8.), "8+")];
 

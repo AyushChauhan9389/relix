@@ -493,6 +493,8 @@ impl Component for PosterRow {
         // Later pages, fetched as the row nears its end: (row id, items, no more pages).
         let mut paged = use_state(|| (String::new(), Vec::<MetaPreview>::new(), false));
         let busy = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(false)));
+        // The row's task, not the poster's that asked: posters come and go as the row scrolls.
+        let scope = use_hook(current_scope_id);
         let mut metas = self.row.metas.clone();
         let (more, done) = {
             let p = paged.read();
@@ -508,7 +510,7 @@ impl Component for PosterRow {
                 }
                 busy.set(true);
                 let (id, http, busy, base) = (id.clone(), http.clone(), busy.clone(), base.clone());
-                spawn(async move {
+                spawn_in_scope(async move {
                     let url = req.extra("skip", &received.to_string()).url(&addon);
                     let page = crate::get::<CatalogResponse>(http, url).await.map(|r| r.metas).unwrap_or_default();
                     // Addons that ignore `skip` repeat page one: no new ids means the end.
@@ -520,7 +522,7 @@ impl Component for PosterRow {
                     p.2 = fresh.is_empty();
                     p.1.extend(fresh);
                     busy.set(false);
-                });
+                }, scope);
             }
         });
         let progress = self.row.progress.clone();
@@ -660,6 +662,20 @@ pub struct GridFooter {
     pub load_more: EventHandler<()>,
 }
 
+/// Infinite scroll: the grid only builds the rows on screen, so this mounting means its end came
+/// into view; it asks for the next page.
+#[derive(PartialEq)]
+struct LoadMore(EventHandler<()>);
+
+impl Component for LoadMore {
+    fn render(&self) -> impl IntoElement {
+        let load = self.0.clone();
+        // From a task, not mid-render: loading writes the grid's state.
+        use_hook(move || spawn(async move { load.call(()) }));
+        rect().height(Size::px(1.))
+    }
+}
+
 /// A grid's header, always re-rendered with its screen (it holds filters and other live state).
 struct GridHeader(Element);
 
@@ -711,10 +727,8 @@ pub fn poster_grid(
                     return rect()
                         .padding(Gaps::new(8., 0., 32., 0.))
                         .maybe(footer.is_some_and(|f| f.loading), |el| el.child(crate::motion::busy("Loading more…")))
-                        .maybe_child(footer.filter(|f| f.more && !f.loading).map(|f| {
-                            let load = f.load_more.clone();
-                            Focusable::new(button("Load more", theme().raised, (255, 255, 255)), move |()| load.call(()))
-                        }))
+                        // Keyed by the count: a page that still leaves the end on screen asks again.
+                        .maybe_child(footer.filter(|f| f.more && !f.loading).map(|f| rect().key(metas.len()).child(LoadMore(f.load_more.clone()))))
                         .into();
                 }
                 let cells: Vec<Element> = if *placeholders {
