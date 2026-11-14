@@ -358,6 +358,15 @@ pub fn use_page_scroller(scroller: Scroller) {
         move || *registry.page.borrow_mut() = Some(scroller)
     });
     use_drop(move || *registry.page.borrow_mut() = None);
+    // Pages scroll up and down only: Freya also scrolls a view sideways when its content is a
+    // little wider than the window, and a touchpad swipe then slid the whole page left.
+    use_side_effect(move || {
+        let mut c = scroller.controller;
+        let (x, _): (i32, i32) = c.into();
+        if x != 0 {
+            c.scroll_to_x(0);
+        }
+    });
 }
 
 /// Something arrow keys can move to and Enter can press, with a focus ring.

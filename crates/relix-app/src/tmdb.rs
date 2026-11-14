@@ -72,6 +72,10 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
         Sort::Newest => 100,
         Sort::Catalog => if f.min_rating.is_some() { 100 } else { 0 },
     };
+    // Narrowed to a country, genres or years, few titles have that many votes (Indian
+    // comedy-horror with Newest kept 1 of 19): a tenth still keeps out one-vote and unreleased ones.
+    let narrowed = f.country.is_some() || !f.genres.is_empty() || f.years.is_some();
+    let floor = if narrowed { floor / 10 } else { floor };
     if let Some(min) = f.min_rating {
         q.push(format!("vote_average.gte={min}"));
     }
@@ -301,7 +305,10 @@ mod tests {
         assert!(url.starts_with("https://api.tmdb.org/3/discover/movie?page=2&"), "{url}");
         assert!(discover_url("movie", &Filter { country: Some("IN"), ..Filter::default() }, 1).contains("with_origin_country=IN"));
         assert!(discover_url("series", &Filter { hide_animation: true, ..Filter::default() }, 1).contains("without_genres=16"));
-        for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=100", "sort_by=popularity.desc"] {
+        // Narrowed, the vote minimum drops so smaller countries and genres still fill the grid.
+        assert!(discover_url("movie", &Filter { sort: Sort::Newest, ..Filter::default() }, 1).contains("vote_count.gte=100"));
+        assert!(discover_url("movie", &Filter { sort: Sort::Newest, country: Some("IN"), ..Filter::default() }, 1).contains("vote_count.gte=10&"));
+        for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=10&", "sort_by=popularity.desc"] {
             assert!(url.contains(part), "{part} in {url}");
         }
         let any = discover_url("series", &Filter { genres: vec!["Comedy".into(), "Crime".into()], match_any: true, sort: Sort::Name, ..Filter::default() }, 1);
