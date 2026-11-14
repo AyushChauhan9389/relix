@@ -16,6 +16,8 @@ env:
   # Google sign-in for deleting a party's Drive file (drive.rs); the feature hides until both are set.
   RELIX_GOOGLE_CLIENT_ID: ${{ secrets.RELIX_GOOGLE_CLIENT_ID }}
   RELIX_GOOGLE_CLIENT_SECRET: ${{ secrets.RELIX_GOOGLE_CLIENT_SECRET }}
+  # TMDB, the main Movies/Series catalog (tmdb.rs); without it Browse shows addon catalogs only.
+  RELIX_TMDB_TOKEN: ${{ secrets.RELIX_TMDB_TOKEN }}
 
 jobs:
   check:

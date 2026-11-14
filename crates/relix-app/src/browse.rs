@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use freya::prelude::*;
-use relix_proto::addon::{Catalog, CatalogResponse, MetaPreview, discover_catalogs};
+use relix_proto::addon::{Catalog, CatalogResponse, ExtraProp, MetaPreview, discover_catalogs};
 use tokio::task::JoinSet;
 
 use crate::filter::{Filter, Sort, apply, year_bounds};
@@ -29,13 +29,14 @@ impl Component for Browse {
 #[derive(PartialEq)]
 pub struct BrowseCatalog {
     pub kind: String,
-    /// Its index among `discover_catalogs` for `kind`.
+    /// Its index among `discover_catalogs` for `kind` (not counting TMDB).
     pub catalog: usize,
 }
 
 impl Component for BrowseCatalog {
     fn render(&self) -> impl IntoElement {
-        browse(&self.kind, self.catalog)
+        // TMDB, when this build has it, is the first chip.
+        browse(&self.kind, self.catalog + usize::from(crate::tmdb::enabled()))
     }
 }
 
@@ -79,9 +80,17 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
             move || ctx.store.list::<bool>(&ctx.profile, "watched").unwrap_or_default().into_iter().map(|(k, _)| k).collect()
         });
 
-        let catalogs = move |ctx: &Ctx| -> Vec<(usize, Catalog)> {
+        // The chips: TMDB first (no addon index; its catalog only lists its genres), then every
+        // addon catalog of this type.
+        let catalogs = move |ctx: &Ctx| -> Vec<(Option<usize>, Catalog)> {
             let addons = ctx.all_addons();
-            discover_catalogs(&addons, &kind.read()).map(|(i, c)| (i, c.clone())).collect()
+            let kind = kind.read().clone();
+            let tmdb = crate::tmdb::enabled().then(|| {
+                let genres = crate::tmdb::genres(&kind).iter().map(|(_, n)| (*n).to_owned()).collect();
+                let genre = ExtraProp { name: "genre".into(), is_required: false, options: genres };
+                (None, Catalog { r#type: kind.clone(), id: "tmdb".into(), name: Some("All titles · TMDB".into()), extra: vec![genre], extra_required: vec![], extra_supported: vec![] })
+            });
+            tmdb.into_iter().chain(discover_catalogs(&addons, &kind).map(|(i, c)| (Some(i), c.clone()))).collect()
         };
 
         // Fetches the next page for every genre request; a fresh load (`reset`) replaces the grid.
@@ -99,6 +108,32 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     items.set(vec![]);
                 }
                 let gen_now = *generation.peek();
+                let Some(i) = i else {
+                    // TMDB filters on its side: one request per page, numbered from 1.
+                    let page = if reset { 1 } else { skips.peek().first().copied().unwrap_or(0) + 1 };
+                    let (f, kind) = (filter.peek().clone(), kind.peek().clone());
+                    loading.set(true);
+                    spawn_in_scope(async move {
+                        let found = crate::tmdb::discover(&ctx.http, &kind, &f, page as u32).await;
+                        if *generation.peek() != gen_now {
+                            return;
+                        }
+                        match found {
+                            Ok((metas, has_more)) => {
+                                more.set(has_more);
+                                skips.set(vec![page]);
+                                let seen: HashSet<String> = items.peek().iter().map(|m| m.id.clone()).collect();
+                                items.write().extend(metas.into_iter().filter(|m| !seen.contains(&m.id)));
+                            }
+                            Err(e) => {
+                                crate::log!("browse: {e}");
+                                more.set(false);
+                            }
+                        }
+                        loading.set(false);
+                    }, scope);
+                    return;
+                };
                 let genres = requested_genres(&c, &filter.peek());
                 let page_skips: Vec<usize> = if reset { vec![0; genres.len()] } else { skips.peek().clone() };
                 let addons = ctx.all_addons();
@@ -136,8 +171,13 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
             move || {
                 let k = kind.read().clone();
                 let _ = (picked.read(), ctx.all_addons());
-                // Only genre changes need new requests; other filters work on what's loaded.
+                // Addon catalogs need new requests only for genres; other filters work on what's
+                // loaded. TMDB answers every filter itself.
                 let _ = (filter.read().genres.clone(), filter.read().match_any);
+                if catalogs(&ctx).get(*picked.peek()).is_some_and(|(i, _)| i.is_none()) {
+                    let f = filter.read();
+                    let _ = (f.years, f.min_rating, f.sort);
+                }
                 if *last_kind.peek() != k {
                     // A new type starts from its first catalog, unfiltered; those writes rerun this.
                     last_kind.set(k);
@@ -152,7 +192,9 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         let list = catalogs(&ctx);
         let current = list.get(*picked.read()).map(|(_, c)| c.clone());
         let addons = ctx.all_addons();
-        let several_addons = list.iter().any(|(i, _)| *i != list.first().map(|f| f.0).unwrap_or_default());
+        let first_addon = list.iter().find_map(|(i, _)| *i);
+        let several_addons = list.iter().any(|(i, _)| i.is_some() && *i != first_addon);
+        let from_tmdb = list.get(*picked.read()).is_some_and(|(i, _)| i.is_none());
         let f = filter.read().clone();
         let loaded = items.read().clone();
         let shown = apply(&loaded, &f, &watched);
@@ -177,7 +219,10 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     .child(chip_row(catalog_row, list.iter().enumerate().map(
                         |(n, (i, c))| {
                             let name = c.name.clone().unwrap_or_else(|| c.id.clone());
-                            let text = if several_addons { format!("{name} · {}", addons[*i].manifest.name) } else { name };
+                            let text = match i {
+                                Some(i) if several_addons => format!("{name} · {}", addons[*i].manifest.name),
+                                _ => name,
+                            };
                             Focusable { radius: 16., row: Some(catalog_row), ..Focusable::new(chip(text, n == *picked.read()), move |()| {
                                 filter.set(Filter::default());
                                 picked.set(n);
@@ -186,7 +231,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                         },
                     ).collect()))
                     .map(current.clone().filter(|c| !c.genres().is_empty()), |el, c| el.child(genre_chips(&c, &f, filter, genre_row)))
-                    .maybe(!list.is_empty(), |el| el.child(filter_bar(&loaded, &f, filter, current.as_ref())))
+                    .maybe(!list.is_empty(), |el| el.child(filter_bar(&loaded, &f, filter, current.as_ref(), from_tmdb)))
                     .maybe(list.is_empty(), |el| el.child(label().text("No addon has a browsable catalog for this type.").color(theme().muted)))
                     .maybe(!first_load && !loaded.is_empty(), |el| {
                         el.child(label().text(format!("{} titles", shown.len())).font_size(13.).color(theme().muted))
@@ -259,8 +304,10 @@ fn genre_chips(c: &Catalog, f: &Filter, mut filter: State<Filter>, row: Scroller
 }
 
 /// Year range, minimum rating, sort and hide-watched; choices come from what's loaded.
-fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, current: Option<&Catalog>) -> Rect {
-    let bounds = year_bounds(loaded);
+/// `every_year`: the catalog filters itself (TMDB), so every year is a choice, not just loaded ones.
+fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, current: Option<&Catalog>, every_year: bool) -> Rect {
+    let this_year = 1970 + (crate::library::now() / 31_556_952) as u32;
+    let bounds = if every_year { Some((1900, this_year)) } else { year_bounds(loaded) };
     let years: Vec<u32> = bounds.map(|(lo, hi)| (lo..=hi).rev().collect()).unwrap_or_default();
     // A catalog whose genres are years (e.g. "New") makes a year range pointless.
     let genres_are_years = current.is_some_and(|c| c.genres().first().is_some_and(|g| g.parse::<u32>().is_ok()));

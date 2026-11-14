@@ -174,7 +174,17 @@ impl Component for Settings {
                                 debug::set(on);
                                 debug_on.set(on);
                             }))),
-                    ),
+                    )
+                    // TMDB's terms ask for this credit wherever its data shows.
+                    .maybe(crate::tmdb::enabled(), |el| {
+                        el.child(
+                            label()
+                                .text("Movie and series data from TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.")
+                                .font_size(12.)
+                                .color(theme().muted)
+                                .margin(Gaps::new(24., 0., 0., 0.)),
+                        )
+                    }),
             ),
         )
     }

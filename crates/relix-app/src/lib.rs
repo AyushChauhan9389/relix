@@ -22,6 +22,7 @@ mod search;
 mod settings;
 mod social;
 mod together;
+mod tmdb;
 mod store;
 mod stremio;
 mod sync;
@@ -690,6 +691,15 @@ pub async fn load_rows(mut ctx: Ctx) {
     let addons = ctx.all_addons();
     let mut rows = library::local_rows(&ctx.store, &ctx.profile);
     let mut set = JoinSet::new();
+    // TMDB's trending titles lead, then every addon's home catalogs.
+    if tmdb::enabled() {
+        for (kind, title) in [("movie", "Trending Movies"), ("series", "Trending Series")] {
+            let id = format!("tmdb/trending/{kind}");
+            rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
+            let http = ctx.http.clone();
+            set.spawn(async move { (id, tmdb::trending(&http, kind).await) });
+        }
+    }
     for addon in &addons {
         for c in addon.manifest.home_catalogs() {
             let name = c.name.clone().unwrap_or_else(|| c.id.clone());
@@ -704,7 +714,7 @@ pub async fn load_rows(mut ctx: Ctx) {
             rows.push(Row { id: id.clone(), title: format!("{name} {kind}"), metas: vec![], progress: vec![], loading: true, next });
             let url = req.url(addon);
             let http = ctx.http.clone();
-            set.spawn(async move { (id, get::<CatalogResponse>(http, url).await) });
+            set.spawn(async move { (id, get::<CatalogResponse>(http, url).await.map(|r| r.metas).map_err(|e| e.to_string())) });
         }
     }
     ctx.rows.set(rows);
@@ -716,9 +726,9 @@ pub async fn load_rows(mut ctx: Ctx) {
         // Rows may have been rebuilt meanwhile, so find ours by id.
         let Some(i) = ctx.rows.peek().iter().position(|r| r.id == id) else { continue };
         match res {
-            Ok(r) if !r.metas.is_empty() => {
+            Ok(metas) if !metas.is_empty() => {
                 let mut rows = ctx.rows.write();
-                rows[i].metas = r.metas;
+                rows[i].metas = metas;
                 rows[i].loading = false;
             }
             // Failed or empty: the row goes rather than sit blank.

@@ -1,0 +1,171 @@
+//! TMDB (themoviedb.org) as the main Movies/Series catalog: its discover search filters the whole
+//! catalog by genre, year, rating and sort on TMDB's side, unlike addon catalogs, which are
+//! filtered only as far as they're loaded. Titles carry their IMDb ids, so addons find streams.
+//!
+//! The read token comes in when building (`RELIX_TMDB_TOKEN`, a repository secret); without it
+//! Browse shows the addon catalogs only. "This product uses the TMDB API but is not endorsed or
+//! certified by TMDB" (Settings says so, per TMDB's terms).
+
+use relix_proto::addon::MetaPreview;
+use serde::Deserialize;
+use tokio::task::JoinSet;
+
+use crate::filter::{Filter, Sort};
+
+const TOKEN: Option<&str> = option_env!("RELIX_TMDB_TOKEN");
+const API: &str = "https://api.themoviedb.org/3";
+
+pub fn enabled() -> bool {
+    TOKEN.is_some_and(|t| !t.is_empty())
+}
+
+/// TMDB's genres for "movie" or "series" (TMDB calls series "tv"), as (id, name).
+pub fn genres(kind: &str) -> &'static [(u32, &'static str)] {
+    const MOVIE: &[(u32, &str)] = &[
+        (28, "Action"), (12, "Adventure"), (16, "Animation"), (35, "Comedy"), (80, "Crime"), (99, "Documentary"),
+        (18, "Drama"), (10751, "Family"), (14, "Fantasy"), (36, "History"), (27, "Horror"), (10402, "Music"),
+        (9648, "Mystery"), (10749, "Romance"), (878, "Science Fiction"), (10770, "TV Movie"), (53, "Thriller"),
+        (10752, "War"), (37, "Western"),
+    ];
+    const TV: &[(u32, &str)] = &[
+        (10759, "Action & Adventure"), (16, "Animation"), (35, "Comedy"), (80, "Crime"), (99, "Documentary"),
+        (18, "Drama"), (10751, "Family"), (10762, "Kids"), (9648, "Mystery"), (10763, "News"), (10764, "Reality"),
+        (10765, "Sci-Fi & Fantasy"), (10766, "Soap"), (10767, "Talk"), (10768, "War & Politics"), (37, "Western"),
+    ];
+    if kind == "series" { TV } else { MOVIE }
+}
+
+/// The discover query for one page: the filter's genres, years, rating and sort.
+fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
+    let tv = kind == "series";
+    let ids: Vec<String> = f.genres.iter().filter_map(|g| genres(kind).iter().find(|(_, n)| n == g)).map(|(id, _)| id.to_string()).collect();
+    // A comma is "all of these", a pipe "any of these".
+    let mut q = vec![format!("page={page}"), "include_adult=false".into()];
+    if !ids.is_empty() {
+        q.push(format!("with_genres={}", ids.join(if f.match_any { "|" } else { "," })));
+    }
+    let date = if tv { "first_air_date" } else { "primary_release_date" };
+    if let Some((from, to)) = f.years {
+        q.push(format!("{date}.gte={from}-01-01"));
+        q.push(format!("{date}.lte={to}-12-31"));
+    }
+    // Without a vote floor, obscure titles with a handful of votes top every list (one 10 is
+    // "top rated"; announced films are "newest"). The floor depends on the sort.
+    let floor = match f.sort {
+        Sort::Rating => 500,
+        Sort::Name => 200,
+        Sort::Newest => 100,
+        Sort::Catalog => if f.min_rating.is_some() { 100 } else { 0 },
+    };
+    if let Some(min) = f.min_rating {
+        q.push(format!("vote_average.gte={min}"));
+    }
+    if floor > 0 {
+        q.push(format!("vote_count.gte={floor}"));
+    }
+    let sort = match f.sort {
+        Sort::Catalog => "popularity.desc",
+        Sort::Newest => if tv { "first_air_date.desc" } else { "primary_release_date.desc" },
+        Sort::Rating => "vote_average.desc",
+        Sort::Name => if tv { "name.asc" } else { "title.asc" },
+    };
+    q.push(format!("sort_by={sort}"));
+    format!("{API}/discover/{}?{}", if tv { "tv" } else { "movie" }, q.join("&"))
+}
+
+#[derive(Deserialize)]
+struct Page {
+    page: u32,
+    total_pages: u32,
+    results: Vec<Item>,
+}
+
+#[derive(Deserialize)]
+struct Item {
+    id: u64,
+    #[serde(alias = "name")]
+    title: String,
+    overview: Option<String>,
+    poster_path: Option<String>,
+    backdrop_path: Option<String>,
+    #[serde(alias = "first_air_date")]
+    release_date: Option<String>,
+    #[serde(default)]
+    genre_ids: Vec<u32>,
+    vote_average: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct ExternalIds {
+    imdb_id: Option<String>,
+}
+
+async fn get<T: serde::de::DeserializeOwned>(http: &reqwest::Client, url: String) -> Result<T, String> {
+    let res = http.get(url).bearer_auth(TOKEN.unwrap_or_default()).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.without_url().to_string())?;
+    res.error_for_status().map_err(|e| format!("TMDB: {}", e.without_url()))?.json().await.map_err(|e| e.without_url().to_string())
+}
+
+/// One page of the filtered catalog, and whether there are more. Titles without an IMDb id are
+/// left out: addons can't find streams for them.
+pub async fn discover(http: &reqwest::Client, kind: &str, f: &Filter, page: u32) -> Result<(Vec<MetaPreview>, bool), String> {
+    let found: Page = get(http, discover_url(kind, f, page)).await?;
+    // TMDB stops at page 500.
+    let more = found.page < found.total_pages.min(500);
+    Ok((with_imdb_ids(http, kind, found.results).await, more))
+}
+
+/// What's trending on TMDB this week: a Home row.
+pub async fn trending(http: &reqwest::Client, kind: &str) -> Result<Vec<MetaPreview>, String> {
+    let found: Page = get(http, format!("{API}/trending/{}/week", if kind == "series" { "tv" } else { "movie" })).await?;
+    Ok(with_imdb_ids(http, kind, found.results).await)
+}
+
+async fn with_imdb_ids(http: &reqwest::Client, kind: &str, results: Vec<Item>) -> Vec<MetaPreview> {
+    let tmdb_kind = if kind == "series" { "tv" } else { "movie" };
+    // TMDB's ids aren't IMDb's: one lookup per title, all at once.
+    let mut set = JoinSet::new();
+    for (n, item) in results.iter().enumerate() {
+        let (http, url) = (http.clone(), format!("{API}/{tmdb_kind}/{}/external_ids", item.id));
+        set.spawn(async move { (n, get::<ExternalIds>(&http, url).await.ok().and_then(|e| e.imdb_id).filter(|id| id.starts_with("tt"))) });
+    }
+    let mut imdb = vec![None; results.len()];
+    while let Some(Ok((n, id))) = set.join_next().await {
+        imdb[n] = id;
+    }
+    let image = |size: &str, path: &Option<String>| path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/{size}{p}"));
+    results
+        .into_iter()
+        .zip(imdb)
+        .filter_map(|(item, id)| {
+            Some(MetaPreview {
+                id: id?,
+                r#type: kind.to_owned(),
+                poster: image("w342", &item.poster_path),
+                background: image("w1280", &item.backdrop_path),
+                logo: None,
+                description: item.overview.filter(|o| !o.is_empty()),
+                release_info: item.release_date.and_then(|d| d.get(..4).map(str::to_owned)),
+                genres: item.genre_ids.iter().filter_map(|g| genres(kind).iter().find(|(id, _)| id == g)).map(|(_, n)| (*n).to_owned()).collect(),
+                imdb_rating: item.vote_average.filter(|v| *v > 0.).map(|v| serde_json::json!(format!("{v:.1}"))),
+                name: item.title,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_become_one_discover_query() {
+        let f = Filter { genres: vec!["Comedy".into(), "Drama".into()], years: Some((2009, 2010)), min_rating: Some(7.), ..Filter::default() };
+        let url = discover_url("movie", &f, 2);
+        assert!(url.starts_with("https://api.themoviedb.org/3/discover/movie?page=2&"), "{url}");
+        for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=100", "sort_by=popularity.desc"] {
+            assert!(url.contains(part), "{part} in {url}");
+        }
+        let any = discover_url("series", &Filter { genres: vec!["Comedy".into(), "Crime".into()], match_any: true, sort: Sort::Name, ..Filter::default() }, 1);
+        assert!(any.contains("/discover/tv?") && any.contains("with_genres=35|80") && any.contains("sort_by=name.asc"), "{any}");
+    }
+}
