@@ -12,7 +12,10 @@ serves it on HTTPS with an automatic Let's Encrypt certificate.
 | HTTPS | `/etc/caddy/Caddyfile` (copy here) |
 | Logs | `journalctl -u relix-server -f` |
 
-**Redeploy** after committing: `bash packaging/server/deploy.sh` (builds on the server from `git archive HEAD`).
+**Redeploy** happens on its own: a push to `main` that changes the server, `relix-proto`, `website/` or this folder
+runs the Deploy server workflow (server tests, then `deploy.sh`). By hand: `bash packaging/server/deploy.sh` (builds on
+the server from `git archive HEAD`), or Actions → Deploy server → Run workflow. GitHub logs in with its own key (secret
+`DEPLOY_SSH_KEY`, the line labelled `github-actions deploy` in root's `authorized_keys`; delete that line to revoke).
 
 **Publish an app update:** run the Release workflow on GitHub; it uploads the builds and `latest-<os>.json` with
 `PUT /admin/update/<name>` (admin token).

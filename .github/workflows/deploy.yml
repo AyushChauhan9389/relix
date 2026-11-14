@@ -1,0 +1,45 @@
+name: Deploy server
+
+# Redeploys relix-server and the website (packaging/server/deploy.sh) when a push to main changes
+# them. The server's tests run first; a build that fails on the server leaves the running one alone.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/relix-server/**'
+      - 'crates/relix-proto/**'
+      - 'website/**'
+      - 'packaging/server/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+# One deploy at a time, and never cut one off halfway.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server
+      - name: Server tests
+        run: cargo test -p relix-server -p relix-proto
+      # A key only for this (DEPLOY_SSH_KEY), and the server's host key pinned (DEPLOY_KNOWN_HOSTS).
+      - name: SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+      - name: Deploy
+        run: bash packaging/server/deploy.sh
