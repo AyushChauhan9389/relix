@@ -100,11 +100,33 @@ impl Component for Friends {
             let submit = save.clone();
             body.child(heading("YOUR USERNAME")).child(
                 card()
-                    .child(paragraph().font_size(14.).color(theme().muted).span("Friends find you by it. 3 to 20 letters, digits or _."))
-                    .child(Input::new(name).width(Size::fill()).placeholder("username").on_submit(move |_| submit.clone()(())))
-                    .child(rect().horizontal().spacing(10.).child(Focusable::new(button("Save", theme().primary.0, theme().primary.1), EventHandler::new(save))).maybe(*renaming.read(), |el| {
-                        el.child(Focusable::new(button("Cancel", theme().raised, (255, 255, 255)), move |()| renaming.set(false)))
-                    })),
+                    .child(
+                        paragraph()
+                            .font_size(14.)
+                            .color(theme().muted)
+                            .span("Friends find you by it. 3 to 20 letters, digits or _."),
+                    )
+                    .child(crate::focus::Field(
+                        Input::new(name)
+                            .width(Size::fill())
+                            .placeholder("username")
+                            .on_submit(move |_| submit.clone()(())),
+                    ))
+                    .child(
+                        rect()
+                            .horizontal()
+                            .spacing(10.)
+                            .child(Focusable::new(
+                                button("Save", theme().primary.0, theme().primary.1),
+                                EventHandler::new(save),
+                            ))
+                            .maybe(*renaming.read(), |el| {
+                                el.child(Focusable::new(
+                                    button("Cancel", theme().raised, (255, 255, 255)),
+                                    move |()| renaming.set(false),
+                                ))
+                            }),
+                    ),
             )
         } else {
             let me = me.unwrap_or_else(|| unreachable!());
@@ -158,7 +180,7 @@ impl Component for Friends {
                     }))
                     .child(
                         row()
-                            .child(rect().width(Size::flex(1.)).child(Input::new(code).width(Size::fill()).placeholder("Party code").on_submit(move |_| submit_join.clone()(()))))
+                            .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(code).width(Size::fill()).placeholder("Party code").on_submit(move |_| submit_join.clone()(())))))
                             .child(Focusable::new(button("Join", theme().primary.0, theme().primary.1), EventHandler::new(join))),
                     )
                     .children(invites.into_iter().map(|i| {
@@ -178,7 +200,7 @@ impl Component for Friends {
             .child(
                 card().child(
                     row()
-                        .child(rect().width(Size::flex(1.)).child(Input::new(add).width(Size::fill()).placeholder("Their username").on_submit(move |_| submit_add.clone()(()))))
+                        .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(add).width(Size::fill()).placeholder("Their username").on_submit(move |_| submit_add.clone()(())))))
                         .child(Focusable::new(button("Send request", theme().primary.0, theme().primary.1), EventHandler::new(send_request))),
                 ),
             )
@@ -339,7 +361,14 @@ impl Component for ChatPanel {
             )
             .child(
                 row()
-                    .child(rect().width(Size::flex(1.)).child(Input::new(text).width(Size::fill()).placeholder("Say something").on_submit(move |_| send2.clone()())))
+                    .child(
+                        rect().width(Size::flex(1.)).child(crate::focus::Field(
+                            Input::new(text)
+                                .width(Size::fill())
+                                .placeholder("Say something")
+                                .on_submit(move |_| send2.clone()()),
+                        )),
+                    )
                     .child(small("Send", move |()| send())),
             )
             .into_element()
@@ -405,7 +434,7 @@ impl Component for StartParty {
                     .child(paragraph().width(Size::fill()).font_size(14.).color(theme().muted).span(
                         "Paste a Google Drive share link (shared as \"Anyone with the link\") or a direct video link. Everyone in the party streams it from there.",
                     ))
-                    .child(Input::new(link).width(Size::fill()).placeholder("https://drive.google.com/file/d/…").on_submit(move |_| submit.clone()(())))
+                    .child(crate::focus::Field(Input::new(link).width(Size::fill()).placeholder("https://drive.google.com/file/d/…").on_submit(move |_| submit.clone()(()))))
                     .maybe_child(error.read().clone().map(|e| paragraph().width(Size::fill()).font_size(14.).color(ERROR).span(e)))
                     .child(
                         rect()
@@ -418,6 +447,92 @@ impl Component for StartParty {
                             })
                             .child(Focusable::new(button("Cancel", theme().raised, (255, 255, 255)), move |()| open.set(false))),
                     ),
+            )
+    }
+}
+
+/// After hosting from Google Drive: "Delete it from your Drive?" (to Drive's trash), or keep it.
+#[derive(PartialEq)]
+pub struct DeleteFromDrive {
+    pub file_id: String,
+    pub title: String,
+}
+
+impl Component for DeleteFromDrive {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        // The toast's task, not the button's (see `act`).
+        let scope = use_hook(current_scope_id);
+        let mut busy = use_state(|| false);
+        let mut error = use_state(|| None::<String>);
+        let mut hosted = ctx.social.hosted_drive_file;
+        let delete = {
+            let (ctx, id) = (ctx.clone(), self.file_id.clone());
+            move |()| {
+                if *busy.peek() {
+                    return;
+                }
+                busy.set(true);
+                error.set(None);
+                let (ctx, id) = (ctx.clone(), id.clone());
+                spawn_in_scope(
+                    async move {
+                        let result = crate::drive::trash(&ctx, &id).await;
+                        busy.set(false);
+                        match result {
+                            Ok(()) => hosted.set(None),
+                            Err(e) => error.set(Some(e)),
+                        }
+                    },
+                    scope,
+                );
+            }
+        };
+        rect()
+            .width(Size::px(440.))
+            .padding(Gaps::new_all(18.))
+            .spacing(10.)
+            .corner_radius(8.)
+            .background(theme().surface)
+            .child(
+                label()
+                    .text("Party over")
+                    .font_size(16.)
+                    .font_weight(FontWeight::BOLD),
+            )
+            .child(
+                paragraph()
+                    .width(Size::fill())
+                    .font_size(14.)
+                    .color(theme().muted)
+                    .span(format!(
+                        "Delete the video for {} from your Google Drive? It goes to Drive's trash.",
+                        self.title
+                    )),
+            )
+            .maybe_child(error.read().clone().map(|e| {
+                paragraph()
+                    .width(Size::fill())
+                    .font_size(14.)
+                    .color(ERROR)
+                    .span(e)
+            }))
+            .child(
+                rect()
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(10.)
+                    .child(if *busy.read() {
+                        crate::motion::busy("Finish signing in to Google in your browser…")
+                            .into_element()
+                    } else {
+                        Focusable::new(
+                            button("Delete from Drive", theme().primary.0, theme().primary.1),
+                            EventHandler::new(delete),
+                        )
+                        .into_element()
+                    })
+                    .child(small("Keep it", move |()| hosted.set(None))),
             )
     }
 }

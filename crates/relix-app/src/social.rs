@@ -50,6 +50,11 @@ pub struct Social {
     pub party_player: State<bool>,
     /// The chat panel beside the party's video.
     pub chat_open: State<bool>,
+    /// The last party this account hosted from a Google Drive file: (file id, title), until the
+    /// host deletes the file or keeps it (drive.rs).
+    pub hosted_drive_file: State<Option<(String, String)>>,
+    /// The party to rejoin once the connection is back (it dropped mid-party).
+    rejoin: State<Option<String>>,
     /// A position to apply once the party's video has loaded.
     pending: State<Option<(bool, f64)>>,
 }
@@ -66,6 +71,8 @@ impl Social {
             out: use_state(|| None),
             party_player: use_state(|| false),
             chat_open: use_state(|| true),
+            hosted_drive_file: use_state(|| None),
+            rejoin: use_state(|| None),
             pending: use_state(|| None),
         }
     }
@@ -156,12 +163,18 @@ pub async fn run(ctx: Ctx) {
 }
 
 fn on_disconnect(ctx: &Ctx) {
-    let (mut out, mut party) = (ctx.social.out, ctx.social.party);
+    let (mut out, mut party, mut rejoin) = (ctx.social.out, ctx.social.party, ctx.social.rejoin);
     out.set(None);
-    // The server takes a disconnected account out of its party.
-    if party.peek().is_some() {
+    let Some(code) = party.peek().as_ref().map(|p| p.code.clone()) else {
+        return;
+    };
+    // Signed out: the party is over for this device. Otherwise keep watching and rejoin on reconnect.
+    if account(&ctx.store).is_none() {
         party.set(None);
         stop_party_player(ctx);
+    } else {
+        push(ctx, "", "Connection lost; reconnecting…".into());
+        rejoin.set(Some(code));
     }
 }
 
@@ -175,6 +188,10 @@ async fn connect(ctx: &Ctx, token: &str) -> Result<(), String> {
     let mut out = ctx.social.out;
     out.set(Some(tx));
     send_presence(ctx);
+    // Back after a drop mid-party: the server answers with the party (or an error if it ended).
+    if let Some(code) = ctx.social.rejoin.peek().clone() {
+        send_live(ctx, ToServer::Join { code });
+    }
     loop {
         tokio::select! {
             msg = rx.recv() => {
@@ -234,10 +251,22 @@ fn handle(ctx: &Ctx, msg: ToClient) {
         ToClient::Party(view) => {
             let was = social.party.peek().as_ref().map(|p| p.code.clone());
             let new = was.as_deref() != Some(view.code.as_str());
-            let (mut party, mut lines, mut invites) = (social.party, social.lines, social.invites);
+            let (mut party, mut lines, mut invites, mut rejoin) =
+                (social.party, social.lines, social.invites, social.rejoin);
+            rejoin.set(None);
             invites.write().retain(|i| i.code != view.code);
             if new {
                 lines.set(vec![]);
+            }
+            // Hosting from Drive: offer to delete the file once the party is over.
+            let me = social.me.peek().as_ref().and_then(|m| m.username.clone());
+            if me.as_deref() == Some(view.host.as_str())
+                && let Some(id) = crate::drive::file_id(&view.url)
+            {
+                let mut hosted = social.hosted_drive_file;
+                if hosted.peek().as_ref().map(|(i, _)| i) != Some(&id) {
+                    hosted.set(Some((id, view.title.name.clone())));
+                }
             }
             party.set(Some(view));
             if new {
@@ -251,6 +280,14 @@ fn handle(ctx: &Ctx, msg: ToClient) {
             let mut party = social.party;
             party.set(None);
             push(ctx, "", format!("You left: {reason}"));
+            stop_party_player(ctx);
+        }
+        // Rejoining failed: the party ended (or the host removed us) while we were away.
+        ToClient::Error { message } if social.rejoin.peek().is_some() => {
+            let (mut party, mut rejoin) = (social.party, social.rejoin);
+            rejoin.set(None);
+            party.set(None);
+            push(ctx, "", message);
             stop_party_player(ctx);
         }
         ToClient::Error { message } => {
@@ -400,9 +437,15 @@ fn start_party_player(ctx: &Ctx) {
         party_player.set(false);
         pending.set(None);
         send_presence(&ctx);
-        // Closing the player leaves the party (if it hasn't ended already).
-        if ctx.social.party.peek().is_some() {
-            send_live(&ctx, ToServer::Leave);
+        // Closing the player leaves the party (if it hasn't ended already); offline, just forget it.
+        let (mut party, mut rejoin) = (ctx.social.party, ctx.social.rejoin);
+        rejoin.set(None);
+        if party.peek().is_some() {
+            if ctx.social.connected() {
+                send_live(&ctx, ToServer::Leave);
+            } else {
+                party.set(None);
+            }
         }
     });
 }

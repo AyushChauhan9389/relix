@@ -25,7 +25,13 @@ fn window_h() -> f32 {
 }
 
 fn hero_h() -> f32 {
-    if phone() { (window_h() - TAB_BAR_H).clamp(240., 480.) } else { 600. }
+    // Short windows (a TV is 540 points tall) keep the first row in view under it, so arrow keys
+    // can reach it: rows off-screen aren't built.
+    if phone() {
+        (window_h() - TAB_BAR_H).clamp(240., 480.)
+    } else {
+        600f32.min(window_h() * 0.72)
+    }
 }
 const NAV_H: f32 = 68.;
 const FEATURED: usize = 5;
@@ -149,15 +155,22 @@ impl Component for NavItem {
             let c = |b: bool| if b { (255, 255, 255) } else { (190, 190, 190) };
             AnimColor::new(c(from), c(to)).time(HOVER_MS)
         });
-        Link::new(self.to.clone()).child(
-            label()
-                .text(self.text)
-                .font_size(15.)
-                .color(&*color.read())
-                .maybe(self.active, |el| el.font_weight(FontWeight::BOLD))
-                .on_pointer_enter(move |_| hovered.set(true))
-                .on_pointer_leave(move |_| hovered.set(false)),
-        )
+        let to = self.to.clone();
+        // Focusable rather than a plain link, so a TV remote reaches it too.
+        Focusable {
+            radius: 4.,
+            grow: 1.,
+            ..Focusable::new(
+                label()
+                    .text(self.text)
+                    .font_size(15.)
+                    .color(&*color.read())
+                    .maybe(self.active, |el| el.font_weight(FontWeight::BOLD))
+                    .on_pointer_enter(move |_| hovered.set(true))
+                    .on_pointer_leave(move |_| hovered.set(false)),
+                move |()| drop(RouterContext::get().push(to.clone())),
+            )
+        }
     }
 }
 
@@ -194,7 +207,8 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
                 .child(link(NavLink::Search, "Search", Route::Search))
                 .child(link(NavLink::Settings, "Settings", Route::Settings))
                 .child(link(NavLink::Account, "Account", Route::Account))
-                .child(fullscreen_button(ctx)),
+                // Android apps are always full screen.
+                .maybe_child((!cfg!(target_os = "android")).then(|| fullscreen_button(ctx))),
         )
 }
 
@@ -564,12 +578,14 @@ fn view_all(ctx: &Ctx, next: Option<&(Addon, ResourceRequest)>) -> Option<Elemen
         .position(|(i, c)| addons[i].manifest.id == addon.manifest.id && c.id == req.id)?;
     let route = Route::BrowseCatalog { kind: req.r#type.clone(), catalog };
     Some(
-        label()
-            .text("View all ›")
-            .font_size(14.)
-            .color(theme().muted)
-            .on_press(move |_| drop(RouterContext::get().push(route.clone())))
-            .into_element(),
+        Focusable::new(
+            label()
+                .text("View all ›")
+                .font_size(14.)
+                .color(theme().muted),
+            move |()| drop(RouterContext::get().push(route.clone())),
+        )
+        .into_element(),
     )
 }
 
@@ -795,8 +811,10 @@ pub fn top_bar(ctx: &Ctx) -> Rect {
         .content(Content::Flex)
         .cross_align(Alignment::Center)
         .background(theme().bg)
-        .child(
-            Link::new(Route::Search).child(
+        .child(Focusable {
+            radius: 8.,
+            grow: 1.,
+            ..Focusable::new(
                 rect()
                     .width(Size::px(440.))
                     .max_width(Size::percent(100.))
@@ -807,12 +825,23 @@ pub fn top_bar(ctx: &Ctx) -> Rect {
                     .spacing(10.)
                     .corner_radius(8.)
                     .background(theme().surface)
-                    .child(SvgViewer::new(ICON_SEARCH.as_bytes()).width(Size::px(18.)).height(Size::px(18.)).stroke(theme().muted))
-                    .child(label().text("Search movies & series").font_size(14.).color(theme().muted)),
-            ),
-        )
+                    .child(
+                        SvgViewer::new(ICON_SEARCH.as_bytes())
+                            .width(Size::px(18.))
+                            .height(Size::px(18.))
+                            .stroke(theme().muted),
+                    )
+                    .child(
+                        label()
+                            .text("Search movies & series")
+                            .font_size(14.)
+                            .color(theme().muted),
+                    ),
+                |()| drop(RouterContext::get().push(Route::Search)),
+            )
+        })
         .child(rect().width(Size::flex(1.)))
-        .child(fullscreen_button(ctx))
+        .maybe_child((!cfg!(target_os = "android")).then(|| fullscreen_button(ctx)))
 }
 
 /// Enters or leaves fullscreen for the whole app, like Stremio's (F11 does the same).
@@ -928,18 +957,30 @@ impl Component for SideItem {
             AnimColor::new(c(from), c(to)).time(HOVER_MS)
         });
         let c: Color = (&*color.read()).into();
-        Link::new(self.to.clone()).child(
-            rect()
-                .width(Size::px(64.))
-                .padding(Gaps::new(9., 0., 7., 0.))
-                .spacing(5.)
-                .corner_radius(12.)
-                .cross_align(Alignment::Center)
-                .maybe(self.active, |el| el.background(theme().raised))
-                .on_pointer_enter(move |_| hovered.set(true))
-                .on_pointer_leave(move |_| hovered.set(false))
-                .child(SvgViewer::new(self.icon.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke(c))
-                .child(label().text(self.text).font_size(11.).color(c)),
-        )
+        let to = self.to.clone();
+        Focusable {
+            radius: 12.,
+            grow: 1.,
+            rail: true,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(64.))
+                    .padding(Gaps::new(9., 0., 7., 0.))
+                    .spacing(5.)
+                    .corner_radius(12.)
+                    .cross_align(Alignment::Center)
+                    .maybe(self.active, |el| el.background(theme().raised))
+                    .on_pointer_enter(move |_| hovered.set(true))
+                    .on_pointer_leave(move |_| hovered.set(false))
+                    .child(
+                        SvgViewer::new(self.icon.as_bytes())
+                            .width(Size::px(22.))
+                            .height(Size::px(22.))
+                            .stroke(c),
+                    )
+                    .child(label().text(self.text).font_size(11.).color(c)),
+                move |()| drop(RouterContext::get().push(to.clone())),
+            )
+        }
     }
 }

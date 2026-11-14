@@ -53,7 +53,7 @@ const ICON_EXIT_FULLSCREEN: &[u8] = include_bytes!("../assets/icons/minimize.svg
 const ICON_CHECK: &[u8] = include_bytes!("../assets/icons/check.svg");
 
 #[derive(Clone, Copy, PartialEq)]
-enum Menu {
+pub enum Menu {
     Tracks,
     Speed,
 }
@@ -86,8 +86,21 @@ pub struct Player;
 impl Component for Player {
     fn render(&self) -> impl IntoElement {
         let ctx = use_consume::<Ctx>();
-        let active = use_state(Instant::now);
-        let mut menu = use_state(|| None::<Menu>);
+        // Its focusables are the player's controls (focus.rs), the only ones arrows reach meanwhile.
+        use_provide_context(|| crate::focus::InPlayer);
+        // Whatever the page had focused (the Play that started this) would take Enter meanwhile;
+        // it gets focus back after.
+        let page_focus = use_hook(|| {
+            let focused = *Platform::get()
+                .current_window()
+                .focused_accessibility_id
+                .peek();
+            focused.request_unfocus();
+            focused
+        });
+        use_drop(move || page_focus.request_focus());
+        let active = ctx.player_active;
+        let mut menu = ctx.player_menu;
         let mut visible = use_state(|| true);
         let mut last_click = use_state(|| None::<Instant>);
         // Checks a few times a second whether the controls should fade out.
@@ -306,12 +319,23 @@ fn bottom_bar(ctx: &Ctx, r: &Rc<VideoRenderer>, s: &Status, has_next: bool, menu
         .horizontal()
         .cross_align(Alignment::Center)
         .spacing(10.)
-        .child(icon_button(if paused { ICON_PLAY } else { ICON_PAUSE }, 30., true, None, move |()| {
-            crate::social::set_paused(&toggle_ctx, toggle.mpv(), !paused)
-        }))
-        .child(icon_button(ICON_BACK10, 30., false, Some("10"), move |()| {
-            crate::social::seek_by(&back_ctx, back.mpv(), -10.)
-        }))
+        .child(IconButton {
+            primary: true,
+            ..icon_button(
+                if paused { ICON_PLAY } else { ICON_PAUSE },
+                30.,
+                true,
+                None,
+                move |()| crate::social::set_paused(&toggle_ctx, toggle.mpv(), !paused),
+            )
+        })
+        .child(icon_button(
+            ICON_BACK10,
+            30.,
+            false,
+            Some("10"),
+            move |()| crate::social::seek_by(&back_ctx, back.mpv(), -10.),
+        ))
         .child(icon_button(ICON_FWD10, 30., false, Some("10"), move |()| {
             crate::social::seek_by(&fwd_ctx, fwd.mpv(), 10.)
         }))
@@ -518,14 +542,18 @@ fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
 /// "Size  − 100% +": a value with buttons either side.
 fn stepper(name: &str, value: String, minus: impl Fn() + 'static, plus: impl Fn() + 'static) -> Element {
     let button = |glyph: &'static str, f: Box<dyn Fn()>| {
-        rect()
+        let face = rect()
             .width(Size::px(30.))
             .height(Size::px(30.))
             .corner_radius(15.)
             .center()
             .background((255, 255, 255, 0.10))
-            .on_press(move |_| f())
-            .child(label().text(glyph).font_size(17.))
+            .child(label().text(glyph).font_size(17.));
+        crate::focus::Focusable {
+            radius: 15.,
+            grow: 1.,
+            ..crate::focus::Focusable::new(face, move |()| f())
+        }
     };
     rect()
         .width(Size::fill())
@@ -551,8 +579,7 @@ struct MenuOption {
 impl Component for MenuOption {
     fn render(&self) -> impl IntoElement {
         let mut hovered = use_state(|| false);
-        let on_press = self.on_press.clone();
-        rect()
+        let row = rect()
             .width(Size::fill())
             .horizontal()
             .cross_align(Alignment::Center)
@@ -562,47 +589,99 @@ impl Component for MenuOption {
             .background(if *hovered.read() { (255, 255, 255, 0.10) } else { (255, 255, 255, 0.) })
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set(false))
-            .on_press(move |_| on_press.call(()))
-            .child(rect().width(Size::px(18.)).maybe_child(self.selected.then(|| svg(ICON_CHECK, 18.))))
-            .child(label().text(self.text.clone()).font_size(15.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+            .child(
+                rect()
+                    .width(Size::px(18.))
+                    .maybe_child(self.selected.then(|| svg(ICON_CHECK, 18.))),
+            )
+            .child(
+                label()
+                    .text(self.text.clone())
+                    .font_size(15.)
+                    .max_lines(1)
+                    .text_overflow(TextOverflow::Ellipsis),
+            );
+        crate::focus::Focusable {
+            radius: 8.,
+            grow: 1.,
+            width: Some(Size::fill()),
+            ..crate::focus::Focusable::new(row, self.on_press.clone())
+        }
     }
 }
 
 fn next_card(ctx: &Ctx, left: f64, phone: bool, safe: &Gaps) -> Rect {
     let ctx = ctx.clone();
-    let (bottom, right) = if phone { (100. + safe.bottom(), 16. + safe.right()) } else { (140., 40.) };
+    let (bottom, right) = if phone {
+        (100. + safe.bottom(), 16. + safe.right())
+    } else {
+        (140., 40.)
+    };
+    let next = move |()| {
+        if let Some(p) = ctx.player.peek().as_ref() {
+            let _ = p.send(ToPlayer::Next);
+        }
+    };
     rect()
         .position(Position::new_absolute().bottom(bottom).right(right))
         .layer(2)
-        .child(FadeIn::page(
-            rect()
-                .horizontal()
-                .cross_align(Alignment::Center)
-                .spacing(12.)
-                .padding(Gaps::new(14., 22., 14., 18.))
-                .corner_radius(10.)
-                .background((255, 255, 255))
-                .color((0, 0, 0))
-                .on_press(move |_| {
-                    if let Some(p) = ctx.player.peek().as_ref() {
-                        let _ = p.send(ToPlayer::Next);
-                    }
-                })
-                .child(SvgViewer::new(ICON_PLAY).width(Size::px(26.)).height(Size::px(26.)).fill((0, 0, 0)).stroke((0, 0, 0)))
-                .child(
-                    rect()
-                        .child(label().text("Next Episode").font_size(17.).font_weight(FontWeight::BOLD))
-                        .child(label().text(format!("Starts in {}s", left.ceil().max(0.))).font_size(13.).color((90, 90, 90))),
-                ),
-        ))
+        .child(FadeIn::page(crate::focus::Focusable {
+            radius: 10.,
+            ..crate::focus::Focusable::new(
+                rect()
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(12.)
+                    .padding(Gaps::new(14., 22., 14., 18.))
+                    .corner_radius(10.)
+                    .background((255, 255, 255))
+                    .color((0, 0, 0))
+                    .child(
+                        SvgViewer::new(ICON_PLAY)
+                            .width(Size::px(26.))
+                            .height(Size::px(26.))
+                            .fill((0, 0, 0))
+                            .stroke((0, 0, 0)),
+                    )
+                    .child(
+                        rect()
+                            .child(
+                                label()
+                                    .text("Next Episode")
+                                    .font_size(17.)
+                                    .font_weight(FontWeight::BOLD),
+                            )
+                            .child(
+                                label()
+                                    .text(format!("Starts in {}s", left.ceil().max(0.)))
+                                    .font_size(13.)
+                                    .color((90, 90, 90)),
+                            ),
+                    ),
+                next,
+            )
+        }))
 }
 
 fn svg(icon: &'static [u8], size: f32) -> SvgViewer {
     SvgViewer::new(icon).width(Size::px(size)).height(Size::px(size)).stroke((255, 255, 255))
 }
 
-fn icon_button(icon: &'static [u8], size: f32, filled: bool, badge: Option<&'static str>, on_press: impl Fn(()) + 'static) -> IconButton {
-    IconButton { icon, size, filled, badge, on_press: EventHandler::new(on_press) }
+fn icon_button(
+    icon: &'static [u8],
+    size: f32,
+    filled: bool,
+    badge: Option<&'static str>,
+    on_press: impl Fn(()) + 'static,
+) -> IconButton {
+    IconButton {
+        icon,
+        size,
+        filled,
+        badge,
+        on_press: EventHandler::new(on_press),
+        primary: false,
+    }
 }
 
 /// A round icon button that lightens and grows a little on hover.
@@ -615,6 +694,8 @@ struct IconButton {
     /// A small number inside the icon ("10" on the skip buttons).
     badge: Option<&'static str>,
     on_press: EventHandler<()>,
+    /// The control a remote lands on first (focus.rs).
+    primary: bool,
 }
 
 impl Component for IconButton {
@@ -626,23 +707,42 @@ impl Component for IconButton {
         let h = t.get().value();
         let on_press = self.on_press.clone();
         let icon = svg(self.icon, self.size);
-        let icon = if self.filled { icon.fill((255, 255, 255)) } else { icon };
-        rect()
+        let icon = if self.filled {
+            icon.fill((255, 255, 255))
+        } else {
+            icon
+        };
+        let face = rect()
             .padding(Gaps::new_all(8.))
             .corner_radius(999.)
             .background((255, 255, 255, 0.14 * h))
             .scale((1. + 0.1 * h, 1. + 0.1 * h))
             .on_pointer_enter(move |_| hovered.set(true))
             .on_pointer_leave(move |_| hovered.set(false))
-            .on_press(move |_| on_press.call(()))
             .child(
                 rect()
                     .width(Size::px(self.size))
                     .height(Size::px(self.size))
                     .center()
-                    .child(rect().position(Position::new_absolute().top(0.).left(0.)).child(icon))
-                    .maybe_child(self.badge.map(|b| label().text(b).font_size(self.size * 0.3).font_weight(FontWeight::BOLD))),
-            )
+                    .child(
+                        rect()
+                            .position(Position::new_absolute().top(0.).left(0.))
+                            .child(icon),
+                    )
+                    .maybe_child(self.badge.map(|b| {
+                        label()
+                            .text(b)
+                            .font_size(self.size * 0.3)
+                            .font_weight(FontWeight::BOLD)
+                    })),
+            );
+        // Reachable by a remote's arrows (focus.rs); the ring shows which one Enter presses.
+        crate::focus::Focusable {
+            radius: 999.,
+            grow: 1.,
+            primary: self.primary,
+            ..crate::focus::Focusable::new(face, on_press)
+        }
     }
 }
 
@@ -653,15 +753,64 @@ fn clock(secs: f64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
-/// Keys while video plays: Space pauses, arrows seek and change volume, F fullscreen, M mute,
-/// N next episode. Returns false for keys it doesn't use.
-pub fn key(ctx: &Ctx, key: &Key) -> bool {
-    let Some(np) = ctx.now_playing.peek().clone() else { return false };
+/// Keys while video plays: Space or Enter pauses, arrows seek and change volume, F fullscreen,
+/// M mute, N next episode, and a remote's media keys. Returns false for keys it doesn't use.
+///
+/// A TV remote has only arrows, OK and Back: there any key shows the controls, Up or Down moves
+/// onto them, arrows then move between them and OK presses one, and Back leaves them.
+pub fn key(ctx: &Ctx, registry: &crate::focus::Registry, key: &Key) -> bool {
+    let Some(np) = ctx.now_playing.peek().clone() else {
+        return false;
+    };
     let (mpv, s) = (np.video.mpv(), ctx.player_status.peek().clone());
+    let remote = cfg!(target_os = "android");
+    let on_controls = registry.player_focused();
+    if remote {
+        let mut active = ctx.player_active;
+        active.set(Instant::now());
+        if on_controls {
+            let dir = match key {
+                Key::Named(NamedKey::ArrowUp) => Some(crate::focus::Dir::Up),
+                Key::Named(NamedKey::ArrowDown) => Some(crate::focus::Dir::Down),
+                Key::Named(NamedKey::ArrowLeft) => Some(crate::focus::Dir::Left),
+                Key::Named(NamedKey::ArrowRight) => Some(crate::focus::Dir::Right),
+                Key::Named(NamedKey::Escape) => {
+                    let mut menu = ctx.player_menu;
+                    menu.set(None);
+                    Platform::get()
+                        .current_window()
+                        .focused_accessibility_id
+                        .peek()
+                        .request_unfocus();
+                    active.set(Instant::now() - HIDE_AFTER);
+                    return true;
+                }
+                // OK presses the control (below); media keys work as ever.
+                _ => None,
+            };
+            if let Some(dir) = dir {
+                registry.navigate(dir, true);
+                return true;
+            }
+        }
+    }
     match key {
         Key::Character(c) if c == " " => crate::social::set_paused(ctx, mpv, !s.paused),
-        Key::Named(NamedKey::ArrowLeft) => crate::social::seek_by(ctx, mpv, -10.),
-        Key::Named(NamedKey::ArrowRight) => crate::social::seek_by(ctx, mpv, 10.),
+        // Enter on a focused control presses it (Freya) instead.
+        Key::Named(NamedKey::Enter | NamedKey::MediaPlayPause)
+            if !on_controls || *key != Key::Named(NamedKey::Enter) =>
+        {
+            crate::social::set_paused(ctx, mpv, !s.paused)
+        }
+        Key::Named(NamedKey::MediaPlay) => crate::social::set_paused(ctx, mpv, false),
+        Key::Named(NamedKey::MediaPause) => crate::social::set_paused(ctx, mpv, true),
+        Key::Named(NamedKey::ArrowLeft | NamedKey::MediaRewind) => {
+            crate::social::seek_by(ctx, mpv, -10.)
+        }
+        Key::Named(NamedKey::ArrowRight | NamedKey::MediaFastForward) => {
+            crate::social::seek_by(ctx, mpv, 10.)
+        }
+        Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if remote => registry.focus_player(),
         // Read the boost into a value first: a borrow taken inside the call's arguments lives until the
         // statement ends, and set_volume writes the same State (that panicked above 100%).
         Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {

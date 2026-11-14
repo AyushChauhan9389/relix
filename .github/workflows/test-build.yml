@@ -8,6 +8,9 @@ on:
 
 env:
   RELIX_SERVER: https://relix.carbonkit.tech
+  # Google sign-in for deleting a party's Drive file (drive.rs); the feature hides until both are set.
+  RELIX_GOOGLE_CLIENT_ID: ${{ secrets.RELIX_GOOGLE_CLIENT_ID }}
+  RELIX_GOOGLE_CLIENT_SECRET: ${{ secrets.RELIX_GOOGLE_CLIENT_SECRET }}
 
 jobs:
   linux:

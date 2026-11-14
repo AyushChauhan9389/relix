@@ -221,7 +221,19 @@ pub fn play(
     let embedded = video.is_some();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         // Android: MediaCodec, copied back so it draws through the same GL path (video.rs).
-        init.set_option("hwdec", if cfg!(target_os = "android") { "mediacodec-copy" } else { "auto-safe" })?;
+        init.set_option(
+            "hwdec",
+            if cfg!(target_os = "android") {
+                "mediacodec-copy"
+            } else {
+                "auto-safe"
+            },
+        )?;
+        // mpv's default read-ahead (~200 MB) is a fifth of a small TV's memory.
+        if cfg!(target_os = "android") {
+            init.set_option("demuxer-max-bytes", "64MiB")?;
+            init.set_option("demuxer-max-back-bytes", "16MiB")?;
+        }
         if let Some(lang) = &prefs.audio_lang {
             init.set_option("alang", lang.as_str())?;
         }
@@ -264,10 +276,9 @@ pub fn play(
         if start > 0. {
             init.set_option("start", start.to_string().as_str())?;
         }
-        if !headers.is_empty() {
-            // ponytail: mpv splits this list on ',', so header values containing commas break; escape when an addon needs it.
-            let fields: Vec<String> = headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-            init.set_option("http-header-fields", fields.join(",").as_str())?;
+        // One at a time: mpv splits a whole list on ',', which breaks values with commas in them.
+        for (k, v) in headers {
+            init.set_option("http-header-fields-append", format!("{k}: {v}").as_str())?;
         }
         Ok(())
     })?);

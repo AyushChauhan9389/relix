@@ -6,6 +6,10 @@ plugins {
 
 val repo = rootProject.projectDir.resolve("../..")
 val jniLibs = projectDir.resolve("src/main/jniLibs")
+// Phones and newer TVs are 64-bit ARM; many older TVs run a 32-bit system. `-Prelix.abis=armeabi-v7a`
+// builds just one, for a quicker test build.
+val abis = (findProperty("relix.abis") as String?)?.split(',') ?: listOf("arm64-v8a", "armeabi-v7a")
+val rustTargets = mapOf("arm64-v8a" to "aarch64-linux-android", "armeabi-v7a" to "armv7-linux-androideabi")
 val relixVersion = repo.resolve("crates/relix-app/Cargo.toml").readLines()
     .first { it.startsWith("version") }.substringAfter('"').substringBefore('"')
 
@@ -19,12 +23,13 @@ android {
 
     defaultConfig {
         applicationId = "tech.carbonkit.relix"
-        minSdk = 31
+        // Android 9: older Android TVs (Mi TV and the like) never got further.
+        minSdk = 28
         targetSdk = 36
         // 0.1.9 -> 109: every release must count up.
         versionCode = relixVersion.split('.').fold(0) { acc, part -> acc * 100 + part.toInt() }
         versionName = relixVersion
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += abis }
     }
 
     // Releases are signed with Relix's own key (RELIX_KEYSTORE, a .jks path, and its password):
@@ -70,14 +75,21 @@ val buildRust by tasks.registering(Exec::class) {
     environment("RELIX_SERVER", System.getenv("RELIX_SERVER") ?: "https://relix.carbonkit.tech")
     // Freya's theme detection (mundy) compiles a little Java against it.
     environment("ANDROID_JAR", "$androidHome/platforms/android-36/android.jar")
-    commandLine("cargo", "ndk", "-t", "arm64-v8a", "--platform", "31",
-        "rustc", "-p", "relix-app", "--lib", "--release", "--crate-type", "cdylib")
+    // Skia has no prebuilt 32-bit ARM Android library, so that one builds Skia from source, which
+    // looks for the NDK here.
+    System.getenv("ANDROID_NDK_HOME")?.let { environment("ANDROID_NDK", it) }
+    commandLine(listOf("cargo", "ndk") + abis.flatMap { listOf("-t", it) } + listOf("--platform", "28",
+        "rustc", "-p", "relix-app", "--lib", "--release", "--crate-type", "cdylib"))
     doFirst {
-        check(jniLibs.resolve("arm64-v8a/libmpv.so").exists()) { "libmpv missing: run packaging/android/fetch-mpv.sh first" }
+        for (abi in abis) {
+            check(jniLibs.resolve("$abi/libmpv.so").exists()) { "libmpv missing: run packaging/android/fetch-mpv.sh first" }
+        }
     }
     doLast {
-        repo.resolve("target/aarch64-linux-android/release/librelix_app.so")
-            .copyTo(jniLibs.resolve("arm64-v8a/librelix_app.so"), overwrite = true)
+        for (abi in abis) {
+            repo.resolve("target/${rustTargets.getValue(abi)}/release/librelix_app.so")
+                .copyTo(jniLibs.resolve("$abi/librelix_app.so"), overwrite = true)
+        }
     }
 }
 

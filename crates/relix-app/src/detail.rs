@@ -252,7 +252,6 @@ impl Component for Detail {
         };
 
         // Reruns when the addon list changes, so it waits out startup instead of finding no addons.
-        // ponytail: loads once per mount; navigating detail -> detail would need a keyed reload.
         use_side_effect({
             let (kind, id, ctx) = (self.kind.clone(), self.id.clone(), ctx.clone());
             move || {

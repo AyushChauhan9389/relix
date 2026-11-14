@@ -13,6 +13,9 @@ env:
   RELIX_SERVER: https://relix.carbonkit.tech
   # Discord "Now watching"; empty (off) until the repository variable is set.
   RELIX_DISCORD_APP_ID: ${{ vars.RELIX_DISCORD_APP_ID }}
+  # Google sign-in for deleting a party's Drive file (drive.rs); the feature hides until both are set.
+  RELIX_GOOGLE_CLIENT_ID: ${{ secrets.RELIX_GOOGLE_CLIENT_ID }}
+  RELIX_GOOGLE_CLIENT_SECRET: ${{ secrets.RELIX_GOOGLE_CLIENT_SECRET }}
 
 jobs:
   check:
@@ -141,7 +144,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: Swatinem/rust-cache@v2
         with:
           key: android
@@ -158,6 +161,9 @@ jobs:
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
       - name: libmpv for Android
         run: sh packaging/android/fetch-mpv.sh
+      # 32-bit ARM (older Android TVs) has no prebuilt Skia, so it builds from source with ninja.
+      - name: Ninja
+        run: sudo apt-get install -y ninja-build
       - name: Build the APK
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
@@ -173,7 +179,7 @@ jobs:
           export RELIX_KEYSTORE="$RUNNER_TEMP/relix-release.jks" ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           (cd packaging/android && ./gradlew assembleRelease --no-daemon)
           mkdir -p dist
-          cp packaging/android/app/build/outputs/apk/release/app-release.apk "dist/Relix-$V-android-arm64.apk"
+          cp packaging/android/app/build/outputs/apk/release/app-release.apk "dist/Relix-$V-android.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: android

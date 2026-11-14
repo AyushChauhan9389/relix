@@ -5,7 +5,10 @@ fn main() {
     if os == "android" {
         let abi = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
             Ok("aarch64") => "arm64-v8a",
-            Ok(arch) => panic!("no libmpv for Android on {arch}: fetch-mpv.sh only gets arm64-v8a"),
+            Ok("arm") => "armeabi-v7a",
+            Ok(arch) => panic!(
+                "no libmpv for Android on {arch}: fetch-mpv.sh gets arm64-v8a and armeabi-v7a"
+            ),
             Err(e) => panic!("{e}"),
         };
         let libs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/android/app/src/main/jniLibs").join(abi);
