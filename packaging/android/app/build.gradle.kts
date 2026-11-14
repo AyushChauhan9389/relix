@@ -78,6 +78,9 @@ val buildRust by tasks.registering(Exec::class) {
     // Skia has no prebuilt 32-bit ARM Android library, so that one builds Skia from source, which
     // looks for the NDK here.
     System.getenv("ANDROID_NDK_HOME")?.let { environment("ANDROID_NDK", it) }
+    // 32-bit ARM generates its libmpv bindings (no bundled ones); the NDK's headers reject
+    // clang's target unless it names the API level, which Rust's armv7 triple doesn't.
+    environment("BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi", "--target=armv7a-linux-androideabi28")
     commandLine(listOf("cargo", "ndk") + abis.flatMap { listOf("-t", it) } + listOf("--platform", "28",
         "rustc", "-p", "relix-app", "--lib", "--release", "--crate-type", "cdylib"))
     doFirst {

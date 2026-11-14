@@ -65,6 +65,8 @@ jobs:
           $env:RELIX_UPDATE_PUBKEY = (Get-Content packaging/update-key.pub -Raw).Trim()
           cargo build --release -p relix-app
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          # build.rs copies libmpv next to the exe only when it reruns; a cached build skips it.
+          Copy-Item vendor/mpv/libmpv-2.dll target/release/
       - name: Portable zip (also the auto-update payload)
         shell: pwsh
         run: |
