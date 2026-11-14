@@ -69,11 +69,12 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
     let floor = match f.sort {
         Sort::Rating => 500,
         Sort::Name => 200,
-        Sort::Newest => 100,
+        // Newest is by release date alone; unreleased titles are left out by date below.
+        Sort::Newest => 0,
         Sort::Catalog => if f.min_rating.is_some() { 100 } else { 0 },
     };
     // Narrowed to a country, genres or years, few titles have that many votes (Indian
-    // comedy-horror with Newest kept 1 of 19): a tenth still keeps out one-vote and unreleased ones.
+    // comedy-horror kept 1 of 19): a tenth still keeps out one-vote titles.
     let narrowed = f.country.is_some() || !f.genres.is_empty() || f.years.is_some();
     let floor = if narrowed { floor / 10 } else { floor };
     if let Some(min) = f.min_rating {
@@ -81,6 +82,10 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
     }
     if floor > 0 {
         q.push(format!("vote_count.gte={floor}"));
+    }
+    // Released by today: newest first shouldn't open with announced titles.
+    if f.sort == Sort::Newest && f.years.is_none_or(|(_, to)| to >= this_year()) {
+        q.push(format!("{date}.lte={}", today()));
     }
     let sort = match f.sort {
         Sort::Catalog => "popularity.desc",
@@ -97,6 +102,27 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
         q.push(format!("with_origin_country={code}"));
     }
     format!("{API}/discover/{}?{}", if tv { "tv" } else { "movie" }, q.join("&"))
+}
+
+/// Today as YYYY-MM-DD (UTC), from days since 1970 (Howard Hinnant's civil_from_days).
+fn civil(days: i64) -> String {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{}-{m:02}-{d:02}", yoe + era * 400 + i64::from(m <= 2))
+}
+
+fn today() -> String {
+    civil((crate::library::now() / 86_400) as i64)
+}
+
+fn this_year() -> u32 {
+    today()[..4].parse().unwrap_or(2026)
 }
 
 #[derive(Deserialize)]
@@ -283,6 +309,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn civil_dates() {
+        assert_eq!(civil(0), "1970-01-01");
+        assert_eq!(civil(11_016), "2000-02-29");
+        assert_eq!(civil(20_771), "2026-11-14");
+    }
+
+    #[test]
     fn titles_several_seeds_recommend_rank_first() {
         let item = |id: u64| Item { id, title: id.to_string(), overview: None, poster_path: None, backdrop_path: None, release_date: None, genre_ids: vec![], vote_average: Some(7.) };
         // 7 is second on two lists; 1 tops just one.
@@ -306,8 +339,11 @@ mod tests {
         assert!(discover_url("movie", &Filter { country: Some("IN"), ..Filter::default() }, 1).contains("with_origin_country=IN"));
         assert!(discover_url("series", &Filter { hide_animation: true, ..Filter::default() }, 1).contains("without_genres=16"));
         // Narrowed, the vote minimum drops so smaller countries and genres still fill the grid.
-        assert!(discover_url("movie", &Filter { sort: Sort::Newest, ..Filter::default() }, 1).contains("vote_count.gte=100"));
-        assert!(discover_url("movie", &Filter { sort: Sort::Newest, country: Some("IN"), ..Filter::default() }, 1).contains("vote_count.gte=10&"));
+        assert!(discover_url("movie", &Filter { sort: Sort::Rating, ..Filter::default() }, 1).contains("vote_count.gte=500"));
+        assert!(discover_url("movie", &Filter { sort: Sort::Rating, country: Some("IN"), ..Filter::default() }, 1).contains("vote_count.gte=50&"));
+        // Newest: by release date only, released by today.
+        let newest = discover_url("series", &Filter { sort: Sort::Newest, ..Filter::default() }, 1);
+        assert!(!newest.contains("vote_count") && newest.contains(&format!("first_air_date.lte={}", today())) && newest.contains("sort_by=first_air_date.desc"), "{newest}");
         for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=10&", "sort_by=popularity.desc"] {
             assert!(url.contains(part), "{part} in {url}");
         }

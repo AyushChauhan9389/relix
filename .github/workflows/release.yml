@@ -2,9 +2,9 @@
 # Stable (after bumping version in crates/relix-app/Cargo.toml): Windows (setup .exe, .msi, portable
 # .exe, portable .zip), Linux (.deb, portable .tar.gz) and Android (.apk), a GitHub release, and the
 # desktop builds published for auto-update (Android updates by installing the new APK over the old one).
-# Nightly (no bump needed): the next version plus the run number (0.2.4-nightly.12), portable builds
-# and the APK only, a pre-release, and the nightly update channel. A stable release reaches nightly
-# users too, since it's newer than its nightlies.
+# Nightly (no bump needed): the next version plus the run number (0.2.5-nightly.12), portable builds
+# and the APK only, published to the nightly update channel; no GitHub release or tag (the files
+# stay on the run as artifacts). A stable release reaches nightly users too, since it's newer.
 name: Release
 
 on:
@@ -268,17 +268,21 @@ jobs:
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/latest-msi.json
           # Builds before per-OS manifests ask for latest.json; it's the Windows one.
           cp dist/latest-windows.json dist/latest.json
+      # Nightlies aren't on the Releases page (no release, no tag): they reach testers through the
+      # nightly update channel, and their files stay on the workflow run as artifacts.
       - name: Release notes
+        if: env.NIGHTLY == ''
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: bash packaging/release-notes.sh "$VERSION" > notes.md && cat notes.md
       - name: GitHub release
+        if: env.NIGHTLY == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v$VERSION" dist/Relix-* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Relix $VERSION" --notes-file notes.md ${NIGHTLY:+--prerelease}
+            --title "Relix $VERSION" --notes-file notes.md
       - name: Publish for auto-update
         env:
           TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
