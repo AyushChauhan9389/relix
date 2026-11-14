@@ -180,7 +180,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                 let _ = (filter.read().genres.clone(), filter.read().match_any);
                 if catalogs(&ctx).get(*picked.peek()).is_some_and(|(i, _)| i.is_none()) {
                     let f = filter.read();
-                    let _ = (f.years, f.min_rating, f.sort);
+                    let _ = (f.years, f.min_rating, f.sort, f.country);
                 }
                 if *last_kind.peek() != k {
                     // A new type starts from its first catalog, unfiltered; those writes rerun this.
@@ -357,6 +357,17 @@ fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, cur
             "Rating",
             segmented(&ratings.map(|(r, t)| (t, f.min_rating == r)), move |n| filter.write().min_rating = ratings[n].0).into(),
         ))
+        // Only TMDB knows where a title comes from.
+        .maybe(every_year, |el| {
+            let name = |c: Option<&str>| c.and_then(|c| crate::tmdb::COUNTRIES.iter().find(|(code, _)| *code == c)).map_or("Any", |(_, n)| *n);
+            let choices: Vec<Option<&'static str>> = std::iter::once(None).chain(crate::tmdb::COUNTRIES.iter().map(|(c, _)| Some(*c))).collect();
+            let items: Vec<Element> = choices
+                .into_iter()
+                .map(|c| MenuItem::new().selected(c == f.country).on_press(move |_| filter.write().country = c).child(name(c)).into_element())
+                .collect();
+            // Its own scrolling box, like the years: the list is longer than the screen.
+            el.child(field("Country", Select::new().selected_item(name(f.country)).children([ScrollView::new().width(Size::px(200.)).height(Size::px(320.)).children(items).into_element()]).into()))
+        })
         .child(field(
             "Sort",
             Select::new()

@@ -15,6 +15,8 @@ pub struct Filter {
     pub min_rating: Option<f32>,
     pub sort: Sort,
     pub hide_watched: bool,
+    /// ISO 3166-1 code of the country a title comes from; only TMDB knows it (tmdb.rs).
+    pub country: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

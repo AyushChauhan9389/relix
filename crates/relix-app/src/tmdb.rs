@@ -37,6 +37,19 @@ pub fn genres(kind: &str) -> &'static [(u32, &'static str)] {
     if kind == "series" { TV } else { MOVIE }
 }
 
+/// The Country filter's choices: (ISO 3166-1 code, name).
+// shortcut: the main film and TV countries only, not TMDB's ~250; add any that viewers ask for.
+pub const COUNTRIES: &[(&str, &str)] = &[
+    ("US", "United States"), ("GB", "United Kingdom"), ("IN", "India"), ("KR", "South Korea"), ("JP", "Japan"),
+    ("CN", "China"), ("HK", "Hong Kong"), ("TW", "Taiwan"), ("TH", "Thailand"), ("PH", "Philippines"),
+    ("ID", "Indonesia"), ("PK", "Pakistan"), ("TR", "Turkey"), ("IR", "Iran"), ("EG", "Egypt"),
+    ("NG", "Nigeria"), ("ZA", "South Africa"), ("FR", "France"), ("DE", "Germany"), ("ES", "Spain"),
+    ("IT", "Italy"), ("NL", "Netherlands"), ("BE", "Belgium"), ("SE", "Sweden"), ("DK", "Denmark"),
+    ("NO", "Norway"), ("FI", "Finland"), ("PL", "Poland"), ("RU", "Russia"), ("UA", "Ukraine"),
+    ("IE", "Ireland"), ("CA", "Canada"), ("MX", "Mexico"), ("BR", "Brazil"), ("AR", "Argentina"),
+    ("CO", "Colombia"), ("CL", "Chile"), ("AU", "Australia"), ("NZ", "New Zealand"),
+];
+
 /// The discover query for one page: the filter's genres, years, rating and sort.
 fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
     let tv = kind == "series";
@@ -72,6 +85,9 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
         Sort::Name => if tv { "name.asc" } else { "title.asc" },
     };
     q.push(format!("sort_by={sort}"));
+    if let Some(code) = f.country {
+        q.push(format!("with_origin_country={code}"));
+    }
     format!("{API}/discover/{}?{}", if tv { "tv" } else { "movie" }, q.join("&"))
 }
 
@@ -164,6 +180,7 @@ mod tests {
         let f = Filter { genres: vec!["Comedy".into(), "Drama".into()], years: Some((2009, 2010)), min_rating: Some(7.), ..Filter::default() };
         let url = discover_url("movie", &f, 2);
         assert!(url.starts_with("https://api.tmdb.org/3/discover/movie?page=2&"), "{url}");
+        assert!(discover_url("movie", &Filter { country: Some("IN"), ..Filter::default() }, 1).contains("with_origin_country=IN"));
         for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=100", "sort_by=popularity.desc"] {
             assert!(url.contains(part), "{part} in {url}");
         }
