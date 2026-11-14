@@ -85,6 +85,10 @@ fn discover_url(kind: &str, f: &Filter, page: u32) -> String {
         Sort::Name => if tv { "name.asc" } else { "title.asc" },
     };
     q.push(format!("sort_by={sort}"));
+    // Animation is genre 16 for movies and series alike; anime is filed under it.
+    if f.hide_animation {
+        q.push("without_genres=16".into());
+    }
     if let Some(code) = f.country {
         q.push(format!("with_origin_country={code}"));
     }
@@ -181,6 +185,7 @@ mod tests {
         let url = discover_url("movie", &f, 2);
         assert!(url.starts_with("https://api.tmdb.org/3/discover/movie?page=2&"), "{url}");
         assert!(discover_url("movie", &Filter { country: Some("IN"), ..Filter::default() }, 1).contains("with_origin_country=IN"));
+        assert!(discover_url("series", &Filter { hide_animation: true, ..Filter::default() }, 1).contains("without_genres=16"));
         for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=100", "sort_by=popularity.desc"] {
             assert!(url.contains(part), "{part} in {url}");
         }

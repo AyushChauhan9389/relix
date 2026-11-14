@@ -180,7 +180,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                 let _ = (filter.read().genres.clone(), filter.read().match_any);
                 if catalogs(&ctx).get(*picked.peek()).is_some_and(|(i, _)| i.is_none()) {
                     let f = filter.read();
-                    let _ = (f.years, f.min_rating, f.sort, f.country);
+                    let _ = (f.years, f.min_rating, f.sort, f.country, f.hide_animation);
                 }
                 if *last_kind.peek() != k {
                     // A new type starts from its first catalog, unfiltered; those writes rerun this.
@@ -384,6 +384,17 @@ fn filter_bar(loaded: &[MetaPreview], f: &Filter, mut filter: State<Filter>, cur
                 ..Focusable::new(chip("Hide watched".into(), f.hide_watched), move |()| {
                     let on = filter.peek().hide_watched;
                     filter.write().hide_watched = !on;
+                })
+            }
+            .into(),
+        ))
+        .child(field(
+            "Animation",
+            Focusable {
+                radius: 16.,
+                ..Focusable::new(chip("Hide animation & anime".into(), f.hide_animation), move |()| {
+                    let on = filter.peek().hide_animation;
+                    filter.write().hide_animation = !on;
                 })
             }
             .into(),

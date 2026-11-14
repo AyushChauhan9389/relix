@@ -15,6 +15,8 @@ pub struct Filter {
     pub min_rating: Option<f32>,
     pub sort: Sort,
     pub hide_watched: bool,
+    /// Leaves out animation, anime included.
+    pub hide_animation: bool,
     /// ISO 3166-1 code of the country a title comes from; only TMDB knows it (tmdb.rs).
     pub country: Option<&'static str>,
 }
@@ -52,6 +54,7 @@ pub fn apply(items: &[MetaPreview], f: &Filter, watched: &HashSet<String>) -> Ve
         .filter(|m| f.years.is_none_or(|(from, to)| m.year().is_some_and(|y| (from..=to).contains(&y))))
         .filter(|m| f.min_rating.is_none_or(|min| m.rating().is_some_and(|r| r >= min)))
         .filter(|m| !(f.hide_watched && watched.contains(&m.id)))
+        .filter(|m| !(f.hide_animation && m.genres.iter().any(|g| g.eq_ignore_ascii_case("animation") || g.eq_ignore_ascii_case("anime"))))
         .cloned()
         .collect();
     // Stable sorts; titles missing the sort key go last.
@@ -125,6 +128,15 @@ mod tests {
     fn hide_watched() {
         let f = Filter { hide_watched: true, ..Default::default() };
         assert_eq!(ids(&f, &["c-comedy", "b-action"]), ["a-action-comedy", "d-drama"]);
+    }
+
+    #[test]
+    fn hide_animation() {
+        let anime = title("e-anime", &["Anime", "Action"], "2020", None);
+        let toon = title("f-toon", &["animation"], "2020", None);
+        let f = Filter { hide_animation: true, ..Default::default() };
+        let shown: Vec<String> = apply(&[anime, toon, title("g-drama", &["Drama"], "2020", None)], &f, &HashSet::new()).into_iter().map(|m| m.id).collect();
+        assert_eq!(shown, ["g-drama"]);
     }
 
     #[test]
