@@ -310,6 +310,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         ("aid", Format::String),
         ("paused-for-cache", Format::Flag),
         ("seeking", Format::Flag),
+        ("frame-drop-count", Format::Int64),
     ]
     .into_iter()
     .enumerate()
@@ -327,6 +328,8 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
     let mut pending: Vec<[String; 4]> = vec![];
     // The first addon subtitle in the preferred language is selected, unless one already is.
     let mut want_sub = prefs.sub_lang.clone().filter(|l| l != "off");
+    let mut drops = DropWatch::new();
+    let mut decoder_logged = false;
     loop {
         for msg in inbox.try_iter() {
             match msg {
@@ -379,6 +382,16 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     }
                     status.seeking = v;
                 }
+                (11, PropertyData::Int64(n)) => {
+                    // Seeks and stalls skip frames on purpose; only steady playback counts.
+                    let steady = status.loaded && !status.seeking && !status.buffering && !status.paused;
+                    if drops.lighten(n, steady, std::time::Instant::now()) {
+                        crate::log!("player: dropping frames ({n} so far); switching to lighter rendering");
+                        if let Err(e) = mpv.command("apply-profile", &["fast"]) {
+                            crate::log!("player: lighter rendering: {e}");
+                        }
+                    }
+                }
                 _ => {}
             },
             // A playlist link expanding into its entries; playback goes on with them.
@@ -389,11 +402,45 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
             Some(Err(e)) => return Err(e),
             _ => {}
         }
+        // Once frames flow, which decoder mpv picked (hardware or not), for the debug log.
+        if !decoder_logged && status.position > 1. {
+            decoder_logged = true;
+            let hwdec = mpv.get_property::<String>("hwdec-current").unwrap_or_default();
+            crate::log!("player: decoding {}", if hwdec.is_empty() || hwdec == "no" { "on the CPU".to_owned() } else { format!("on the GPU ({hwdec})") });
+        }
         let only_position = Status { position: before.position, ..status.clone() } == before;
         if status != before && (!only_position || (status.position - sent_position).abs() >= 0.25) {
             sent_position = status.position;
             send(status.clone());
         }
+    }
+}
+
+/// Frames mpv drops during steady playback: past 12 in 10 seconds the GPU can't keep up with
+/// mpv's high-quality scaling, so playback switches to its lighter "fast" profile, once.
+struct DropWatch {
+    /// The count and time the current 10-second window started at.
+    from: (i64, std::time::Instant),
+    lightened: bool,
+}
+
+impl DropWatch {
+    fn new() -> Self {
+        Self { from: (0, std::time::Instant::now()), lightened: false }
+    }
+
+    /// Takes mpv's running drop count; true when it's time to switch.
+    fn lighten(&mut self, count: i64, steady: bool, now: std::time::Instant) -> bool {
+        let window = std::time::Duration::from_secs(10);
+        if self.lightened || !steady || now.duration_since(self.from.1) > window {
+            self.from = (count, now);
+            return false;
+        }
+        if count - self.from.0 >= 12 {
+            self.lightened = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -423,6 +470,23 @@ mod tests {
 
     fn sub(lang: &str, url: &str) -> Subtitle {
         Subtitle { id: url.into(), url: url.into(), lang: lang.into() }
+    }
+
+    #[test]
+    fn steady_dropping_lightens_rendering_once() {
+        use std::time::{Duration, Instant};
+        let t = Instant::now();
+        let mut w = DropWatch::new();
+        w.from = (0, t);
+        assert!(!w.lighten(5, true, t + Duration::from_secs(1)));
+        assert!(w.lighten(12, true, t + Duration::from_secs(5)), "12 in 5 seconds");
+        assert!(!w.lighten(40, true, t + Duration::from_secs(6)), "only once");
+        // A seek's skipped frames and slow trickles don't count.
+        let mut w = DropWatch::new();
+        w.from = (0, t);
+        assert!(!w.lighten(30, false, t + Duration::from_secs(1)), "seeking");
+        assert!(!w.lighten(35, true, t + Duration::from_secs(2)));
+        assert!(!w.lighten(41, true, t + Duration::from_secs(13)), "6 more, but a new window");
     }
 
     #[test]

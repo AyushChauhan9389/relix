@@ -49,6 +49,8 @@ impl Drop for VideoRenderer {
 struct Gl {
     ctx: MpvRenderContext<'static>,
     target: Option<((i32, i32), Surface)>,
+    /// The target holds a frame drawn at its current size.
+    drawn: bool,
 }
 
 impl VideoRenderer {
@@ -76,7 +78,17 @@ impl VideoRenderer {
             let mut ctx: MpvRenderContext<'static> = unsafe { std::mem::transmute(ctx) };
             let on_frame = self.on_frame.clone();
             ctx.set_update_callback(move || on_frame());
-            *gl = Some(Gl { ctx, target: None });
+            // With no real GPU (software OpenGL) mpv's high-quality scaling costs whole CPU cores:
+            // 4K took 21 cores with it, 1 with mpv's "fast" profile (measured on llvmpipe).
+            let renderer = gl_renderer();
+            crate::log!("player: GPU {renderer}");
+            if is_software(&renderer) {
+                crate::log!("player: software rendering; using lighter rendering");
+                if let Err(e) = self.mpv().command("apply-profile", &["fast"]) {
+                    crate::log!("player: lighter rendering: {e}");
+                }
+            }
+            *gl = Some(Gl { ctx, target: None, drawn: false });
             // If the player stopped waiting (the window didn't draw in time) the file plays without
             // video; this brings it back. Only once a file is open (before, mpv just logs an error).
             if self.mpv().get_property::<String>("path").is_ok() {
@@ -91,8 +103,17 @@ impl VideoRenderer {
             let info = ImageInfo::new_n32_premul(size, None);
             let surface = gpu::surfaces::render_target(dctx, Budgeted::Yes, &info, None, SurfaceOrigin::BottomLeft, None, false, None)?;
             gl.target = Some((size, surface));
+            gl.drawn = false;
         }
+        // mpv says whether a new frame is due (its API asks for this after each update callback).
+        // The window also repaints for the controls (fading, the clock, the pointer): those reuse
+        // the frame already drawn instead of rendering the video again, a full scaling pass each.
+        let new_frame = gl.ctx.update().is_ok_and(|flags| flags & libmpv2::render::mpv_render_update::Frame != 0);
         let (_, surface) = gl.target.as_mut()?;
+        if gl.drawn && !new_frame {
+            return Some(surface.image_snapshot());
+        }
+        gl.drawn = true;
         let target = gpu::surfaces::get_backend_render_target(surface, BackendHandleAccess::FlushWrite)?;
         let fbo = target.gl_framebuffer_info()?.fboid;
         // Skia's queued work must reach the GPU before mpv draws, and mpv leaves GL state behind.
@@ -105,6 +126,24 @@ impl VideoRenderer {
         }
         Some(surface.image_snapshot())
     }
+}
+
+/// The current OpenGL context's renderer name (GL_RENDERER), e.g. "NVIDIA GeForce RTX 3060/PCIe/SSE2".
+fn gl_renderer() -> String {
+    const GL_RENDERER: u32 = 0x1F01;
+    let get = gl_proc(&(), "glGetString");
+    if get.is_null() {
+        return String::new();
+    }
+    // SAFETY: glGetString from the current context; it returns a static string or null.
+    let text = unsafe { std::mem::transmute::<*mut c_void, unsafe extern "system" fn(u32) -> *const std::ffi::c_char>(get)(GL_RENDERER) };
+    if text.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned() }
+}
+
+/// Software OpenGL: Mesa's llvmpipe and softpipe, Windows' fallback, and Google's SwiftShader.
+fn is_software(renderer: &str) -> bool {
+    let r = renderer.to_lowercase();
+    ["llvmpipe", "softpipe", "swiftshader", "gdi generic", "basic render", "software rasterizer"].iter().any(|s| r.contains(s))
 }
 
 #[cfg(windows)]
@@ -276,6 +315,19 @@ impl ElementExt for VideoElement {
         if let Some(image) = self.renderer.frame(&mut dctx, size) {
             let rect = SkRect::new(area.min_x(), area.min_y(), area.max_x(), area.max_y());
             context.canvas.draw_image_rect(&image, None, rect, &Paint::default());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn spots_software_opengl() {
+        for r in ["llvmpipe (LLVM 20.1.2, 256 bits)", "GDI Generic", "Microsoft Basic Render Driver", "Google SwiftShader"] {
+            assert!(super::is_software(r), "{r}");
+        }
+        for r in ["NVIDIA GeForce RTX 3060/PCIe/SSE2", "Mesa Intel(R) UHD Graphics 620 (KBL GT2)", "AMD Radeon Graphics (radeonsi, renoir)", "Adreno (TM) 610"] {
+            assert!(!super::is_software(r), "{r}");
         }
     }
 }
