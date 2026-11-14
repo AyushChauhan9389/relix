@@ -31,18 +31,34 @@ pub struct VideoRenderer {
 
 impl Drop for VideoRenderer {
     fn drop(&mut self) {
-        // The GL side goes here, where Freya's GL context is current, and before the core it borrows.
-        let started = std::time::Instant::now();
         // libmpv2 frees the frame callback before the context, so swap in one that owns nothing first.
         if let Some(gl) = self.gl.borrow_mut().as_mut() {
             gl.ctx.set_update_callback(|| {});
         }
-        self.gl.borrow_mut().take();
-        crate::log!("player: video renderer released in {} ms (UI thread)", started.elapsed().as_millis());
-        // Destroying mpv waits for its network and decoder threads to stop: never on the UI thread.
-        if let Some(mpv) = self.mpv.take() {
-            std::thread::spawn(move || drop(mpv));
+        let (gl, mpv) = (self.gl.borrow_mut().take(), self.mpv.take());
+        // Freeing mpv's render context blocks the UI thread (~300 ms on a laptop) and must happen
+        // there, where Freya's GL context is current. Done half a second later, the page the player
+        // closes to has been drawn first: closing feels instant. Without Freya's tasks (quitting),
+        // it happens now.
+        if freya_core::current_context::CurrentContext::try_with(|_| ()).is_some() {
+            spawn_in_window(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                release(gl, mpv);
+            });
+        } else {
+            release(gl, mpv);
         }
+    }
+}
+
+/// Frees the GL side, then the mpv core it borrows.
+fn release(gl: Option<Gl>, mpv: Option<Arc<Mpv>>) {
+    let started = std::time::Instant::now();
+    drop(gl);
+    crate::log!("player: video renderer released in {} ms (UI thread)", started.elapsed().as_millis());
+    // Destroying mpv waits for its network and decoder threads to stop: never on the UI thread.
+    if let Some(mpv) = mpv {
+        std::thread::spawn(move || drop(mpv));
     }
 }
 
