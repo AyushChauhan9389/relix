@@ -732,30 +732,38 @@ pub async fn load_rows(mut ctx: Ctx) {
     ctx.rows_loading.set(false);
 }
 
-#[derive(Routable, Clone, PartialEq, Debug)]
-#[rustfmt::skip]
-pub enum Route {
-    #[layout(Shell)]
-        #[route("/")]
-        Home,
-        #[route("/title/:kind/:id")]
-        Detail { kind: String, id: String },
-        #[route("/addons")]
-        Addons,
-        #[route("/search")]
-        Search,
-        #[route("/browse/:kind")]
-        Browse { kind: String },
-        #[route("/browse/:kind/:catalog")]
-        BrowseCatalog { kind: String, catalog: usize },
-        #[route("/account")]
-        Account,
-        #[route("/my-list")]
-        MyList,
-        #[route("/settings")]
-        Settings,
-        #[route("/friends")]
-        Friends,
+// Rust 1.100 flags unreachable code inside Freya's `Routable` derive, not code of ours; the allow
+// has to sit on a module, since the derive's impls are siblings of the enum.
+pub use routes::Route;
+#[allow(unreachable_code)]
+mod routes {
+    use super::*;
+
+    #[derive(Routable, Clone, PartialEq, Debug)]
+    #[rustfmt::skip]
+    pub enum Route {
+        #[layout(Shell)]
+            #[route("/")]
+            Home,
+            #[route("/title/:kind/:id")]
+            Detail { kind: String, id: String },
+            #[route("/addons")]
+            Addons,
+            #[route("/search")]
+            Search,
+            #[route("/browse/:kind")]
+            Browse { kind: String },
+            #[route("/browse/:kind/:catalog")]
+            BrowseCatalog { kind: String, catalog: usize },
+            #[route("/account")]
+            Account,
+            #[route("/my-list")]
+            MyList,
+            #[route("/settings")]
+            Settings,
+            #[route("/friends")]
+            Friends,
+    }
 }
 
 /// "Relix x.y.z is ready · Restart", bottom-right, once an update has downloaded.
