@@ -13,7 +13,9 @@ use tokio::task::JoinSet;
 use crate::filter::{Filter, Sort};
 
 const TOKEN: Option<&str> = option_env!("RELIX_TMDB_TOKEN");
-const API: &str = "https://api.themoviedb.org/3";
+// TMDB's other API address: api.themoviedb.org resets about half of new connections from some
+// networks (seen from India: 9 of 20 failed, api.tmdb.org 0 of 20).
+const API: &str = "https://api.tmdb.org/3";
 
 pub fn enabled() -> bool {
     TOKEN.is_some_and(|t| !t.is_empty())
@@ -161,7 +163,7 @@ mod tests {
     fn filters_become_one_discover_query() {
         let f = Filter { genres: vec!["Comedy".into(), "Drama".into()], years: Some((2009, 2010)), min_rating: Some(7.), ..Filter::default() };
         let url = discover_url("movie", &f, 2);
-        assert!(url.starts_with("https://api.themoviedb.org/3/discover/movie?page=2&"), "{url}");
+        assert!(url.starts_with("https://api.tmdb.org/3/discover/movie?page=2&"), "{url}");
         for part in ["with_genres=35,18", "primary_release_date.gte=2009-01-01", "primary_release_date.lte=2010-12-31", "vote_average.gte=7", "vote_count.gte=100", "sort_by=popularity.desc"] {
             assert!(url.contains(part), "{part} in {url}");
         }
@@ -169,3 +171,5 @@ mod tests {
         assert!(any.contains("/discover/tv?") && any.contains("with_genres=35|80") && any.contains("sort_by=name.asc"), "{any}");
     }
 }
+
+

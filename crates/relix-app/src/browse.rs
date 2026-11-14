@@ -72,6 +72,8 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
         let mut skips = use_state(Vec::<usize>::new);
         let mut more = use_state(|| false);
         let mut loading = use_state(|| true);
+        // Why the last page didn't load (shown instead of "Nothing in this catalog").
+        let mut failed = use_state(|| None::<String>);
         // Bumped on every fresh load, so answers for an older filter are dropped.
         let mut generation = use_state(|| 0u64);
         // Read once per visit, not on every render (it's the whole watched history).
@@ -102,6 +104,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     loading.set(false);
                     return;
                 };
+                failed.set(None);
                 if reset {
                     let next = *generation.peek() + 1;
                     generation.set(next);
@@ -128,6 +131,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                             Err(e) => {
                                 crate::log!("browse: {e}");
                                 more.set(false);
+                                failed.set(Some("Couldn't reach TMDB. Check your connection, or pick another catalog.".into()));
                             }
                         }
                         loading.set(false);
@@ -239,7 +243,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     .maybe(!first_load && shown.is_empty() && !*loading.read() && !list.is_empty(), |el| {
                         el.child(
                             label()
-                                .text(if loaded.is_empty() { "Nothing in this catalog." } else { "No titles match these filters yet. Loosen them, or wait while more load." })
+                                .text(if let Some(why) = failed.read().clone() { why } else if loaded.is_empty() { "Nothing in this catalog.".into() } else { "No titles match these filters yet. Loosen them, or wait while more load.".into() })
                                 .color(theme().muted),
                         )
                     })
