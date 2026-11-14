@@ -69,6 +69,9 @@ struct Tokens {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    /// What the user allowed: Google's consent page lets them untick Drive.
+    #[serde(default)]
+    scope: String,
 }
 
 fn client() -> Result<(&'static str, &'static str), String> {
@@ -117,7 +120,35 @@ async fn api(ctx: &Ctx, req: reqwest::RequestBuilder) -> Result<reqwest::Respons
 }
 
 async fn json<T: serde::de::DeserializeOwned>(res: reqwest::Response) -> Result<T, String> {
-    res.error_for_status().map_err(|e| format!("Google Drive: {}", e.without_url()))?.json().await.map_err(|e| e.without_url().to_string())
+    if !res.status().is_success() {
+        return Err(refusal(res).await);
+    }
+    res.json().await.map_err(|e| e.without_url().to_string())
+}
+
+/// Why Google refused, in words: its error body says more than the status.
+async fn refusal(res: reqwest::Response) -> String {
+    let status = res.status();
+    reason(status, &res.text().await.unwrap_or_default())
+}
+
+const NO_DRIVE_ACCESS: &str = "Relix wasn't allowed into Google Drive: connect again and tick the Google Drive box on Google's page.";
+
+fn reason(status: reqwest::StatusCode, body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let e = &v["error"];
+    let reasons: Vec<&str> = e["errors"].as_array().into_iter().flatten().filter_map(|r| r["reason"].as_str()).chain(e["status"].as_str()).collect();
+    let details = e["details"].to_string();
+    if reasons.contains(&"accessNotConfigured") || details.contains("SERVICE_DISABLED") {
+        return "The Google Drive API isn't turned on in Relix's Google Cloud project (APIs & Services → Library → Google Drive API → Enable).".into();
+    }
+    if reasons.contains(&"insufficientPermissions") || details.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+        return NO_DRIVE_ACCESS.into();
+    }
+    match e["message"].as_str() {
+        Some(m) => format!("Google Drive: {m}"),
+        None => format!("Google Drive refused ({status})"),
+    }
 }
 
 /// The Google address this device signed in with.
@@ -190,7 +221,7 @@ pub async fn share(ctx: &Ctx, file_id: &str, email: &str) -> Result<(), String> 
     let res = api(ctx, ctx.http.post(url).json(&body)).await?;
     match res.status() {
         s if s.is_success() => Ok(()),
-        s => Err(format!("Google Drive refused to share it ({s})")),
+        _ => Err(refusal(res).await),
     }
 }
 
@@ -207,8 +238,7 @@ pub async fn trash(ctx: &Ctx, file_id: &str) -> Result<(), String> {
     match res.status().as_u16() {
         200 => Ok(()),
         404 => Err("Drive has no such file for this Google account (already deleted, or someone else's).".into()),
-        403 => Err("This Google account can't delete that file: only its owner can.".into()),
-        code => Err(format!("Google Drive refused ({code}).")),
+        _ => Err(refusal(res).await),
     }
 }
 
@@ -328,6 +358,9 @@ async fn sign_in(ctx: &Ctx) -> Result<String, String> {
         ("grant_type", "authorization_code"),
     ];
     let tokens = token_request(&ctx.http, &form).await?;
+    if !tokens.scope.split(' ').any(|s| s == SCOPE) {
+        return Err(NO_DRIVE_ACCESS.into());
+    }
     let refresh = tokens.refresh_token.clone().ok_or("Google didn't give Relix a lasting sign-in; try again")?;
     if let Err(e) = ctx.store.set_meta(META, Some(&refresh)) {
         crate::log!("saving Google sign-in: {e}");
@@ -396,6 +429,17 @@ mod tests {
         assert!(matches!(parse_callback(ok, "other"), Some(Err(_))));
         assert!(matches!(parse_callback("GET /?state=s1&error=access_denied HTTP/1.1\r\n", "s1"), Some(Err(e)) if e.contains("cancelled")));
         assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1\r\n", "s1"), None);
+    }
+
+    #[test]
+    fn google_refusals_say_why() {
+        let off = r#"{"error":{"code":403,"message":"Google Drive API has not been used in project 1 before or it is disabled.","errors":[{"reason":"accessNotConfigured"}],"status":"PERMISSION_DENIED"}}"#;
+        assert!(reason(reqwest::StatusCode::FORBIDDEN, off).contains("isn't turned on"));
+        let scope = r#"{"error":{"code":403,"message":"Request had insufficient authentication scopes.","errors":[{"reason":"insufficientPermissions"}],"status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}"#;
+        assert_eq!(reason(reqwest::StatusCode::FORBIDDEN, scope), NO_DRIVE_ACCESS);
+        let other = r#"{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.","errors":[{"reason":"insufficientFilePermissions"}]}}"#;
+        assert_eq!(reason(reqwest::StatusCode::FORBIDDEN, other), "Google Drive: The user does not have sufficient permissions for this file.");
+        assert_eq!(reason(reqwest::StatusCode::BAD_GATEWAY, "<html>"), "Google Drive refused (502 Bad Gateway)");
     }
 
     #[test]
