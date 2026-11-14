@@ -425,19 +425,25 @@ async fn delete_account(State(s): State<AppState>, headers: HeaderMap, Json(req)
 #[derive(serde::Deserialize)]
 struct LatestQuery {
     os: Option<String>,
+    /// `nightly` for the frequent test builds; anything else is the stable channel.
+    channel: Option<String>,
 }
 
 /// `latest-<os>.json`; without `os` (builds before per-OS manifests) it's `latest.json`, the Windows one.
+/// The nightly channel reads `nightly-<os>.json`, and stable's until a nightly is published.
 async fn update_latest(State(s): State<AppState>, Query(q): Query<LatestQuery>) -> Response {
     let name = match q.os.as_deref() {
         None => "latest.json".to_owned(),
         Some(os) if !os.is_empty() && os.chars().all(|c| c.is_ascii_lowercase()) => format!("latest-{os}.json"),
         Some(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match tokio::fs::read(s.config.update_dir.join(name)).await {
-        Ok(bytes) => ([("content-type", "application/json")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    let nightly = (q.channel.as_deref() == Some("nightly")).then(|| name.replacen("latest", "nightly", 1));
+    for name in nightly.iter().chain([&name]) {
+        if let Ok(bytes) = tokio::fs::read(s.config.update_dir.join(name)).await {
+            return ([("content-type", "application/json")], bytes).into_response();
+        }
     }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 // shortcut: reads the whole file into memory (~65 MB per download); stream it if many clients update at once.

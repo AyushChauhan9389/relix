@@ -4,7 +4,11 @@
 # The download table (packaging/release-notes.md) always follows.
 set -uo pipefail
 version=$1
-prev=$(git describe --tags --abbrev=0 2>/dev/null || true)
+# A nightly covers what's new since the last release of any kind; a stable one since the last stable.
+case "$version" in
+  *-nightly.*) prev=$(git describe --tags --abbrev=0 2>/dev/null || true) ;;
+  *) prev=$(git describe --tags --abbrev=0 --exclude '*-nightly.*' 2>/dev/null || true) ;;
+esac
 commits=$(git log ${prev:+"$prev"..HEAD} --no-merges --format='- %s%n%b' | grep -v '^Co-Authored-By\|^Claude-Session\|^$' | head -c 30000)
 
 notes=""

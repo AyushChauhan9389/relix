@@ -15,9 +15,18 @@ pub struct UpdateManifest {
     pub signature: String,
 }
 
-/// Whether `candidate` is a later version than `current`, comparing dotted numbers.
+/// Whether `candidate` is a later version than `current`, comparing dotted numbers. A nightly
+/// build (`0.2.4-nightly.12`) comes before its stable release (`0.2.4`) and after the one before.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
-    let parse = |v: &str| v.split('.').map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok();
+    let parse = |v: &str| {
+        let (base, nightly) = match v.split_once("-nightly.") {
+            Some((base, n)) => (base, n.parse::<u64>().ok()?),
+            None => (v, u64::MAX),
+        };
+        let mut parts = base.split('.').map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok()?;
+        parts.push(nightly);
+        Some(parts)
+    };
     matches!((parse(candidate), parse(current)), (Some(a), Some(b)) if a > b)
 }
 

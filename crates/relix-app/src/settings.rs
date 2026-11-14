@@ -104,7 +104,7 @@ impl Component for Settings {
                                 rect()
                                     .width(if phone { Size::fill() } else { Size::flex(1.) })
                                     .spacing(4.)
-                                    .child(label().text(format!("Relix {}", env!("CARGO_PKG_VERSION"))).font_size(16.).font_weight(FontWeight::BOLD))
+                                    .child(label().text(format!("Relix {}", update::version())).font_size(16.).font_weight(FontWeight::BOLD))
                                     .child(if *checking.read() {
                                         busy("Checking…").into_element()
                                     } else {
@@ -138,6 +138,7 @@ impl Component for Settings {
                     .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
                     .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))
                     .maybe(crate::drive::enabled(), |el| el.child(GoogleAccount))
+                    .maybe(update::enabled(), |el| el.child(UpdateChannel))
                     .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
@@ -310,5 +311,74 @@ impl Component for GoogleAccount {
                     }),
             )
             .maybe_child(error.read().clone().map(|e| paragraph().width(Size::fill()).font_size(13.).color(crate::theme::ERROR).span(e)))
+    }
+}
+
+/// Stable or Nightly updates for this device.
+#[derive(PartialEq)]
+struct UpdateChannel;
+
+impl Component for UpdateChannel {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        let mut current = use_state(|| update::channel(&ctx));
+        // The section's task, not the button's (see together.rs `act`).
+        let scope = use_hook(current_scope_id);
+        let mut note = use_state(|| None::<String>);
+        let option = |name: &'static str, value: &'static str| {
+            let (ctx, on) = (ctx.clone(), *current.read() == value);
+            Focusable {
+                radius: 6.,
+                ..Focusable::new(
+                    rect()
+                        .padding(Gaps::new(8., 18., 8., 18.))
+                        .corner_radius(6.)
+                        .maybe(on, |el| el.background((255, 255, 255)))
+                        .child(label().text(name).font_size(14.).font_weight(FontWeight::BOLD).color(if on { (0, 0, 0) } else { theme().muted })),
+                    move |()| {
+                        update::set_channel(&ctx, value);
+                        current.set(value.to_owned());
+                        // Look right away, so switching to Nightly offers its latest build.
+                        let ctx = ctx.clone();
+                        spawn_in_scope(async move { note.set(Some(update::check_now(ctx).await)) }, scope);
+                    },
+                )
+            }
+            .into_element()
+        };
+        let about = if *current.read() == "nightly" {
+            "Nightly: the newest builds, several a week, for trying features early. Expect rough edges."
+        } else {
+            "Stable: tested releases. Switching back from Nightly keeps the nightly until a newer stable is out."
+        };
+        let phone = crate::theme::phone();
+        rect()
+            .width(Size::fill())
+            .max_width(Size::px(720.))
+            .padding(Gaps::new_all(18.))
+            .maybe(!phone, |el| el.horizontal())
+            .content(Content::Flex)
+            .cross_align(if phone { Alignment::Start } else { Alignment::Center })
+            .spacing(12.)
+            .corner_radius(theme().radius)
+            .background(theme().surface)
+            .child(
+                rect()
+                    .width(if phone { Size::fill() } else { Size::flex(1.) })
+                    .spacing(4.)
+                    .child(label().text("Update channel").font_size(16.).font_weight(FontWeight::BOLD))
+                    .child(paragraph().width(Size::fill()).font_size(13.).color(theme().muted).span(about))
+                    .maybe_child(note.read().clone().map(|n| label().text(n).font_size(13.).color(theme().muted))),
+            )
+            .child(
+                rect()
+                    .horizontal()
+                    .padding(Gaps::new_all(3.))
+                    .spacing(3.)
+                    .corner_radius(8.)
+                    .background(theme().raised)
+                    .child(option("Stable", "stable"))
+                    .child(option("Nightly", "nightly")),
+            )
     }
 }

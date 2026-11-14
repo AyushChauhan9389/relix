@@ -17,6 +17,27 @@ pub fn enabled() -> bool {
     PUBLIC_KEY.is_some()
 }
 
+/// This build's version; nightly builds carry their number (`0.2.4-nightly.12`, RELIX_NIGHTLY).
+pub fn version() -> String {
+    match option_env!("RELIX_NIGHTLY").filter(|n| !n.is_empty()) {
+        Some(n) => format!("{}-nightly.{n}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
+
+/// The releases this device follows, "stable" or "nightly" (this device only, not synced). A
+/// nightly build starts on nightly. Back on stable, a nightly stays until a newer stable is out.
+pub fn channel(ctx: &Ctx) -> String {
+    let default = if version().contains("-nightly.") { "nightly" } else { "stable" };
+    ctx.store.meta("update_channel").ok().flatten().unwrap_or_else(|| default.to_owned())
+}
+
+pub fn set_channel(ctx: &Ctx, channel: &str) {
+    if let Err(e) = ctx.store.set_meta("update_channel", Some(channel)) {
+        crate::log!("saving the update channel: {e}");
+    }
+}
+
 /// A newer version, downloaded and verified, waiting for a restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ready {
@@ -67,7 +88,7 @@ pub async fn check_now(ctx: Ctx) -> String {
             update.set(Some(ready));
             format!("Relix {version} is ready.")
         }
-        Ok(None) => format!("You're up to date (Relix {}).", env!("CARGO_PKG_VERSION")),
+        Ok(None) => format!("You're up to date (Relix {}).", version()),
         Err(e) => format!("Couldn't check for updates: {e}"),
     }
 }
@@ -80,8 +101,11 @@ async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
         return Ok(None);
     }
     let os = if msi { "msi" } else { std::env::consts::OS };
-    let latest: UpdateManifest = get(ctx.http.clone(), crate::sync::server_url(&format!("/update/latest?os={os}"))).await.map_err(|e| e.to_string())?;
-    if !is_newer(&latest.version, env!("CARGO_PKG_VERSION")) {
+    // Nightlies ship the portable files only: a Program Files install stays on stable.
+    let channel = if msi { "stable".to_owned() } else { channel(ctx) };
+    let url = crate::sync::server_url(&format!("/update/latest?os={os}&channel={channel}"));
+    let latest: UpdateManifest = get(ctx.http.clone(), url).await.map_err(|e| e.to_string())?;
+    if !is_newer(&latest.version, &version()) {
         return Ok(None);
     }
     let url = crate::sync::server_url(&format!("/update/files/{}", latest.file));

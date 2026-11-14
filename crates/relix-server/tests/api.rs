@@ -268,8 +268,16 @@ async fn admins_publish_updates_per_os() {
     let bytes: &'static [u8] = Box::leak(latest.to_string().into_bytes().into_boxed_slice());
     assert_eq!(put(&app, "/admin/update/latest-linux.json", Some(ADMIN), bytes).await, StatusCode::NO_CONTENT);
 
-    assert_eq!(call(&app, "/update/latest?os=linux", None, None).await, (StatusCode::OK, latest));
+    assert_eq!(call(&app, "/update/latest?os=linux", None, None).await, (StatusCode::OK, latest.clone()));
     assert_eq!(call(&app, "/update/latest", None, None).await.0, StatusCode::NOT_FOUND, "no Windows (default) build yet");
+
+    // Nightly: stable's manifest until a nightly is published, then the nightly one.
+    assert_eq!(call(&app, "/update/latest?os=linux&channel=nightly", None, None).await, (StatusCode::OK, latest.clone()));
+    let nightly = json!({ "version": "0.2.1-nightly.3", "file": "Relix-nightly-linux.tar.gz", "signature": "sig" });
+    let bytes: &'static [u8] = Box::leak(nightly.to_string().into_bytes().into_boxed_slice());
+    assert_eq!(put(&app, "/admin/update/nightly-linux.json", Some(ADMIN), bytes).await, StatusCode::NO_CONTENT);
+    assert_eq!(call(&app, "/update/latest?os=linux&channel=nightly", None, None).await, (StatusCode::OK, nightly));
+    assert_eq!(call(&app, "/update/latest?os=linux", None, None).await, (StatusCode::OK, latest), "stable doesn't see it");
     assert_eq!(call(&app, "/update/latest?os=..%2Flatest", None, None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(put(&app, "/admin/update/..%2Fescape", Some(ADMIN), b"x").await, StatusCode::BAD_REQUEST);
 

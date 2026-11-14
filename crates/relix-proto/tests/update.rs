@@ -8,6 +8,12 @@ fn compares_versions_number_by_number() {
     assert!(!is_newer("0.1.0", "0.1.0"));
     assert!(!is_newer("0.1.0", "0.2.0"));
     assert!(!is_newer("garbage", "0.1.0"), "an unreadable version never counts as newer");
+    // Nightlies: after the last stable, before their own stable, numbered among themselves.
+    assert!(is_newer("0.2.4-nightly.1", "0.2.3"));
+    assert!(is_newer("0.2.4", "0.2.4-nightly.30"), "the stable release replaces its nightlies");
+    assert!(is_newer("0.2.4-nightly.10", "0.2.4-nightly.9"));
+    assert!(!is_newer("0.2.3", "0.2.4-nightly.1"));
+    assert!(!is_newer("0.2.4-nightly.x", "0.2.3"));
 }
 
 #[test]

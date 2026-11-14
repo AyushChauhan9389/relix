@@ -35,7 +35,7 @@ pub fn init() {
         set(true);
         crate::log!(
             "Relix {} on {} {} ({})",
-            env!("CARGO_PKG_VERSION"),
+            crate::update::version(),
             std::env::consts::OS,
             std::env::consts::ARCH,
             std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()

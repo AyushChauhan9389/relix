@@ -1,10 +1,20 @@
-# Run by hand (Actions → Release → Run workflow) after bumping version in crates/relix-app/Cargo.toml.
-# Builds Windows (setup .exe, .msi, portable .exe, portable .zip), Linux (.deb, portable .tar.gz) and
-# Android (.apk), makes the GitHub release, and publishes the desktop builds for auto-update
-# (Android updates by installing the new APK over the old one).
+# Run by hand (Actions → Release → Run workflow).
+# Stable (after bumping version in crates/relix-app/Cargo.toml): Windows (setup .exe, .msi, portable
+# .exe, portable .zip), Linux (.deb, portable .tar.gz) and Android (.apk), a GitHub release, and the
+# desktop builds published for auto-update (Android updates by installing the new APK over the old one).
+# Nightly (no bump needed): the next version plus the run number (0.2.4-nightly.12), portable builds
+# and the APK only, a pre-release, and the nightly update channel. A stable release reaches nightly
+# users too, since it's newer than its nightlies.
 name: Release
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Stable or nightly
+        type: choice
+        options: [stable, nightly]
+        default: stable
 
 permissions:
   contents: write
@@ -24,13 +34,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      # The plain version the build uses, and the nightly number (empty for stable).
+      base: ${{ steps.version.outputs.base }}
+      nightly: ${{ steps.version.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
       - id: version
         name: Version is new
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/relix-app/Cargo.toml | head -1)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.channel }}" = nightly ]; then
+            # Already released as stable: nightlies lead up to the next patch.
+            if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+              version=$(echo "$version" | awk -F. '{ print $1 "." $2 "." $3 + 1 }')
+            fi
+            { echo "version=$version-nightly.$GITHUB_RUN_NUMBER"; echo "base=$version"; echo "nightly=$GITHUB_RUN_NUMBER"; } >> "$GITHUB_OUTPUT"
+            echo "Releasing nightly $version-nightly.$GITHUB_RUN_NUMBER"
+            exit 0
+          fi
+          { echo "version=$version"; echo "base=$version"; echo "nightly="; } >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
             echo "::error::v$version is already released. Bump version in crates/relix-app/Cargo.toml."
             exit 1
@@ -48,8 +70,15 @@ jobs:
     runs-on: windows-latest
     env:
       V: ${{ needs.check.outputs.version }}
+      RELIX_NIGHTLY: ${{ needs.check.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
+      # Nightly: the version in Cargo.toml is the next stable one (Cargo, the .msi and Android's
+      # version code need plain numbers); the build adds its nightly number (RELIX_NIGHTLY).
+      - name: Nightly version
+        if: needs.check.outputs.nightly != ''
+        shell: bash
+        run: sed -i '0,/^version = /s/^version = ".*"/version = "${{ needs.check.outputs.base }}"/' crates/relix-app/Cargo.toml
       - uses: ./.github/actions/setup
       - uses: taiki-e/install-action@v2
         with:
@@ -82,7 +111,9 @@ jobs:
           $out = "dist/Relix-$env:V-windows-x64-portable.exe"
           $p = Start-Process target/release/relix-app.exe -ArgumentList "--bundle", $out -Wait -PassThru
           if ($p.ExitCode -ne 0 -or -not (Test-Path $out)) { throw "bundling failed" }
+      # Installers need plain version numbers: stable only.
       - name: Setup .exe and .msi
+        if: needs.check.outputs.nightly == ''
         shell: pwsh
         run: |
           cargo packager -p relix-app --release -f nsis,wix
@@ -104,8 +135,15 @@ jobs:
     runs-on: ubuntu-latest
     env:
       V: ${{ needs.check.outputs.version }}
+      RELIX_NIGHTLY: ${{ needs.check.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
+      # Nightly: the version in Cargo.toml is the next stable one (Cargo, the .msi and Android's
+      # version code need plain numbers); the build adds its nightly number (RELIX_NIGHTLY).
+      - name: Nightly version
+        if: needs.check.outputs.nightly != ''
+        shell: bash
+        run: sed -i '0,/^version = /s/^version = ".*"/version = "${{ needs.check.outputs.base }}"/' crates/relix-app/Cargo.toml
       - uses: ./.github/actions/setup
       - uses: taiki-e/install-action@v2
         with:
@@ -123,6 +161,7 @@ jobs:
           touch "$name/portable"
           tar -czf "dist/$name.tar.gz" "$name"
       - name: Debian package
+        if: needs.check.outputs.nightly == ''
         run: |
           cargo packager -p relix-app --release -f deb
           mv dist/relix-app_${V}_amd64.deb "dist/Relix-$V-linux-amd64.deb"
@@ -144,8 +183,15 @@ jobs:
     runs-on: ubuntu-latest
     env:
       V: ${{ needs.check.outputs.version }}
+      RELIX_NIGHTLY: ${{ needs.check.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
+      # Nightly: the version in Cargo.toml is the next stable one (Cargo, the .msi and Android's
+      # version code need plain numbers); the build adds its nightly number (RELIX_NIGHTLY).
+      - name: Nightly version
+        if: needs.check.outputs.nightly != ''
+        shell: bash
+        run: sed -i '0,/^version = /s/^version = ".*"/version = "${{ needs.check.outputs.base }}"/' crates/relix-app/Cargo.toml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
@@ -195,6 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.check.outputs.version }}
+      NIGHTLY: ${{ needs.check.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -211,8 +258,12 @@ jobs:
           chmod +x dist/relix-server
           printf '%s' "$KEY" > signing.key
           trap 'rm -f signing.key' EXIT
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/latest-windows.json
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/latest-linux.json
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/nightly-windows.json
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/nightly-linux.json
+          if [ -n "$NIGHTLY" ]; then exit 0; fi
+          # Stable: the same builds for stable, and nightly users get it too (it's newer).
+          cp dist/nightly-windows.json dist/latest-windows.json
+          cp dist/nightly-linux.json dist/latest-linux.json
           # Program Files (.msi) installs upgrade through the new .msi.
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/latest-msi.json
           # Builds before per-OS manifests ask for latest.json; it's the Windows one.
@@ -227,7 +278,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v$VERSION" dist/Relix-* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Relix $VERSION" --notes-file notes.md
+            --title "Relix $VERSION" --notes-file notes.md ${NIGHTLY:+--prerelease}
       - name: Publish for auto-update
         env:
           TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
@@ -235,9 +286,13 @@ jobs:
           up() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/update/$1"; }
           up "Relix-$VERSION-windows-x64-portable.zip"
           up "Relix-$VERSION-linux-x64.tar.gz"
-          up "Relix-$VERSION-windows-x64.msi"
+          [ -n "$NIGHTLY" ] || up "Relix-$VERSION-windows-x64.msi"
           # Manifests last, so no client sees a version whose file isn't there yet.
-          up latest-windows.json
-          up latest-linux.json
-          up latest-msi.json
-          up latest.json
+          up nightly-windows.json
+          up nightly-linux.json
+          if [ -z "$NIGHTLY" ]; then
+            up latest-windows.json
+            up latest-linux.json
+            up latest-msi.json
+            up latest.json
+          fi
