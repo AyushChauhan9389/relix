@@ -137,6 +137,7 @@ impl Component for Settings {
                     .child(label().text("FRIENDS").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
                     .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))
+                    .maybe(crate::drive::enabled(), |el| el.child(GoogleAccount))
                     .child(label().text("TROUBLESHOOTING").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
@@ -233,5 +234,81 @@ impl Component for Privacy {
                 crate::social::send_presence(&ctx);
                 ctx.sync_soon();
             })))
+    }
+}
+
+/// The Google account Watch Together uses for Drive videos: connect once, it stays connected.
+#[derive(PartialEq)]
+struct GoogleAccount;
+
+impl Component for GoogleAccount {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        // The section's task, not the button's: the button gives way to a spinner.
+        let scope = use_hook(current_scope_id);
+        let mut email = use_state(|| crate::drive::connected_email(&ctx));
+        let mut busy = use_state(|| false);
+        let mut error = use_state(|| None::<String>);
+        let act = move |connect: bool| {
+            let ctx = ctx.clone();
+            move |()| {
+                if *busy.peek() {
+                    return;
+                }
+                busy.set(true);
+                error.set(None);
+                let ctx = ctx.clone();
+                spawn_in_scope(
+                    async move {
+                        if connect {
+                            match crate::drive::email(&ctx).await {
+                                Ok(address) => email.set(Some(address)),
+                                Err(e) => error.set(Some(e)),
+                            }
+                        } else {
+                            crate::drive::disconnect(&ctx).await;
+                            email.set(None);
+                        }
+                        busy.set(false);
+                    },
+                    scope,
+                );
+            }
+        };
+        let about = match email.read().clone() {
+            Some(address) => format!("Connected as {address}. Watch Together uses it for videos in Google Drive."),
+            None => "Watch Together shares Drive videos only with the Google accounts of the people in the party. Connect yours once; it stays connected.".into(),
+        };
+        let connected = email.read().is_some();
+        rect()
+            .width(Size::fill())
+            .max_width(Size::px(720.))
+            .padding(Gaps::new_all(18.))
+            .spacing(10.)
+            .corner_radius(theme().radius)
+            .background(theme().surface)
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .content(Content::Flex)
+                    .cross_align(Alignment::Center)
+                    .spacing(12.)
+                    .child(
+                        rect()
+                            .width(Size::flex(1.))
+                            .spacing(4.)
+                            .child(label().text("Google account").font_size(16.).font_weight(FontWeight::BOLD))
+                            .child(paragraph().width(Size::fill()).font_size(13.).color(theme().muted).span(about)),
+                    )
+                    .child(if *busy.read() {
+                        crate::motion::busy(if connected { "Disconnecting…" } else { "Finish signing in in your browser…" }).into_element()
+                    } else if connected {
+                        Focusable::new(button("Disconnect", theme().raised, (255, 255, 255)), act(false)).into_element()
+                    } else {
+                        Focusable::new(button("Connect", theme().primary.0, theme().primary.1), act(true)).into_element()
+                    }),
+            )
+            .maybe_child(error.read().clone().map(|e| paragraph().width(Size::fill()).font_size(13.).color(crate::theme::ERROR).span(e)))
     }
 }

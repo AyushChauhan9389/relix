@@ -28,8 +28,9 @@ const CLIENT_SECRET: Option<&str> = option_env!("RELIX_GOOGLE_CLIENT_SECRET");
 const SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const API: &str = "https://www.googleapis.com/drive/v3";
-/// Where the refresh token lives in the store's meta table.
+/// Where the refresh token lives in the store's meta table, and the address it belongs to.
 const META: &str = "google_refresh_token";
+const EMAIL_META: &str = "google_email";
 
 /// This device's Google session: plain data, so the relay can refresh it off the UI thread.
 struct Session {
@@ -131,7 +132,27 @@ pub async fn email(ctx: &Ctx) -> Result<String, String> {
         email_address: String,
     }
     let about: About = json(api(ctx, ctx.http.get(format!("{API}/about?fields=user(emailAddress)"))).await?).await?;
+    let _ = ctx.store.set_meta(EMAIL_META, Some(&about.user.email_address));
     Ok(about.user.email_address)
+}
+
+/// The connected Google account's address (Settings), if this device has signed in.
+pub fn connected_email(ctx: &Ctx) -> Option<String> {
+    ctx.store.meta(META).ok().flatten()?;
+    ctx.store.meta(EMAIL_META).ok().flatten()
+}
+
+/// Forgets the Google sign-in on this device and tells Google to revoke it.
+pub async fn disconnect(ctx: &Ctx) {
+    let refresh = ctx.store.meta(META).ok().flatten();
+    let _ = ctx.store.set_meta(META, None);
+    let _ = ctx.store.set_meta(EMAIL_META, None);
+    *SESSION.lock().unwrap() = None;
+    if let Some(token) = refresh {
+        let url = format!("https://oauth2.googleapis.com/revoke?token={token}");
+        // Best effort: forgotten here either way.
+        let _ = ctx.http.post(url).header("content-type", "application/x-www-form-urlencoded").timeout(Duration::from_secs(10)).send().await;
+    }
 }
 
 /// Host: the file is a video in this account's Drive that it may share.
