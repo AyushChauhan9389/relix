@@ -2,8 +2,8 @@
 # Stable (after bumping version in crates/relix-app/Cargo.toml): Windows (setup .exe, .msi, portable
 # .exe, portable .zip), Linux (.deb, portable .tar.gz) and Android (.apk), a GitHub release, and the
 # desktop builds published for auto-update (Android updates by installing the new APK over the old one).
-# Nightly (no bump needed): the next version plus the run number (0.2.5-nightly.12), portable builds
-# and the APK only, published to the nightly update channel; no GitHub release or tag (the files
+# Nightly (no bump needed): the next version plus the run number (0.2.5-nightly.12), Windows (setup,
+# .msi, portable), the Linux portable build and the APK, published to the nightly update channel; no GitHub release or tag (the files
 # stay on the run as artifacts). A stable release reaches nightly users too, since it's newer.
 name: Release
 
@@ -71,6 +71,7 @@ jobs:
     env:
       V: ${{ needs.check.outputs.version }}
       RELIX_NIGHTLY: ${{ needs.check.outputs.nightly }}
+      BASE: ${{ needs.check.outputs.base }}
     steps:
       - uses: actions/checkout@v7
       # Nightly: the version in Cargo.toml is the next stable one (Cargo, the .msi and Android's
@@ -111,15 +112,15 @@ jobs:
           $out = "dist/Relix-$env:V-windows-x64-portable.exe"
           $p = Start-Process target/release/relix-app.exe -ArgumentList "--bundle", $out -Wait -PassThru
           if ($p.ExitCode -ne 0 -or -not (Test-Path $out)) { throw "bundling failed" }
-      # Installers need plain version numbers: stable only.
+      # The installers carry the plain version (a nightly's is its coming stable's); the MSI template
+      # upgrades any version (AllowDowngrades), so same-numbered nightlies install over each other.
       - name: Setup .exe and .msi
-        if: needs.check.outputs.nightly == ''
         shell: pwsh
         run: |
           cargo packager -p relix-app --release -f nsis,wix
           if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
-          Move-Item "dist/relix-app_${env:V}_x64-setup.exe" "dist/Relix-$env:V-windows-x64-setup.exe"
-          Move-Item "dist/relix-app_${env:V}_x64_en-US.msi" "dist/Relix-$env:V-windows-x64.msi"
+          Move-Item "dist/relix-app_${env:BASE}_x64-setup.exe" "dist/Relix-$env:V-windows-x64-setup.exe"
+          Move-Item "dist/relix-app_${env:BASE}_x64_en-US.msi" "dist/Relix-$env:V-windows-x64.msi"
       - uses: actions/upload-artifact@v7
         with:
           name: windows
@@ -260,12 +261,13 @@ jobs:
           trap 'rm -f signing.key' EXIT
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/nightly-windows.json
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/nightly-linux.json
+          # Program Files (.msi) installs upgrade through the new .msi.
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/nightly-msi.json
           if [ -n "$NIGHTLY" ]; then exit 0; fi
           # Stable: the same builds for stable, and nightly users get it too (it's newer).
           cp dist/nightly-windows.json dist/latest-windows.json
           cp dist/nightly-linux.json dist/latest-linux.json
-          # Program Files (.msi) installs upgrade through the new .msi.
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/latest-msi.json
+          cp dist/nightly-msi.json dist/latest-msi.json
           # Builds before per-OS manifests ask for latest.json; it's the Windows one.
           cp dist/latest-windows.json dist/latest.json
       # Nightlies aren't on the Releases page (no release, no tag): they reach testers through the
@@ -290,10 +292,11 @@ jobs:
           up() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/update/$1"; }
           up "Relix-$VERSION-windows-x64-portable.zip"
           up "Relix-$VERSION-linux-x64.tar.gz"
-          [ -n "$NIGHTLY" ] || up "Relix-$VERSION-windows-x64.msi"
+          up "Relix-$VERSION-windows-x64.msi"
           # Manifests last, so no client sees a version whose file isn't there yet.
           up nightly-windows.json
           up nightly-linux.json
+          up nightly-msi.json
           if [ -z "$NIGHTLY" ]; then
             up latest-windows.json
             up latest-linux.json

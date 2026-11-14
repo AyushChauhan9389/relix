@@ -27,6 +27,7 @@ pub fn version() -> String {
 
 /// The releases this device follows, "stable" or "nightly" (this device only, not synced). A
 /// nightly build starts on nightly. Back on stable, a nightly stays until a newer stable is out.
+/// Program Files (.msi) installs follow it too: nightlies ship an .msi.
 pub fn channel(ctx: &Ctx) -> String {
     let default = if version().contains("-nightly.") { "nightly" } else { "stable" };
     ctx.store.meta("update_channel").ok().flatten().unwrap_or_else(|| default.to_owned())
@@ -101,8 +102,7 @@ async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
         return Ok(None);
     }
     let os = if msi { "msi" } else { std::env::consts::OS };
-    // Nightlies ship the portable files only: a Program Files install stays on stable.
-    let channel = if msi { "stable".to_owned() } else { channel(ctx) };
+    let channel = channel(ctx);
     let url = crate::sync::server_url(&format!("/update/latest?os={os}&channel={channel}"));
     let latest: UpdateManifest = get(ctx.http.clone(), url).await.map_err(|e| e.to_string())?;
     if !is_newer(&latest.version, &version()) {
