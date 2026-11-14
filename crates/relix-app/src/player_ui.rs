@@ -267,22 +267,28 @@ fn top_bar(ctx: &Ctx, title: &str, episode: &str, phone: bool, safe: &Gaps) -> R
         .width(Size::percent(100.))
         // A fixed height: Freya draws gradients on sized rects.
         .height(Size::px(140.))
-        .horizontal()
-        .content(Content::Flex)
-        .spacing(if phone { 8. } else { 16. })
         .padding(if phone { Gaps::new(10. + safe.top(), 16. + safe.right(), 0., 8. + safe.left()) } else { Gaps::new(24., 40., 0., 32.) })
         .background(LinearGradient::new().angle(0.).stop(((0, 0, 0, 0.8), 0.)).stop(((0, 0, 0, 0.), 100.)))
-        .child(icon_button(ICON_BACK, 30., false, None, move |()| {
-            if let Some(p) = ctx.player.peek().as_ref() {
-                let _ = p.send(ToPlayer::Stop);
-            }
-        }))
+        // Its own row, centred: the bar is tall for the fade, and the title sits level with the arrow.
         .child(
             rect()
-                .spacing(2.)
-                .width(Size::flex(1.))
-                .child(label().text(title.to_owned()).font_size(if phone { 17. } else { 22. }).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis))
-                .maybe(!episode.is_empty(), |el| el.child(label().text(episode.to_owned()).font_size(15.).color((200, 200, 200)))),
+                .width(Size::fill())
+                .horizontal()
+                .content(Content::Flex)
+                .cross_align(Alignment::Center)
+                .spacing(if phone { 8. } else { 16. })
+                .child(icon_button(ICON_BACK, 30., false, None, move |()| {
+                    if let Some(p) = ctx.player.peek().as_ref() {
+                        let _ = p.send(ToPlayer::Stop);
+                    }
+                }))
+                .child(
+                    rect()
+                        .spacing(2.)
+                        .width(Size::flex(1.))
+                        .child(label().text(title.to_owned()).font_size(if phone { 17. } else { 22. }).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+                        .maybe(!episode.is_empty(), |el| el.child(label().text(episode.to_owned()).font_size(15.).color((200, 200, 200)))),
+                ),
         )
 }
 
