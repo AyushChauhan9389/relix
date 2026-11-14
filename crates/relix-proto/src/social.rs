@@ -100,6 +100,8 @@ pub enum ToServer {
     Kick { username: String },
     /// Host: hand the host role over.
     MakeHost { username: String },
+    /// A member's Google account, so the host's Relix can share the party's Drive file with it.
+    ShareMe { email: String },
 }
 
 /// Server -> app over `/ws`.
@@ -123,27 +125,8 @@ pub enum ToClient {
     /// This account isn't in the party any more: left, removed, or the party ended.
     Left { reason: String },
     Error { message: String },
-}
-
-/// A Google Drive share link as a direct, seekable download link; other links pass through.
-/// `drive.google.com/file/d/<id>/view`, `/open?id=<id>` and `uc?id=<id>` are recognised.
-pub fn direct_video_url(link: &str) -> String {
-    let link = link.trim();
-    let id = link
-        .split("/file/d/")
-        .nth(1)
-        .map(|rest| rest.split(['/', '?', '#']).next().unwrap_or(""))
-        .or_else(|| {
-            link.contains("drive.google.com").then(|| {
-                link.split(['?', '&']).find_map(|part| part.strip_prefix("id=")).unwrap_or("")
-            })
-        })
-        .filter(|id| !id.is_empty());
-    match id {
-        // `confirm=t` skips Drive's "can't scan this file for viruses" page on big files.
-        Some(id) => format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t"),
-        None => link.to_owned(),
-    }
+    /// Host: share the party's Drive file with this member's Google account.
+    ShareWith { username: String, email: String },
 }
 
 #[cfg(test)]
@@ -157,15 +140,6 @@ mod tests {
         assert!(!valid_username("a".repeat(21).as_str()), "too long");
         assert!(!valid_username("bad name"));
         assert!(!valid_username("émile"));
-    }
-
-    #[test]
-    fn drive_links_become_direct_downloads() {
-        let direct = "https://drive.usercontent.google.com/download?id=1AbC_d-9&export=download&confirm=t";
-        assert_eq!(direct_video_url("https://drive.google.com/file/d/1AbC_d-9/view?usp=sharing"), direct);
-        assert_eq!(direct_video_url("https://drive.google.com/open?id=1AbC_d-9"), direct);
-        assert_eq!(direct_video_url("https://drive.google.com/uc?export=download&id=1AbC_d-9"), direct);
-        assert_eq!(direct_video_url(" https://example.com/movie.mkv "), "https://example.com/movie.mkv");
     }
 
     #[test]

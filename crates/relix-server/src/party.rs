@@ -239,6 +239,17 @@ impl Hub {
                 let title = inner.parties[&code].title.clone();
                 inner.send(to, &ToClient::Invited { from: me.to_owned(), code, title });
             }
+            ToServer::ShareMe { email } => {
+                let Some(code) = code else { return };
+                let email = email.trim().to_owned();
+                if email.len() > 254 || !email.contains('@') {
+                    return error(&inner, "That isn't an email address");
+                }
+                let host = inner.parties[&code].host;
+                if host != account {
+                    inner.send(host, &ToClient::ShareWith { username: me.to_owned(), email });
+                }
+            }
             ToServer::Control { playing, position } => {
                 let Some(code) = code else { return };
                 let p = inner.parties.get_mut(&code).unwrap();

@@ -85,7 +85,7 @@ Built and released in one go, after testing on a real machine. ADR 0010.
   - No direct messages.
 - **Who can host:** only accounts enabled with `relix-server admin preview add <username>`. Anyone signed in and invited can join.
 - **Party:** "Watch together" on a movie or episode page asks for a link and shows the title's poster and name. The party is private: join by invite link or code, or by invite from the friends list. No public parties in the preview.
-- **Links:** a Google Drive "anyone with the link" share link is converted to a direct stream; any direct `http(s)` video URL also works. The link is checked before the party starts.
+- **Links:** a video in the host's Google Drive, never made public: each member signs in to Google in Relix, and the host's Relix shares the file with just their account (viewer, no email). Everyone streams it through a local relay with their own token. Direct `http(s)` video URLs also work. The link is checked before the party starts. While the Google Cloud project is in testing mode, every member's Gmail must be a listed test user.
 - **Sync:**
   - Host-only control by default; the host can open control to everyone.
   - Drift beyond about 1.5 s is corrected, and late joiners jump to the party's position.

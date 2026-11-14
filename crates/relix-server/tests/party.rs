@@ -148,6 +148,17 @@ async fn everyone_waits_for_a_buffering_member() {
 }
 
 #[tokio::test]
+async fn members_ask_the_host_to_share_the_drive_file() {
+    let base = server().await;
+    let (mut h, mut v, _) = party(&base).await;
+    send(&mut v, ToServer::ShareMe { email: "nope".into() }).await;
+    expect(&mut v, |m| matches!(m, ToClient::Error { .. })).await;
+    send(&mut v, ToServer::ShareMe { email: " viewer@gmail.com ".into() }).await;
+    let ToClient::ShareWith { username, email } = expect(&mut h, |m| matches!(m, ToClient::ShareWith { .. })).await else { unreachable!() };
+    assert_eq!((username.as_str(), email.as_str()), ("viewer", "viewer@gmail.com"));
+}
+
+#[tokio::test]
 async fn chat_reaches_everyone_and_the_host_role_passes_on() {
     let base = server().await;
     let (mut h, mut v, _) = party(&base).await;

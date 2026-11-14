@@ -282,6 +282,17 @@ fn handle(ctx: &Ctx, msg: ToClient) {
             push(ctx, "", format!("You left: {reason}"));
             stop_party_player(ctx);
         }
+        // Host: a member signed in to Google; let their account view the Drive file.
+        ToClient::ShareWith { username, email } => {
+            let Some(id) = social.party.peek().as_ref().and_then(|p| crate::drive::file_id(&p.url)) else { return };
+            let ctx = ctx.clone();
+            spawn(async move {
+                match crate::drive::share(&ctx, &id, &email).await {
+                    Ok(()) => push(&ctx, "", format!("Shared the video with {username}'s Google account")),
+                    Err(e) => push(&ctx, "", format!("Couldn't share the video with {username}: {e}")),
+                }
+            });
+        }
         // Rejoining failed: the party ended (or the host removed us) while we were away.
         ToClient::Error { message } if social.rejoin.peek().is_some() => {
             let (mut party, mut rejoin) = (social.party, social.rejoin);
@@ -365,6 +376,20 @@ fn start_party_player(ctx: &Ctx) {
     }
     let ctx = ctx.clone();
     spawn(async move {
+        // A Drive party plays through this device's own Google access (drive.rs).
+        let (url, relay) = match crate::drive::file_id(&view.url) {
+            None => (view.url.clone(), None),
+            Some(id) => match drive_source(&ctx, &view, &id).await {
+                Ok((url, relay)) => (url, Some(relay)),
+                Err(e) => {
+                    push(&ctx, "", e);
+                    if ctx.social.party.peek().as_ref().is_some_and(|p| p.code == view.code) {
+                        send_live(&ctx, ToServer::Leave);
+                    }
+                    return;
+                }
+            },
+        };
         // Let a stopped player finish closing first.
         while ctx.player.peek().is_some() {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -392,7 +417,7 @@ fn start_party_player(ctx: &Ctx) {
         });
         let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (url, prefs, title) = (view.url.clone(), ctx.player_prefs(), view.title.name.clone());
+        let (prefs, title) = (ctx.player_prefs(), view.title.name.clone());
         std::thread::spawn(move || {
             let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
             let played = player::play(&url, &Default::default(), 0., &title, &prefs, Some(video), inbox, |msg| {
@@ -428,6 +453,9 @@ fn start_party_player(ctx: &Ctx) {
             }
         });
         let ended = rx.await;
+        if let Some(relay) = relay {
+            relay.abort();
+        }
         if let Ok(Ok((_, Some(player::Ended::Failed)))) | Ok(Err(_)) = &ended {
             push(&ctx, "", "The party's video didn't play: the link is dead, private, or not a video.".into());
         }
@@ -450,6 +478,30 @@ fn start_party_player(ctx: &Ctx) {
     });
 }
 
+/// Where to play a Drive party from: this device's relay, once the host has shared the file
+/// with this member's Google account (they ask the server, which asks the host's Relix).
+async fn drive_source(ctx: &Ctx, view: &PartyView, file_id: &str) -> Result<(String, tokio::task::AbortHandle), String> {
+    let me = ctx.social.me.peek().as_ref().and_then(|m| m.username.clone());
+    if me.as_deref() != Some(view.host.as_str()) {
+        push(ctx, "", "This party plays from Google Drive: sign in to Google in your browser…".into());
+        let email = crate::drive::email(ctx).await?;
+        send_live(ctx, ToServer::ShareMe { email: email.clone() });
+        push(ctx, "", format!("Waiting for {} to share the video with {email}…", view.host));
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while !crate::drive::readable(ctx, file_id).await {
+            let still_here = ctx.social.party.peek().as_ref().is_some_and(|p| p.code == view.code);
+            if !still_here {
+                return Err("You left the party".into());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("{} hasn't shared the video with {email}. Ask them to check, then join again.", view.host));
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    }
+    crate::drive::relay(ctx, file_id).await
+}
+
 fn stop_party_player(ctx: &Ctx) {
     if *ctx.social.party_player.peek()
         && let Some(p) = ctx.player.peek().as_ref()
@@ -461,7 +513,17 @@ fn stop_party_player(ctx: &Ctx) {
 /// Starts a party for `title` playing `link` (a Drive share link or a direct video URL), after
 /// checking the link really serves something.
 pub async fn create_party(ctx: &Ctx, title: PartyTitle, link: &str) -> Result<(), String> {
-    let url = relix_proto::social::direct_video_url(link);
+    let link = link.trim();
+    // Drive: never "anyone with the link"; the file gets shared with each member's account.
+    if let Some(id) = crate::drive::file_id(link) {
+        crate::drive::check_hostable(ctx, &id).await?;
+        if !ctx.social.connected() {
+            return Err("Not connected to the Relix server; try again in a moment".into());
+        }
+        send_live(ctx, ToServer::Create { title, url: crate::drive::party_url(&id) });
+        return Ok(());
+    }
+    let url = link.to_owned();
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Paste a Google Drive share link or a video link (http/https)".into());
     }
@@ -476,7 +538,7 @@ pub async fn create_party(ctx: &Ctx, title: PartyTitle, link: &str) -> Result<()
         .map_err(|e| format!("Couldn't open the link: {}", e.without_url()))?;
     let kind = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
     if !res.status().is_success() || kind.starts_with("text/html") {
-        return Err("That link doesn't give a video: in Drive, share it as \"Anyone with the link\" and copy the link again".into());
+        return Err("That link doesn't give a video".into());
     }
     crate::log!("party: link answers {} {kind}", res.status());
     if !ctx.social.connected() {

@@ -432,7 +432,7 @@ impl Component for StartParty {
                     .child(label().text("Watch together").font_size(24.).font_weight(FontWeight::BOLD))
                     .child(label().text(what).font_size(16.).color(theme().muted))
                     .child(paragraph().width(Size::fill()).font_size(14.).color(theme().muted).span(
-                        "Paste a Google Drive share link (shared as \"Anyone with the link\") or a direct video link. Everyone in the party streams it from there.",
+                        "Paste the link to a video in your Google Drive (no need to make it public), or a direct video link. Relix shares a Drive video only with the Google accounts of the people who join.",
                     ))
                     .child(crate::focus::Field(Input::new(link).width(Size::fill()).placeholder("https://drive.google.com/file/d/…").on_submit(move |_| submit.clone()(()))))
                     .maybe_child(error.read().clone().map(|e| paragraph().width(Size::fill()).font_size(14.).color(ERROR).span(e)))
