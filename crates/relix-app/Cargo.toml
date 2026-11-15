@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 discord-rich-presence = "1.1.0"
-freya = { version = "=0.5.0-rc.13", features = ["remote-asset", "sdk-tokio", "router", "metrics"] }
-freya-core = "=0.5.0-rc.13"
+freya = { version = "=0.5.2", features = ["remote-asset", "sdk-tokio", "router", "metrics"] }
+freya-core = "=0.5.2"
 freya-skia-safe = { version = "=0.104.0", features = ["gl"] }
 futures-util = "0.3.34"
 # Google sign-in (drive.rs): PKCE.
@@ -26,7 +26,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 # Headless runs with touch input, to check how scrolling feels on phones.
-freya-testing = "=0.5.0-rc.13"
+freya-testing = "=0.5.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Opens links (Intent.ACTION_VIEW); Freya's Android support uses the same version.
