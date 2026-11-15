@@ -1,5 +1,7 @@
 //! The single-file portable exe: libmpv is appended to relix-app.exe as `<exe><dll><len: u64 LE><MAGIC>`,
 //! unpacked into the data folder on first run and loaded from there (it's delay-loaded, see build.rs).
+//! The unpacking runs beside start-up: writing ~100 MB (and the antivirus scanning it) held the
+//! window back on a new PC, and nothing needs libmpv until something plays ([`wait`]).
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -25,6 +27,26 @@ pub fn write(out: &Path, exe: &Path, dll: &Path) -> io::Result<()> {
     let len = io::copy(&mut File::open(dll)?, &mut o)?;
     o.write_all(&len.to_le_bytes())?;
     o.write_all(MAGIC)
+}
+
+static UNPACKING: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+
+/// [`unpack`] on its own thread; [`wait`] before libmpv is first used.
+pub fn unpack_in_background(exe: std::path::PathBuf, len: u64, dir: std::path::PathBuf) {
+    let worker = std::thread::spawn(move || {
+        if let Err(e) = unpack(&exe, len, &dir) {
+            crate::log!("unpacking libmpv: {e}");
+        }
+    });
+    *UNPACKING.lock().unwrap() = Some(worker);
+}
+
+/// Waits for the background unpack, if one is running (at the first playback only).
+pub fn wait() {
+    let worker = UNPACKING.lock().unwrap().take();
+    if let Some(worker) = worker {
+        let _ = worker.join();
+    }
 }
 
 /// Unpacks the appended libmpv into `dir` (again only when its size changed) and has Windows load it from there.

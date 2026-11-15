@@ -104,9 +104,8 @@ pub fn main() {
     #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe()
         && let Some(len) = bundled::appended_len(&exe)
-        && let Err(e) = bundled::unpack(&exe, len, &data_dir().join("mpv"))
     {
-        crate::log!("unpacking libmpv: {e}");
+        bundled::unpack_in_background(exe, len, data_dir().join("mpv"));
     }
     update::cleanup();
     run(LaunchConfig::new());

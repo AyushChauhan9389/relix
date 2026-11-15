@@ -230,6 +230,9 @@ pub fn play(
     status: impl Fn(Status),
 ) -> libmpv2::Result<(Progress, Option<Ended>)> {
     let embedded = video.is_some();
+    // The single-file portable build may still be unpacking libmpv (bundled.rs).
+    #[cfg(windows)]
+    crate::bundled::wait();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
         // Android: MediaCodec, copied back so it draws through the same GL path (video.rs).
         init.set_option(
