@@ -140,6 +140,8 @@ impl VideoRenderer {
         if let Err(e) = drawn {
             crate::log!("mpv render: {e}");
         }
+        // Tells mpv a frame went out with this window frame, which it times the next ones by.
+        gl.ctx.report_swap();
         Some(surface.image_snapshot())
     }
 }

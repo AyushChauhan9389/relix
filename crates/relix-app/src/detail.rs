@@ -152,6 +152,8 @@ impl Component for Detail {
                             has_next: next.is_some(),
                             logo: m.logo.clone(),
                             background: m.background.clone(),
+                            stream: req.url.clone(),
+                            video_id: if m.r#type == "series" { vid.clone() } else { String::new() },
                         };
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // The player hands its mpv over from its thread; the video is drawn here.
@@ -741,8 +743,14 @@ fn info_column(
                     .child(row().child(list).maybe_child(trailer))
                     .children(extra.chunks(2).map(|pair| row().children(pair.to_vec()).into_element()).collect::<Vec<_>>())
             } else {
-                // Wraps: with every button it's wider than the column.
-                rect().width(Size::fill()).horizontal().content(Content::wrap_spacing(12.)).spacing(12.).padding(Gaps::new(8., 0., 0., 0.)).child(play).child(list).maybe_child(trailer).children(extra)
+                // Two rows: together they're wider than the column, and wrapping squeezed the last
+                // button into whatever width was left.
+                rect()
+                    .width(Size::fill())
+                    .spacing(12.)
+                    .padding(Gaps::new(8., 0., 0., 0.))
+                    .child(rect().horizontal().spacing(12.).child(play).child(list).maybe_child(trailer))
+                    .maybe(!extra.is_empty(), |el| el.child(rect().horizontal().spacing(12.).children(extra)))
             }
         })
 }

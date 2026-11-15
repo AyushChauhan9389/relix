@@ -2,6 +2,7 @@
 //! each account's records, hands out sequence numbers and notifies devices over SSE.
 
 pub mod cli;
+mod intros;
 mod party;
 mod social;
 
@@ -168,6 +169,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
          CREATE TABLE IF NOT EXISTS admin_addons (id INTEGER PRIMARY KEY, addon TEXT NOT NULL);",
     )?;
     db.execute_batch(social::SCHEMA)?;
+    db.execute_batch(intros::SCHEMA)?;
     social::migrate(&db)?;
     // Databases from before session expiry: start their sessions' clocks now.
     if !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'last_used'")?.exists([])? {
@@ -207,6 +209,7 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/ws", get(ws))
         .route("/admin/preview", get(social::admin_hosts))
         .route("/admin/preview/{username}", put(social::admin_allow).delete(social::admin_disallow))
+        .route("/intros/{video}", get(intros::get).put(intros::put))
         .route("/update/latest", get(update_latest))
         .route("/update/files/{name}", get(update_file))
         .with_state(state))
@@ -418,6 +421,7 @@ async fn delete_account(State(s): State<AppState>, headers: HeaderMap, Json(req)
         tx.execute(sql, params![account])?;
     }
     social::forget(&tx, account)?;
+    intros::forget(&tx, account)?;
     tx.commit()?;
     Ok(StatusCode::NO_CONTENT)
 }

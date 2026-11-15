@@ -45,6 +45,10 @@ pub struct Overlay {
     /// Art for the loading screen.
     pub logo: Option<String>,
     pub background: Option<String>,
+    /// The stream's link: its subtitle delay is remembered under it.
+    pub stream: String,
+    /// The episode's video id ("tt0903747:1:2") for shared intro times; empty to not share.
+    pub video_id: String,
 }
 
 /// A subtitle or audio track mpv knows about.
@@ -103,6 +107,9 @@ pub struct Status {
     pub seeking: bool,
     /// Intros (start, end) from the file's chapters, for the Skip Intro button.
     pub intros: Vec<(f64, f64)>,
+    /// Where the end credits start, from the chapters: Next Episode shows from there, and
+    /// stopping past it counts as finished.
+    pub credits: Option<f64>,
 }
 
 impl Default for Status {
@@ -122,6 +129,7 @@ impl Default for Status {
             buffering: false,
             seeking: false,
             intros: vec![],
+            credits: None,
         }
     }
 }
@@ -386,7 +394,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     }
                     status.seeking = v;
                 }
-                (12, PropertyData::Int64(n)) => status.intros = intros(mpv, n, status.duration),
+                (12, PropertyData::Int64(n)) => (status.intros, status.credits) = chapter_marks(mpv, n, status.duration),
                 (11, PropertyData::Int64(n)) => {
                     // Seeks and stalls skip frames on purpose; only steady playback counts.
                     let steady = status.loaded && !status.seeking && !status.buffering && !status.paused;
@@ -449,9 +457,8 @@ impl DropWatch {
     }
 }
 
-/// The chapters named as an intro ("Intro", "Opening", "OP", "OP1"...), as (start, end): a chapter
-/// ends where the next one starts.
-fn intros(mpv: &Mpv, count: i64, duration: f64) -> Vec<(f64, f64)> {
+/// The intros and where the credits start, from the file's chapters.
+fn chapter_marks(mpv: &Mpv, count: i64, duration: f64) -> (Vec<(f64, f64)>, Option<f64>) {
     let chapters: Vec<(String, f64)> = (0..count)
         .map(|i| {
             let title = mpv.get_property::<String>(&format!("chapter-list/{i}/title")).unwrap_or_default();
@@ -460,7 +467,18 @@ fn intros(mpv: &Mpv, count: i64, duration: f64) -> Vec<(f64, f64)> {
         .collect();
     // The last chapter ends with the file; duration may not be known yet, so ask mpv.
     let duration = if duration > 0. { duration } else { mpv.get_property::<f64>("duration").unwrap_or(f64::MAX) };
-    intro_ranges(&chapters, duration)
+    (intro_ranges(&chapters, duration), credits_start(&chapters, duration))
+}
+
+/// The first chapter named as end credits ("Ending", "ED", "ED2", "Credits", "Outro") in the
+/// second half: an episode's credits, not a cold open's.
+fn credits_start(chapters: &[(String, f64)], duration: f64) -> Option<f64> {
+    let is_credits = |title: &str| {
+        let t = title.trim().to_lowercase();
+        let ed = t.strip_prefix("ed").is_some_and(|rest| rest.trim_start_matches([' ', '-']).chars().all(|c| c.is_ascii_digit()));
+        !t.contains("opening") && (ed || t.starts_with("ending") || t.contains("credits") || t.contains("outro"))
+    };
+    chapters.iter().find(|(title, start)| *start >= duration / 2. && is_credits(title)).map(|(_, start)| *start)
 }
 
 fn intro_ranges(chapters: &[(String, f64)], duration: f64) -> Vec<(f64, f64)> {
@@ -481,7 +499,9 @@ fn intro_ranges(chapters: &[(String, f64)], duration: f64) -> Vec<(f64, f64)> {
 }
 
 fn progress(s: &Status) -> Progress {
-    Progress { position: s.position, duration: s.duration }
+    // Into the credits counts as watched, however long they run.
+    let in_credits = s.credits.is_some_and(|c| s.position >= c);
+    Progress { position: if in_credits { s.duration } else { s.position }, duration: s.duration }
 }
 
 /// The file's subtitle and audio tracks.
@@ -519,6 +539,20 @@ mod tests {
         for t in ["Operation", "Chapter 1", "Ending", "Open Season"] {
             assert!(intro_ranges(&[ch(t, 0.), ch("x", 90.)], 1400.).is_empty(), "{t}");
         }
+    }
+
+    #[test]
+    fn credit_chapters_in_the_second_half() {
+        let ch = |t: &str, s: f64| (t.to_owned(), s);
+        let list = [ch("Opening", 0.), ch("Part A", 90.), ch("Ending", 1290.), ch("Preview", 1380.)];
+        assert_eq!(credits_start(&list, 1420.), Some(1290.));
+        for t in ["ED", "ed1", "End Credits", "Outro", "Credits"] {
+            assert_eq!(credits_start(&[ch("A", 0.), ch(t, 1300.)], 1420.), Some(1300.), "{t}");
+        }
+        assert_eq!(credits_start(&[ch("Opening Credits", 800.)], 1420.), None);
+        assert_eq!(credits_start(&[ch("Credits", 30.), ch("Edward", 1300.)], 1420.), None, "early, or not credits");
+        let s = Status { position: 1300., duration: 1420., credits: Some(1290.), ..Status::default() };
+        assert_eq!(progress(&s).position, 1420., "stopped in the credits: finished");
     }
 
     #[test]

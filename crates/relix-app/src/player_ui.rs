@@ -18,6 +18,8 @@ use crate::video::{VideoRenderer, video};
 const HIDE_AFTER: Duration = Duration::from_secs(3);
 /// The Next Episode card shows this many seconds before the end.
 const NEXT_CARD: f64 = 20.;
+/// Seconds of credits before skipping automatically moves on to the next episode.
+const CREDITS_WAIT: f64 = 10.;
 const SPEEDS: [f64; 6] = [0.5, 0.75, 1., 1.25, 1.5, 2.];
 /// The volume goes up to 150% (set_volume).
 pub const MAX_VOLUME: f64 = 150.;
@@ -120,13 +122,29 @@ impl Component for Player {
         });
         // Settings > Skip intros automatically: each intro is skipped once as it starts; seeking back
         // into one plays it.
+        let auto = use_hook(|| ctx.store.get::<bool>(&ctx.profile, "settings", "auto_skip_intro").ok().flatten().unwrap_or(false));
         use_side_effect({
             let ctx = ctx.clone();
-            let auto = use_hook(|| ctx.store.get::<bool>(&ctx.profile, "settings", "auto_skip_intro").ok().flatten().unwrap_or(false));
             let mut skipped = use_state(Vec::<f64>::new);
+            let mut nexted = use_state(|| false);
+            let mut shared = use_state(|| false);
             move || {
                 let s = ctx.player_status.read();
-                let Some((start, end)) = s.intros.iter().copied().find(|(a, b)| s.position >= *a && s.position < b - 1.) else { return };
+                let intros = ctx.now_playing.peek().as_ref().map(|np| intros_of(&s, np)).unwrap_or_default();
+                // A file with intro chapters teaches every other copy of the episode: shared once.
+                let already = *shared.peek();
+                if let (Some(&(start, end)), false) = (s.intros.first(), already) {
+                    shared.set(true);
+                    share_intro(&ctx, start, end);
+                }
+                // And the next episode CREDITS_WAIT seconds into the credits, as the card counts down.
+                if auto && !*nexted.peek() && s.credits.is_some_and(|c| s.position >= c + CREDITS_WAIT) && ctx.now_playing.peek().as_ref().is_some_and(|np| np.has_next) {
+                    nexted.set(true);
+                    if let Some(p) = ctx.player.peek().as_ref() {
+                        let _ = p.send(ToPlayer::Next);
+                    }
+                }
+                let Some((start, end)) = intros.iter().copied().find(|(a, b)| s.position >= *a && s.position < b - 1.) else { return };
                 if !auto || s.seeking || skipped.peek().contains(&start) {
                     return;
                 }
@@ -206,10 +224,8 @@ impl Component for Player {
                     .child(bottom_bar(&ctx, &r, &status, np.has_next, menu, phone, &safe).opacity(o).layer(1))
                     .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
-            .maybe_child(current_intro(&status).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
-            .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
-                el.child(next_card(&ctx, status.duration - status.position, phone, &safe))
-            })
+            .maybe_child(current_intro(&status, &np).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
+            .maybe_child(next_in(&status, auto).filter(|_| np.has_next).map(|left| next_card(&ctx, left, phone, &safe)))
             // Watch Together: a button that brings the chat panel back.
             .maybe(party && !chat_open && o > 0.01, |el| {
                 let mut open = ctx.social.chat_open;
@@ -540,8 +556,8 @@ fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
         }
     };
     let shift = |step: f64| {
-        let r = r.clone();
-        move || drop(r.mpv().command("add", &["sub-delay", &step.to_string()]))
+        let (ctx, r) = (ctx.clone(), r.clone());
+        move || shift_subs(&ctx, r.mpv(), step)
     };
     let background = {
         let (ctx, r) = (ctx.clone(), r.clone());
@@ -554,7 +570,7 @@ fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
     };
     vec![
         stepper("Size", format!("{:.0}%", prefs.sub_scale * 100.), scale(-0.1), scale(0.1)),
-        stepper("Delay", format!("{delay:+.1}s"), shift(-0.5), shift(0.5)),
+        stepper("Delay (Z / X)", format!("{delay:+.1}s"), shift(-0.1), shift(0.1)),
         MenuOption {
             text: "Background box".into(),
             selected: prefs.sub_background,
@@ -562,6 +578,22 @@ fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
         }
         .into_element(),
     ]
+}
+
+/// Moves the subtitles `step` seconds later (negative: earlier), remembered for this stream.
+fn shift_subs(ctx: &Ctx, mpv: &libmpv2::Mpv, step: f64) {
+    let _ = mpv.command("add", &["sub-delay", &step.to_string()]);
+    let delay = (mpv.get_property::<f64>("sub-delay").unwrap_or(0.) * 10.).round() / 10.;
+    let Some(stream) = ctx.now_playing.peek().as_ref().map(|np| np.stream.clone()).filter(|s| !s.is_empty()) else { return };
+    let value = (delay != 0.).then(|| delay.to_string());
+    if let Err(e) = ctx.store.set_meta(&sub_delay_key(&stream), value.as_deref()) {
+        crate::log!("saving subtitle delay: {e}");
+    }
+}
+
+/// Where a stream's subtitle delay is kept (the store's meta table, this device only).
+pub fn sub_delay_key(stream: &str) -> String {
+    format!("sub_delay {stream}")
 }
 
 /// "Size  − 100% +": a value with buttons either side.
@@ -635,9 +667,40 @@ impl Component for MenuOption {
     }
 }
 
+/// Seconds until the next episode starts, while the Next Episode card should show: from the credits
+/// (counting down CREDITS_WAIT when skipping automatically) or the last NEXT_CARD seconds.
+fn next_in(s: &Status, auto: bool) -> Option<f64> {
+    let to_end = s.duration - s.position;
+    match s.credits.filter(|c| s.position >= *c) {
+        Some(c) if auto => Some(c + CREDITS_WAIT - s.position),
+        Some(_) => Some(to_end),
+        None => (s.duration > 0. && to_end < NEXT_CARD).then_some(to_end),
+    }
+}
+
+/// The file's intro chapters, or else the times other viewers shared for the episode.
+fn intros_of(s: &Status, np: &crate::NowPlaying) -> Vec<(f64, f64)> {
+    if s.intros.is_empty() { np.shared_intro.get().into_iter().collect() } else { s.intros.clone() }
+}
+
 /// The end of the intro playing now, if one is (not in its last second, where skipping is moot).
-fn current_intro(s: &Status) -> Option<f64> {
-    s.intros.iter().find(|(start, end)| s.position >= *start && s.position < end - 1.).map(|(_, end)| *end)
+fn current_intro(s: &Status, np: &crate::NowPlaying) -> Option<f64> {
+    intros_of(s, np).into_iter().find(|(start, end)| s.position >= *start && s.position < end - 1.).map(|(_, end)| end)
+}
+
+/// Sends an intro found in the file's chapters to the shared intro times (signed in only).
+fn share_intro(ctx: &Ctx, start: f64, end: f64) {
+    let intro = relix_proto::intro::Intro { start, end };
+    let (Some(np), Some(acc)) = (ctx.now_playing.peek().clone(), crate::sync::account(&ctx.store)) else { return };
+    if np.video_id.is_empty() || !intro.valid() {
+        return;
+    }
+    let (http, url) = (ctx.http.clone(), crate::sync::server_url(&format!("/intros/{}", np.video_id)));
+    spawn(async move {
+        if let Err(e) = crate::sync::send(&http, reqwest::Method::PUT, url, Some(&acc.token), Some(&intro)).await {
+            crate::log!("sharing intro: {e}");
+        }
+    });
 }
 
 /// "Skip Intro", bottom right while an intro plays (also the S key).
@@ -868,8 +931,11 @@ pub fn key(ctx: &Ctx, registry: &crate::focus::Registry, key: &Key) -> bool {
         }
         Key::Character(c) if c.eq_ignore_ascii_case("f") => ctx.toggle_fullscreen(),
         Key::Character(c) if c.eq_ignore_ascii_case("m") => drop(mpv.set_property("mute", !s.muted)),
-        Key::Character(c) if c.eq_ignore_ascii_case("s") && current_intro(&s).is_some() => {
-            crate::social::seek_to(ctx, mpv, current_intro(&s).unwrap_or_default())
+        // mpv's own keys for it: subtitles 0.1 s earlier (Z) or later (X).
+        Key::Character(c) if c.eq_ignore_ascii_case("z") => shift_subs(ctx, mpv, -0.1),
+        Key::Character(c) if c.eq_ignore_ascii_case("x") => shift_subs(ctx, mpv, 0.1),
+        Key::Character(c) if c.eq_ignore_ascii_case("s") && current_intro(&s, &np).is_some() => {
+            crate::social::seek_to(ctx, mpv, current_intro(&s, &np).unwrap_or_default())
         }
         Key::Character(c) if c.eq_ignore_ascii_case("n") && np.has_next => {
             if let Some(p) = ctx.player.peek().as_ref() {

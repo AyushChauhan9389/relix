@@ -170,6 +170,14 @@ pub async fn discover(http: &reqwest::Client, kind: &str, f: &Filter, page: u32)
     Ok((with_imdb_ids(http, kind, found.results).await, more))
 }
 
+/// TMDB's titles matching `query`: Search's first rows.
+pub async fn search(http: &reqwest::Client, kind: &str, query: &str) -> Result<Vec<MetaPreview>, String> {
+    let path = format!("{API}/search/{}", if kind == "series" { "tv" } else { "movie" });
+    let url = reqwest::Url::parse_with_params(&path, [("query", query), ("include_adult", "false")]).map_err(|e| e.to_string())?;
+    let found: Page = get(http, url.to_string()).await?;
+    Ok(with_imdb_ids(http, kind, found.results).await)
+}
+
 /// What's trending on TMDB this week: a Home row.
 pub async fn trending(http: &reqwest::Client, kind: &str) -> Result<Vec<MetaPreview>, String> {
     let found: Page = get(http, format!("{API}/trending/{}/week", if kind == "series" { "tv" } else { "movie" })).await?;

@@ -404,6 +404,8 @@ fn start_party_player(ctx: &Ctx) {
             has_next: false,
             logo: None,
             background: view.title.poster.clone(),
+            stream: view.url.clone(),
+            video_id: String::new(),
         };
         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
         spawn_in_window({

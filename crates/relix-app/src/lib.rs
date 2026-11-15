@@ -505,8 +505,24 @@ impl Ctx {
         let (mut active, mut menu) = (self.player_active, self.player_menu);
         active.set(std::time::Instant::now());
         menu.set(None);
+        // The subtitle delay last set for this stream: a file's subtitles are off by the same amount.
+        if let Some(delay) = self.store.meta(&player_ui::sub_delay_key(&overlay.stream)).ok().flatten().and_then(|d| d.parse::<f64>().ok()) {
+            let _ = video.mpv().set_property("sub-delay", delay);
+        }
+        let shared_intro = Rc::new(std::cell::Cell::new(None));
+        if !overlay.video_id.is_empty() {
+            let (http, url, cell) = (self.http.clone(), sync::server_url(&format!("/intros/{}", overlay.video_id)), shared_intro.clone());
+            spawn_in_window(async move {
+                if let Ok(i) = sync::call::<(), relix_proto::intro::Intro>(&http, url, None, None).await {
+                    cell.set(Some((i.start, i.end)));
+                }
+            });
+        }
         now.set(Some(NowPlaying {
             video,
+            stream: overlay.stream,
+            video_id: overlay.video_id,
+            shared_intro,
             title: overlay.title,
             episode: overlay.episode,
             has_next: overlay.has_next,
@@ -1071,6 +1087,10 @@ impl Component for Shell {
 #[derive(Clone)]
 pub struct NowPlaying {
     pub video: Rc<video::VideoRenderer>,
+    pub stream: String,
+    pub video_id: String,
+    /// Intro times other viewers shared for this episode, used when its file has no intro chapter.
+    pub shared_intro: Rc<std::cell::Cell<Option<(f64, f64)>>>,
     pub title: String,
     pub episode: String,
     pub has_next: bool,

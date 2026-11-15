@@ -426,7 +426,8 @@ pub fn button_owned(text: String, bg: impl Into<Color>, fg: impl Into<Color>) ->
         .padding(if phone() { Gaps::new(9., 18., 9., 18.) } else { Gaps::new(10., 24., 10., 24.) })
         .corner_radius(theme().radius.min(8.))
         .background(bg.into())
-        .child(label().text(text).font_size(if phone() { 16. } else { 18. }).font_weight(FontWeight::BOLD).color(fg.into()))
+        // One line: squeezed into a wrapping row's last gap, a label broke into a word per line.
+        .child(label().text(text).font_size(if phone() { 16. } else { 18. }).font_weight(FontWeight::BOLD).color(fg.into()).max_lines(1))
 }
 
 /// The Play button: a drawn triangle (font glyphs render lopsided) and the look's Play colours.

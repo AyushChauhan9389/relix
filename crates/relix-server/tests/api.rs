@@ -373,3 +373,20 @@ fn opens_a_database_from_before_session_expiry() {
     let config = Config { verify_email: false, mailer: Mailer::Log, admin_token: None, update_dir: update_dir() };
     assert!(app(db, config).is_ok());
 }
+
+#[tokio::test]
+async fn intros_are_shared_by_median_and_validated() {
+    let (app, _) = server(false);
+    let path = "/intros/tt0903747:1:2";
+    assert_eq!(call(&app, path, None, None).await.0, StatusCode::NOT_FOUND, "nothing known yet");
+    let intro = |start: f64, end: f64| Some(json!({ "start": start, "end": end }));
+    assert_eq!(send(&app, "PUT", path, None, intro(0., 90.)).await.0, StatusCode::UNAUTHORIZED);
+    for (i, (start, end)) in [(0., 90.), (2., 92.), (0., 600.)].into_iter().enumerate() {
+        let token = account(&app, &format!("intro{i}@example.com")).await;
+        let expect = if end - start > 300. { StatusCode::BAD_REQUEST } else { StatusCode::NO_CONTENT };
+        assert_eq!(send(&app, "PUT", path, Some(&token), intro(start, end)).await.0, expect);
+    }
+    assert_eq!(call(&app, path, None, None).await, (StatusCode::OK, json!({ "start": 0.0, "end": 90.0 })));
+    let token = account(&app, "intro9@example.com").await;
+    assert_eq!(send(&app, "PUT", "/intros/bad%20id!", Some(&token), intro(0., 90.)).await.0, StatusCode::BAD_REQUEST);
+}
