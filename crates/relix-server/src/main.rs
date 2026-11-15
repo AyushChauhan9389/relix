@@ -120,6 +120,9 @@ fn update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Dependencies switch on both of rustls's providers, and with two it won't choose (it panics
+    // at the first TLS connection: email, outgoing requests).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("admin") {
         if let Err(e) = admin(&args[1..]).await {

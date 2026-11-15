@@ -13,6 +13,8 @@ lettre = { version = "0.11.23", default-features = false, features = ["smtp-tran
 rand = "0.10.3"
 relix-proto = { version = "0.1.0", path = "../relix-proto" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+# Only to pick its crypto provider at start (main.rs).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

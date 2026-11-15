@@ -55,10 +55,18 @@ use theme::Look;
 const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
+/// Picks rustls's crypto before any secure connection. Dependencies switch on both of its
+/// providers (ring and aws-lc-rs, since Freya 0.5.2), and with two it won't choose: the first
+/// HTTPS request panicked (0.2.5 crashed at start on Windows).
+fn tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// The desktop app (main.rs).
 pub fn main() {
     debug::init();
     log_panics();
+    tls_provider();
     #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe() {
         // Release workflow: `relix-app --bundle <out.exe>` writes the single-file portable build.
@@ -118,6 +126,7 @@ fn android_main(app: freya::winit::platform::android::activity::AndroidApp) {
     let _ = ANDROID.set(app.clone());
     debug::init();
     log_panics();
+    tls_provider();
     player::android_init(app.vm_as_ptr());
     let event_loop = EventLoop::<NativeEvent>::with_user_event().with_android_app(app.clone()).build().expect("event loop");
     run(LaunchConfig::new().with_plugin(freya::android::AndroidPlugin::new(app)).with_event_loop(event_loop));
