@@ -1,0 +1,39 @@
+# Watch Together's closed preview: who may host parties (Actions → Preview hosts → Run workflow).
+name: Preview hosts
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [add, remove, list]
+        default: add
+      usernames:
+        description: Relix usernames, separated by spaces (for add and remove)
+        required: false
+
+permissions: {}
+
+jobs:
+  hosts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Change and show the hosts
+        env:
+          TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
+          SERVER: https://relix.carbonkit.tech
+          ACTION: ${{ inputs.action }}
+          USERNAMES: ${{ inputs.usernames }}
+        run: |
+          for name in $USERNAMES; do
+            # Usernames are 3-20 letters, digits or _ (relix-proto valid_username).
+            [[ "$name" =~ ^[A-Za-z0-9_]{3,20}$ ]] || { echo "::error::$name isn't a username"; exit 1; }
+            case "$ACTION" in
+              add) method=PUT ;;
+              remove) method=DELETE ;;
+              *) continue ;;
+            esac
+            curl -fsS -X "$method" -H "authorization: Bearer $TOKEN" "$SERVER/admin/preview/$name" && echo "$ACTION $name: done"
+          done
+          echo "Hosts now:"
+          curl -fsS -H "authorization: Bearer $TOKEN" "$SERVER/admin/preview"
