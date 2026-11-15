@@ -273,7 +273,7 @@ fn handle(ctx: &Ctx, msg: ToClient) {
                 start_party_player(ctx);
             }
         }
-        ToClient::Sync { playing, position, .. } => apply_sync(ctx, playing, position),
+        ToClient::Sync { playing, position, by } => apply_sync(ctx, playing, position, by.is_some()),
         ToClient::Chat { from, text } => push(ctx, &from, text),
         ToClient::Notice { text } => push(ctx, "", text),
         ToClient::Left { reason } => {
@@ -319,8 +319,9 @@ pub fn send_presence(ctx: &Ctx) {
     send_live(ctx, ToServer::Presence { watching, hidden });
 }
 
-/// Moves this player to where the party is: playing or paused, and within 1.5s of its position.
-fn apply_sync(ctx: &Ctx, playing: bool, position: f64) {
+/// Moves this player to where the party is: playing or paused, and in step with its position.
+/// `explicit`: someone paused, played or skipped (not the host's 5-second position report).
+fn apply_sync(ctx: &Ctx, playing: bool, position: f64, explicit: bool) {
     let status = ctx.player_status.peek().clone();
     let np = ctx.now_playing.peek().clone();
     // Until the party's own player has loaded (it may not have even started yet), keep the latest.
@@ -331,10 +332,44 @@ fn apply_sync(ctx: &Ctx, playing: bool, position: f64) {
     };
     let mpv = np.video.mpv();
     let _ = mpv.set_property("pause", !playing);
-    if (status.position - position).abs() > 1.5 {
-        let _ = mpv.command("seek", &[&format!("{position:.3}"), "absolute+exact"]);
+    // The host's own report coming back: it's the reference, and it would chase itself.
+    let me = ctx.social.me.peek().as_ref().and_then(|m| m.username.clone());
+    let host = ctx.social.party.peek().as_ref().map(|p| p.host.clone());
+    if !explicit && me.is_some() && me == host {
+        return;
+    }
+    // mpv's position now: the player's status lags it by up to a quarter second.
+    let local = mpv.get_property::<f64>("time-pos").unwrap_or(status.position);
+    match catch_up(local - position, playing, explicit) {
+        CatchUp::Seek => {
+            let _ = mpv.command("seek", &[&format!("{position:.3}"), "absolute+exact"]);
+            let _ = mpv.set_property("speed", 1.0);
+        }
+        CatchUp::Speed(speed) => drop(mpv.set_property("speed", speed)),
     }
 }
+
+#[derive(Debug, PartialEq)]
+enum CatchUp {
+    Seek,
+    /// Plays a little faster or slower until in step (1.0 once there).
+    Speed(f64),
+}
+
+/// How a player `diff` seconds ahead of the party (behind if negative) gets in step: small gaps
+/// close by playing up to 10% faster or slower (a second in ten; mpv keeps the pitch), big ones
+/// and pauses, plays and skips jump there.
+fn catch_up(diff: f64, playing: bool, explicit: bool) -> CatchUp {
+    let gap = diff.abs();
+    if gap > 2. || (gap > 0.3 && (explicit || !playing)) {
+        CatchUp::Seek
+    } else if playing && gap > 0.15 {
+        CatchUp::Speed(1. - (diff * 0.1).clamp(-0.1, 0.1))
+    } else {
+        CatchUp::Speed(1.)
+    }
+}
+
 
 /// Pause or play. In a party it asks the server, which tells everyone (this player included).
 pub fn set_paused(ctx: &Ctx, mpv: &libmpv2::Mpv, paused: bool) {
@@ -437,7 +472,7 @@ fn start_party_player(ctx: &Ctx) {
                     let loaded_now = s.loaded && !status.peek().loaded;
                     status.set(s.clone());
                     if loaded_now && let Some((playing, position)) = pending.write().take() {
-                        apply_sync(&ctx, playing, position);
+                        apply_sync(&ctx, playing, position, true);
                     }
                     // Network stalls only: a seek's brief pause would announce "Waiting for…" on every skip.
                     let waiting = s.loaded && s.buffering;
@@ -548,4 +583,19 @@ pub async fn create_party(ctx: &Ctx, title: PartyTitle, link: &str) -> Result<()
     }
     send_live(ctx, ToServer::Create { title, url });
     Ok(())
+}
+
+#[cfg(test)]
+mod catch_up_tests {
+    use super::{CatchUp, catch_up};
+
+    #[test]
+    fn small_gaps_close_by_speed_big_ones_by_seeking() {
+        assert_eq!(catch_up(1.0, true, false), CatchUp::Speed(0.9), "a second ahead: 10% slower");
+        assert_eq!(catch_up(-0.5, true, false), CatchUp::Speed(1.05), "half a second behind: 5% faster");
+        assert_eq!(catch_up(0.1, true, false), CatchUp::Speed(1.), "in step");
+        assert_eq!(catch_up(-3., true, false), CatchUp::Seek, "far off");
+        assert_eq!(catch_up(0.5, true, true), CatchUp::Seek, "someone skipped or resumed");
+        assert_eq!(catch_up(0.5, false, false), CatchUp::Seek, "paused: exact");
+    }
 }
