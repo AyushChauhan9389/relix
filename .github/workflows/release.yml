@@ -228,6 +228,8 @@ jobs:
           printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/relix-release.jks"
           trap 'rm -f "$RUNNER_TEMP/relix-release.jks"' EXIT
           export RELIX_KEYSTORE="$RUNNER_TEMP/relix-release.jks" ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          # Android updates itself too (update.rs): the APK is signed for that in publish.
+          export RELIX_UPDATE_PUBKEY=$(tr -d '\r\n' < packaging/update-key.pub)
           (cd packaging/android && ./gradlew assembleRelease --no-daemon)
           mkdir -p dist
           cp packaging/android/app/build/outputs/apk/release/app-release.apk "dist/Relix-$V-android.apk"
@@ -263,11 +265,13 @@ jobs:
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/nightly-linux.json
           # Program Files (.msi) installs upgrade through the new .msi.
           dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/nightly-msi.json
+          dist/relix-server update sign signing.key "dist/Relix-$VERSION-android.apk" "$VERSION" > dist/nightly-android.json
           if [ -n "$NIGHTLY" ]; then exit 0; fi
           # Stable: the same builds for stable, and nightly users get it too (it's newer).
           cp dist/nightly-windows.json dist/latest-windows.json
           cp dist/nightly-linux.json dist/latest-linux.json
           cp dist/nightly-msi.json dist/latest-msi.json
+          cp dist/nightly-android.json dist/latest-android.json
           # Builds before per-OS manifests ask for latest.json; it's the Windows one.
           cp dist/latest-windows.json dist/latest.json
       - name: Release notes
@@ -291,13 +295,16 @@ jobs:
           up "Relix-$VERSION-windows-x64-portable.zip"
           up "Relix-$VERSION-linux-x64.tar.gz"
           up "Relix-$VERSION-windows-x64.msi"
+          up "Relix-$VERSION-android.apk"
           # Manifests last, so no client sees a version whose file isn't there yet.
           up nightly-windows.json
           up nightly-linux.json
           up nightly-msi.json
+          up nightly-android.json
           if [ -z "$NIGHTLY" ]; then
             up latest-windows.json
             up latest-linux.json
             up latest-msi.json
+            up latest-android.json
             up latest.json
           fi

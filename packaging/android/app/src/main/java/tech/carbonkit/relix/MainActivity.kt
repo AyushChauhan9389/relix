@@ -1,15 +1,20 @@
 package tech.carbonkit.relix
 
 import android.app.NativeActivity
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.provider.Settings
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.window.OnBackInvokedDispatcher
+import androidx.core.content.FileProvider
+import java.io.File
 
 // Relix is all Rust (android_main in crates/relix-app); this gives its surface key focus, as
 // Freya's Android example does, and hands it the Back gesture.
@@ -26,6 +31,29 @@ class MainActivity : NativeActivity() {
 
     /** Back for the app: closes the player or goes back a page; on Home it sends Relix to the background. */
     private external fun nativeBack()
+
+    /**
+     * Hands a downloaded update (update.rs, in the app's files folder) to Android's installer. Android
+     * asks once to let Relix install apps: that switch opens first, and Install is pressed again after.
+     */
+    @Suppress("unused") // Called from Rust (lib.rs android_install).
+    fun installApk(path: String) {
+        runOnUiThread {
+            if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                    return@runOnUiThread
+                } catch (_: Exception) {
+                    // Some TVs have no such screen; the installer then asks itself.
+                }
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", File(path))
+            val install = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(install)
+        }
+    }
 
     private fun findNativeSurfaceView(view: View): View? {
         if (view is SurfaceView) return view

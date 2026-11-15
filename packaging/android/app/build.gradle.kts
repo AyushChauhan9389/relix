@@ -26,9 +26,13 @@ android {
         // Android 9: older Android TVs (Mi TV and the like) never got further.
         minSdk = 28
         targetSdk = 36
-        // 0.1.9 -> 109: every release must count up.
-        versionCode = relixVersion.split('.').fold(0) { acc, part -> acc * 100 + part.toInt() }
-        versionName = relixVersion
+        // Every build must count up, or Android won't install it as an update: 0.2.6 -> 206, then
+        // x10000 plus the nightly number (RELIX_NIGHTLY), or 9999 for the stable release, which
+        // comes after its nightlies (0.2.6-nightly.30 -> 2060030, 0.2.6 -> 2069999).
+        val nightly = System.getenv("RELIX_NIGHTLY")?.takeIf { it.isNotEmpty() }
+        versionCode = relixVersion.split('.').fold(0) { acc, part -> acc * 100 + part.toInt() } * 10000 +
+            (nightly?.toInt()?.coerceAtMost(9998) ?: 9999)
+        versionName = if (nightly != null) "$relixVersion-nightly.$nightly" else relixVersion
         ndk { abiFilters += abis }
     }
 

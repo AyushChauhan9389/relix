@@ -152,6 +152,30 @@ fn android_to_background() {
     }
 }
 
+/// Hands a downloaded update to Android's installer (MainActivity.installApk): the first time,
+/// Android's "Install unknown apps" switch for Relix opens instead.
+#[cfg(target_os = "android")]
+pub fn android_install(apk: &std::path::Path) -> Result<(), jni::errors::Error> {
+    use jni::objects::JObject;
+    use jni::{JValue, jni_sig, jni_str};
+    let Some(app) = ANDROID.get() else { return Ok(()) };
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut _) };
+    vm.attach_current_thread(|env| {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as *mut _) };
+        let path = env.new_string(apk.to_string_lossy())?;
+        let result = env.call_method(&activity, jni_str!("installApk"), jni_sig!("(Ljava/lang/String;)V"), &[JValue::Object(&path)]).map(drop);
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result
+    })
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn android_install(_: &std::path::Path) -> Result<(), String> {
+    Err("APKs install on Android only".into())
+}
+
 /// Opens `url` in whatever app views it (the browser, YouTube for trailers).
 #[cfg(target_os = "android")]
 fn android_view(url: &str) -> Result<(), jni::errors::Error> {
@@ -855,7 +879,7 @@ fn update_banner(ready: &update::Ready) -> Rect {
         .corner_radius(8.)
         .background(theme::theme().surface)
         .child(label().text(format!("Relix {} is ready", ready.version)).font_size(15.))
-        .child(focus::Focusable::new(home::button("Restart", theme::theme().primary.0, theme::theme().primary.1), restart))
+        .child(focus::Focusable::new(home::button(if cfg!(target_os = "android") { "Install" } else { "Restart" }, theme::theme().primary.0, theme::theme().primary.1), restart))
 }
 
 #[derive(PartialEq)]

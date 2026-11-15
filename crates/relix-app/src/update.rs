@@ -9,8 +9,8 @@ use relix_proto::update::{UpdateManifest, is_newer, signed_message, verify};
 use crate::{Ctx, data_dir, get};
 
 /// The release signing key's public half, set when building releases; no key, no updates.
-/// Android apps are updated by their store or a new APK, never by swapping their own files.
-const PUBLIC_KEY: Option<&str> = if cfg!(target_os = "android") { None } else { option_env!("RELIX_UPDATE_PUBKEY") };
+/// Android downloads the new APK and hands it to Android's installer.
+const PUBLIC_KEY: Option<&str> = option_env!("RELIX_UPDATE_PUBKEY");
 
 /// Builds without the update key (development and test builds) never update themselves.
 pub fn enabled() -> bool {
@@ -53,6 +53,9 @@ pub enum Install {
     /// The new .msi: a Program Files install can't replace its own files, so the installer
     /// upgrades it on restart (Windows asks for admin once).
     Msi(PathBuf),
+    /// The new APK, for Android's installer (the user confirms; Android checks it's signed like
+    /// the installed app).
+    Apk(PathBuf),
 }
 
 /// Whether this copy can write to its own folder (not, say, Program Files without admin).
@@ -97,7 +100,8 @@ pub async fn check_now(ctx: Ctx) -> String {
 async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
     // A copy that can't write to its own folder is a Program Files (.msi) install on Windows; on
     // Linux that's the .deb, which apt updates.
-    let msi = !can_install();
+    let android = cfg!(target_os = "android");
+    let msi = !android && !can_install();
     if msi && !cfg!(windows) {
         return Ok(None);
     }
@@ -115,7 +119,7 @@ async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
         return Err(format!("{} isn't signed by Relix; ignoring it", latest.file));
     }
     let dir = data_dir().join("update");
-    let install = if msi {
+    let install = if msi || android {
         let path = dir.join(&latest.file);
         tokio::task::spawn_blocking(move || {
             let _ = std::fs::remove_dir_all(&dir);
@@ -124,7 +128,7 @@ async fn prepare(ctx: &Ctx, key: &str) -> Result<Option<Ready>, String> {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
-        .map(Install::Msi)?
+        .map(if android { Install::Apk } else { Install::Msi })?
     } else {
         Install::Files(tokio::task::spawn_blocking(move || unpack(&dir, &bytes)).await.map_err(|e| e.to_string())??)
     };
@@ -170,9 +174,13 @@ pub fn apply_in_background(ready: Ready) {
 /// Copies the update over this install and starts the new version. Files in use (the running exe,
 /// libmpv) are renamed to `*.old` first, which Windows allows; `cleanup` removes them next launch.
 pub fn apply(ready: &Ready) -> std::io::Result<()> {
+    if let Install::Apk(apk) = &ready.install {
+        return crate::android_install(apk).map_err(|e| std::io::Error::other(e.to_string()));
+    }
     let exe = std::env::current_exe()?;
     let install = exe.parent().ok_or(std::io::ErrorKind::NotFound)?;
     let files = match &ready.install {
+        Install::Apk(_) => unreachable!("handled above"),
         Install::Files(files) => files,
         Install::Msi(msi) => {
             // msiexec asks for admin itself and upgrades in place; Relix reopens unelevated after.

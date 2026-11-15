@@ -119,7 +119,7 @@ impl Component for Settings {
                             )
                             .child(match ready {
                                 // Same as the banner's Restart: swap in the new files and reopen.
-                                Some(ready) => Focusable::new(button("Restart to update", theme().primary.0, theme().primary.1), move |()| {
+                                Some(ready) => Focusable::new(button(if cfg!(target_os = "android") { "Install update" } else { "Restart to update" }, theme().primary.0, theme().primary.1), move |()| {
                                     let ready = ready.clone();
                                     // Copying the files happens off the UI thread; on success Relix restarts.
                                     spawn(async move {
