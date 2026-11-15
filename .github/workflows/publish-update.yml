@@ -1,0 +1,44 @@
+# Publishes an earlier Release run's builds to the update server, without building again: for when
+# that run's publish step failed after building (Actions → Publish update → Run workflow).
+name: Publish update
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: The Release run whose builds to publish (the number in its URL)
+        required: true
+      version:
+        description: Its version, e.g. 0.2.5 or 0.2.6-nightly.30
+        required: true
+      channel:
+        description: Stable or nightly
+        type: choice
+        options: [stable, nightly]
+        default: stable
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RELIX_SERVER: https://relix.carbonkit.tech
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Publish for auto-update
+        env:
+          KEY: ${{ secrets.RELIX_UPDATE_SIGNING_KEY }}
+          TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          NIGHTLY: ${{ inputs.channel == 'nightly' && 'yes' || '' }}
+        run: bash packaging/publish-update.sh "$VERSION" "$NIGHTLY"

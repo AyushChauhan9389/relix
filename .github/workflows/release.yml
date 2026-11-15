@@ -254,26 +254,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Sign the auto-update payloads
+      # Before the GitHub release: a failed release page shouldn't keep the update from users.
+      - name: Publish for auto-update
         env:
           KEY: ${{ secrets.RELIX_UPDATE_SIGNING_KEY }}
-        run: |
-          chmod +x dist/relix-server
-          printf '%s' "$KEY" > signing.key
-          trap 'rm -f signing.key' EXIT
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64-portable.zip" "$VERSION" > dist/nightly-windows.json
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-linux-x64.tar.gz" "$VERSION" > dist/nightly-linux.json
-          # Program Files (.msi) installs upgrade through the new .msi.
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-windows-x64.msi" "$VERSION" > dist/nightly-msi.json
-          dist/relix-server update sign signing.key "dist/Relix-$VERSION-android.apk" "$VERSION" > dist/nightly-android.json
-          if [ -n "$NIGHTLY" ]; then exit 0; fi
-          # Stable: the same builds for stable, and nightly users get it too (it's newer).
-          cp dist/nightly-windows.json dist/latest-windows.json
-          cp dist/nightly-linux.json dist/latest-linux.json
-          cp dist/nightly-msi.json dist/latest-msi.json
-          cp dist/nightly-android.json dist/latest-android.json
-          # Builds before per-OS manifests ask for latest.json; it's the Windows one.
-          cp dist/latest-windows.json dist/latest.json
+          TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
+        run: bash packaging/publish-update.sh "$VERSION" "$NIGHTLY"
       - name: Release notes
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -287,24 +273,3 @@ jobs:
         run: |
           gh release create "v$VERSION" dist/Relix-* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Relix $VERSION" --notes-file notes.md ${NIGHTLY:+--prerelease --latest=false}
-      - name: Publish for auto-update
-        env:
-          TOKEN: ${{ secrets.RELIX_ADMIN_TOKEN }}
-        run: |
-          up() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/update/$1"; }
-          up "Relix-$VERSION-windows-x64-portable.zip"
-          up "Relix-$VERSION-linux-x64.tar.gz"
-          up "Relix-$VERSION-windows-x64.msi"
-          up "Relix-$VERSION-android.apk"
-          # Manifests last, so no client sees a version whose file isn't there yet.
-          up nightly-windows.json
-          up nightly-linux.json
-          up nightly-msi.json
-          up nightly-android.json
-          if [ -z "$NIGHTLY" ]; then
-            up latest-windows.json
-            up latest-linux.json
-            up latest-msi.json
-            up latest-android.json
-            up latest.json
-          fi
