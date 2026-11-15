@@ -118,6 +118,24 @@ impl Component for Player {
                 })
             }
         });
+        // Settings > Skip intros automatically: each intro is skipped once as it starts; seeking back
+        // into one plays it.
+        use_side_effect({
+            let ctx = ctx.clone();
+            let auto = use_hook(|| ctx.store.get::<bool>(&ctx.profile, "settings", "auto_skip_intro").ok().flatten().unwrap_or(false));
+            let mut skipped = use_state(Vec::<f64>::new);
+            move || {
+                let s = ctx.player_status.read();
+                let Some((start, end)) = s.intros.iter().copied().find(|(a, b)| s.position >= *a && s.position < b - 1.) else { return };
+                if !auto || s.seeking || skipped.peek().contains(&start) {
+                    return;
+                }
+                skipped.write().push(start);
+                if let Some(np) = ctx.now_playing.peek().as_ref() {
+                    crate::social::seek_to(&ctx, np.video.mpv(), end);
+                }
+            }
+        });
         let shown = use_animation_transition(*visible.read(), |from, to| {
             AnimNum::new(if from { 1. } else { 0. }, if to { 1. } else { 0. }).time(240).ease(Ease::Out).function(Function::Cubic)
         });
@@ -188,6 +206,7 @@ impl Component for Player {
                     .child(bottom_bar(&ctx, &r, &status, np.has_next, menu, phone, &safe).opacity(o).layer(1))
                     .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
+            .maybe_child(current_intro(&status).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
             .maybe(np.has_next && status.duration > 0. && status.duration - status.position < NEXT_CARD, |el| {
                 el.child(next_card(&ctx, status.duration - status.position, phone, &safe))
             })
@@ -616,6 +635,29 @@ impl Component for MenuOption {
     }
 }
 
+/// The end of the intro playing now, if one is (not in its last second, where skipping is moot).
+fn current_intro(s: &Status) -> Option<f64> {
+    s.intros.iter().find(|(start, end)| s.position >= *start && s.position < end - 1.).map(|(_, end)| *end)
+}
+
+/// "Skip Intro", bottom right while an intro plays (also the S key).
+fn skip_intro(ctx: &Ctx, r: &Rc<VideoRenderer>, end: f64, phone: bool, safe: &Gaps) -> Rect {
+    let (ctx, r) = (ctx.clone(), r.clone());
+    let (bottom, right) = if phone { (100. + safe.bottom(), 16. + safe.right()) } else { (140., 40.) };
+    // FadeIn::image hugs the button; ::page would stretch it over the box and lose the anchor.
+    rect().position(Position::new_absolute().bottom(bottom).right(right)).layer(2).child(FadeIn::image(crate::focus::Focusable {
+        radius: 10.,
+        ..crate::focus::Focusable::new(
+            rect()
+                .padding(Gaps::new(14., 22., 14., 22.))
+                .corner_radius(10.)
+                .background((255, 255, 255))
+                .child(label().text("Skip Intro").font_size(17.).font_weight(FontWeight::BOLD).color((0, 0, 0))),
+            move |()| crate::social::seek_to(&ctx, r.mpv(), end),
+        )
+    }))
+}
+
 fn next_card(ctx: &Ctx, left: f64, phone: bool, safe: &Gaps) -> Rect {
     let ctx = ctx.clone();
     let (bottom, right) = if phone {
@@ -631,7 +673,7 @@ fn next_card(ctx: &Ctx, left: f64, phone: bool, safe: &Gaps) -> Rect {
     rect()
         .position(Position::new_absolute().bottom(bottom).right(right))
         .layer(2)
-        .child(FadeIn::page(crate::focus::Focusable {
+        .child(FadeIn::image(crate::focus::Focusable {
             radius: 10.,
             ..crate::focus::Focusable::new(
                 rect()
@@ -826,6 +868,9 @@ pub fn key(ctx: &Ctx, registry: &crate::focus::Registry, key: &Key) -> bool {
         }
         Key::Character(c) if c.eq_ignore_ascii_case("f") => ctx.toggle_fullscreen(),
         Key::Character(c) if c.eq_ignore_ascii_case("m") => drop(mpv.set_property("mute", !s.muted)),
+        Key::Character(c) if c.eq_ignore_ascii_case("s") && current_intro(&s).is_some() => {
+            crate::social::seek_to(ctx, mpv, current_intro(&s).unwrap_or_default())
+        }
         Key::Character(c) if c.eq_ignore_ascii_case("n") && np.has_next => {
             if let Some(p) = ctx.player.peek().as_ref() {
                 let _ = p.send(ToPlayer::Next);

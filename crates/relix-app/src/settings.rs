@@ -134,6 +134,8 @@ impl Component for Settings {
                                 None => rect().into_element(),
                             }),
                     )
+                    .child(label().text("PLAYBACK").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
+                    .child(privacy("auto_skip_intro", false, "Skip intros automatically", "Jumps past an episode's intro as it starts, when the video marks it. Off: a Skip Intro button shows instead."))
                     .child(label().text("FRIENDS").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
                     .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))

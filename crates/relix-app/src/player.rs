@@ -101,6 +101,8 @@ pub struct Status {
     /// Stalled waiting for the network, or seeking: the controls show a spinner.
     pub buffering: bool,
     pub seeking: bool,
+    /// Intros (start, end) from the file's chapters, for the Skip Intro button.
+    pub intros: Vec<(f64, f64)>,
 }
 
 impl Default for Status {
@@ -119,6 +121,7 @@ impl Default for Status {
             aid: None,
             buffering: false,
             seeking: false,
+            intros: vec![],
         }
     }
 }
@@ -311,6 +314,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         ("paused-for-cache", Format::Flag),
         ("seeking", Format::Flag),
         ("frame-drop-count", Format::Int64),
+        ("chapter-list/count", Format::Int64),
     ]
     .into_iter()
     .enumerate()
@@ -382,6 +386,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     }
                     status.seeking = v;
                 }
+                (12, PropertyData::Int64(n)) => status.intros = intros(mpv, n, status.duration),
                 (11, PropertyData::Int64(n)) => {
                     // Seeks and stalls skip frames on purpose; only steady playback counts.
                     let steady = status.loaded && !status.seeking && !status.buffering && !status.paused;
@@ -444,6 +449,37 @@ impl DropWatch {
     }
 }
 
+/// The chapters named as an intro ("Intro", "Opening", "OP", "OP1"...), as (start, end): a chapter
+/// ends where the next one starts.
+fn intros(mpv: &Mpv, count: i64, duration: f64) -> Vec<(f64, f64)> {
+    let chapters: Vec<(String, f64)> = (0..count)
+        .map(|i| {
+            let title = mpv.get_property::<String>(&format!("chapter-list/{i}/title")).unwrap_or_default();
+            (title, mpv.get_property::<f64>(&format!("chapter-list/{i}/time")).unwrap_or(0.))
+        })
+        .collect();
+    // The last chapter ends with the file; duration may not be known yet, so ask mpv.
+    let duration = if duration > 0. { duration } else { mpv.get_property::<f64>("duration").unwrap_or(f64::MAX) };
+    intro_ranges(&chapters, duration)
+}
+
+fn intro_ranges(chapters: &[(String, f64)], duration: f64) -> Vec<(f64, f64)> {
+    let is_intro = |title: &str| {
+        let t = title.trim().to_lowercase();
+        let op = t.strip_prefix("op").is_some_and(|rest| rest.trim_start_matches([' ', '-']).chars().all(|c| c.is_ascii_digit()));
+        op || t.contains("intro") || t.starts_with("opening")
+    };
+    chapters
+        .iter()
+        .enumerate()
+        .filter(|(_, (title, _))| is_intro(title))
+        .filter_map(|(i, (_, start))| {
+            let end = chapters.get(i + 1).map_or(duration, |c| c.1);
+            (end > *start).then_some((*start, end))
+        })
+        .collect()
+}
+
 fn progress(s: &Status) -> Progress {
     Progress { position: s.position, duration: s.duration }
 }
@@ -470,6 +506,19 @@ mod tests {
 
     fn sub(lang: &str, url: &str) -> Subtitle {
         Subtitle { id: url.into(), url: url.into(), lang: lang.into() }
+    }
+
+    #[test]
+    fn intro_chapters_become_skippable_ranges() {
+        let ch = |t: &str, s: f64| (t.to_owned(), s);
+        let list = [ch("Prologue", 0.), ch("Opening", 92.), ch("Part A", 182.), ch("ED", 1300.)];
+        assert_eq!(intro_ranges(&list, 1420.), vec![(92., 182.)]);
+        for t in ["Intro", "OP", "op1", "OP 2", "Opening Credits", "Intro Start"] {
+            assert_eq!(intro_ranges(&[ch(t, 0.), ch("Episode", 90.)], 1400.), vec![(0., 90.)], "{t}");
+        }
+        for t in ["Operation", "Chapter 1", "Ending", "Open Season"] {
+            assert!(intro_ranges(&[ch(t, 0.), ch("x", 90.)], 1400.).is_empty(), "{t}");
+        }
     }
 
     #[test]
