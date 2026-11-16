@@ -770,7 +770,7 @@ fn info_column(
 
 fn episode_row(ep: &Video, watched: bool, progress: Option<f32>) -> Rect {
     let (w, h) = (128., 72.);
-    let thumb: Element = match ep.thumbnail.as_deref().and_then(|u| Url::parse(u).ok()) {
+    let thumb: Element = match ep.thumbnail.as_deref().and_then(crate::image_url) {
         Some(url) => ImageViewer::new(url)
             .width(Size::px(w))
             .height(Size::px(h))

@@ -1,0 +1,23 @@
+name: Web build setup
+description: Rust with the wasm32-unknown-emscripten target, Emscripten 4, and the web player's npm packages.
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-emscripten
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: web
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: 4.0.20
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: web/package-lock.json
+    - shell: bash
+      run: cd web && npm ci

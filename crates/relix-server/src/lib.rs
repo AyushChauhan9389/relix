@@ -5,6 +5,7 @@ pub mod cli;
 mod intros;
 mod party;
 mod social;
+mod web;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -212,6 +213,11 @@ pub fn app(db: Connection, config: Config) -> rusqlite::Result<Router> {
         .route("/intros/{video}", get(intros::get).put(intros::put))
         .route("/update/latest", get(update_latest))
         .route("/update/files/{name}", get(update_file))
+        .route("/admin/web/{name}", put(web::upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+        .route("/app", get(web::app_root))
+        .route("/app/", get(web::app_index))
+        .route("/app/{name}", get(web::app_file))
+        .route("/img", get(web::image))
         .with_state(state))
 }
 
@@ -469,22 +475,25 @@ fn plain_name(name: &str) -> bool {
 /// Stores a release file or manifest in the update folder (the release workflow uploads here).
 async fn admin_upload(State(s): State<AppState>, headers: HeaderMap, Path(name): Path<String>, body: Bytes) -> Result<StatusCode, ApiError> {
     require_admin(&s, &headers)?;
-    if !plain_name(&name) {
+    store_file(&s.config.update_dir, &name, &body).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Writes `name` into `dir`: aside, then renamed, so nobody downloads a half-written file.
+async fn store_file(dir: &std::path::Path, name: &str, body: &[u8]) -> Result<(), ApiError> {
+    if !plain_name(name) {
         return Err(ApiError(StatusCode::BAD_REQUEST, "plain file names only"));
     }
-    let dir = &s.config.update_dir;
-    // Written aside then renamed, so nobody downloads a half-written file.
     let part = dir.join(format!(".{name}.part"));
     let stored = async {
         tokio::fs::create_dir_all(dir).await?;
-        tokio::fs::write(&part, &body).await?;
-        tokio::fs::rename(&part, dir.join(&name)).await
+        tokio::fs::write(&part, body).await?;
+        tokio::fs::rename(&part, dir.join(name)).await
     };
     stored.await.map_err(|e| {
-        eprintln!("update upload {name}: {e}");
+        eprintln!("upload {name}: {e}");
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, "couldn't store the file")
-    })?;
-    Ok(StatusCode::NO_CONTENT)
+    })
 }
 
 fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -569,10 +578,18 @@ async fn events(
 }
 
 /// The app's live connection (presence, parties, chat). Needs a username: it's how others see you.
-async fn ws(State(s): State<AppState>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
+async fn ws(State(s): State<AppState>, mut headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
+    // Browsers can't set headers on a WebSocket: the web app sends its token as a subprotocol,
+    // `relix, <token>` (kept out of URLs and so out of access logs).
+    if !headers.contains_key("authorization") {
+        let token = headers.get("sec-websocket-protocol").and_then(|v| v.to_str().ok()).and_then(|p| p.split(',').map(str::trim).find(|p| *p != "relix"));
+        if let Some(value) = token.and_then(|t| format!("Bearer {t}").parse().ok()) {
+            headers.insert("authorization", value);
+        }
+    }
     let account = account_of(&s, &headers)?;
     let username = social::username_of(&s, account)?.ok_or(ApiError(StatusCode::CONFLICT, "pick a username first"))?;
-    Ok(upgrade.on_upgrade(move |socket| party::run(s, account, username, socket)))
+    Ok(upgrade.protocols(["relix"]).on_upgrade(move |socket| party::run(s, account, username, socket)))
 }
 
 fn require_admin(s: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {

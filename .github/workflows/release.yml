@@ -239,8 +239,32 @@ jobs:
           compression-level: 0
           path: dist/Relix-*.apk
 
+  # The web version, served by the Relix server at /app (publish uploads it).
+  web:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      RELIX_NIGHTLY: ${{ needs.check.outputs.nightly }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Nightly version
+        if: needs.check.outputs.nightly != ''
+        shell: bash
+        run: sed -i '0,/^version = /s/^version = ".*"/version = "${{ needs.check.outputs.base }}"/' crates/relix-app/Cargo.toml
+      - uses: ./.github/actions/web-setup
+      - run: bash web/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web
+          path: |
+            web/dist/index.html
+            web/dist/app.js
+            web/dist/relix-app.js
+            web/dist/relix_app.wasm
+            web/dist/icon.png
+
   publish:
-    needs: [check, windows, linux, android]
+    needs: [check, windows, linux, android, web]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.check.outputs.version }}

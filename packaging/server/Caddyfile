@@ -1,7 +1,9 @@
 relix.carbonkit.tech {
-	# The sync server's paths; everything else is the website.
-	@api path /signup /verify /login /logout /logout/* /password/* /account /sync/* /addons/admin /admin/* /update/* /me /me/* /friends /friends/* /ws
+	# The sync server's paths, the web app (/app) and its image relay (/img).
+	@api path /signup /verify /login /logout /logout/* /password/* /account /sync/* /addons/admin /admin/* /update/* /me /me/* /friends /friends/* /ws /intros/* /app /app/* /img
 	handle @api {
+		# The web app's wasm is 14 MB raw, ~5 MB compressed.
+		encode zstd gzip
 		reverse_proxy 127.0.0.1:8787
 	}
 	handle {

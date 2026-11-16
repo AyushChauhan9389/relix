@@ -23,6 +23,65 @@ addToLibrary({
       .finally(() => timer && clearTimeout(timer));
   },
 
+  // A WebSocket signed in with `token` (as the subprotocol `relix, <token>`: browsers can't set
+  // headers). Events go to relix_ws_event(id, kind, text): 0 open, 1 message, 2 closed.
+  relix_ws_open__deps: ['malloc', 'free'],
+  relix_ws_open: function (id, urlPtr, tokenPtr) {
+    const sockets = (globalThis.relixSockets ??= new Map());
+    const event = (kind, text) => {
+      const len = lengthBytesUTF8(text) + 1;
+      const ptr = _malloc(len);
+      stringToUTF8(text, ptr, len);
+      _relix_ws_event(id, kind, ptr);
+      _free(ptr);
+    };
+    let ws;
+    try {
+      ws = new WebSocket(UTF8ToString(urlPtr), ['relix', UTF8ToString(tokenPtr)]);
+    } catch (e) {
+      return setTimeout(() => event(2, String(e)), 0);
+    }
+    sockets.set(id, ws);
+    ws.onopen = () => event(0, '');
+    ws.onmessage = (m) => typeof m.data === 'string' && event(1, m.data);
+    ws.onclose = (c) => {
+      sockets.delete(id);
+      event(2, c.reason || `closed (${c.code})`);
+    };
+  },
+
+  relix_ws_send: function (id, textPtr) {
+    const ws = globalThis.relixSockets?.get(id);
+    if (ws && ws.readyState === 1) ws.send(UTF8ToString(textPtr));
+  },
+
+  relix_ws_close: function (id) {
+    globalThis.relixSockets?.get(id)?.close();
+  },
+
+  // Fullscreen for the whole page (Relix's fullscreen button, F11 in the app).
+  relix_toggle_fullscreen: function () {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  },
+
+  // The page player under mpv's names (mpv.rs's web stand-in): the player screen and Watch
+  // Together control it through these.
+  relix_player_set: function (namePtr, valuePtr) {
+    globalThis.relixPlayer?.control?.set(UTF8ToString(namePtr), UTF8ToString(valuePtr));
+  },
+
+  relix_player_get: function (namePtr, buf, len) {
+    const value = globalThis.relixPlayer?.control?.get(UTF8ToString(namePtr));
+    if (value == null) return -1;
+    return stringToUTF8(String(value), buf, len);
+  },
+
+  relix_player_command: function (namePtr, argsPtr) {
+    const args = UTF8ToString(argsPtr);
+    globalThis.relixPlayer?.control?.command(UTF8ToString(namePtr), args ? args.split('\n') : []);
+  },
+
   relix_set_timeout: function (id, ms) {
     setTimeout(() => _relix_timer_done(id), ms);
   },

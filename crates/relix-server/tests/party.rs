@@ -216,3 +216,19 @@ async fn invites_go_to_friends_and_presence_shows_online() {
     let (_, friends) = rest(&base, "GET", "/friends", &host_token, None).await;
     assert_eq!(friends["friends"], json!([{ "username": "pal", "online": true, "watching": "Test Movie" }]));
 }
+
+/// The web app signs in with its token as a WebSocket subprotocol (browsers can't set headers).
+#[tokio::test]
+async fn browsers_sign_in_through_the_subprotocol() {
+    let base = server().await;
+    let token = user(&base, "webuser").await;
+    let mut req = format!("ws://{base}/ws").into_client_request().unwrap();
+    req.headers_mut().insert("sec-websocket-protocol", format!("relix, {token}").parse().unwrap());
+    let (mut ws, res) = tokio_tungstenite::connect_async(req).await.unwrap();
+    assert_eq!(res.headers()["sec-websocket-protocol"], "relix");
+    send(&mut ws, ToServer::Join { code: "NOPE".into() }).await;
+    expect(&mut ws, |m| matches!(m, ToClient::Error { .. })).await;
+    let mut bad = format!("ws://{base}/ws").into_client_request().unwrap();
+    bad.headers_mut().insert("sec-websocket-protocol", "relix, wrong".parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(bad).await.is_err(), "a wrong token is refused");
+}

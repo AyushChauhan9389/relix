@@ -1,6 +1,7 @@
 //! Friends and Watch Together on the app side (ADR 0010): the live connection to the Relix server,
 //! the state the screens read, and the player that follows a party.
 
+
 use std::time::{Duration, Instant};
 
 use freya::prelude::*;
@@ -180,11 +181,37 @@ fn on_disconnect(ctx: &Ctx) {
     }
 }
 
-/// shortcut: no live connection in the web version yet (friends, Watch Together); the browser's
-/// WebSocket through web.rs would do it.
+/// The web build: the same connection through the browser's WebSocket (web.rs). Browsers send
+/// no keep-alive pings; a dropped connection reconnects as on desktop.
 #[cfg(target_os = "emscripten")]
-async fn connect(_: &Ctx, _: &str) -> Result<(), String> {
-    std::future::pending().await
+async fn connect(ctx: &Ctx, token: &str) -> Result<(), String> {
+    let mut socket = crate::web::Socket::open(&ws_url(), token).await?;
+    crate::log!("live: connected");
+    let (tx, mut rx) = unbounded_channel::<ToServer>();
+    let mut out = ctx.social.out;
+    out.set(Some(tx));
+    send_presence(ctx);
+    if let Some(code) = ctx.social.rejoin.peek().clone() {
+        send_live(ctx, ToServer::Join { code });
+    }
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                let Some(msg) = msg else { return Ok(()) };
+                socket.send(&serde_json::to_string(&msg).map_err(|e| e.to_string())?);
+            }
+            text = socket.next() => {
+                if let Ok(msg) = serde_json::from_str::<ToClient>(&text?) {
+                    handle(ctx, msg);
+                }
+            }
+            _ = crate::net::sleep(Duration::from_secs(25)) => {
+                if account(&ctx.store).is_none() {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "emscripten"))]
@@ -443,15 +470,6 @@ fn start_party_player(ctx: &Ctx) {
         party_player.set(true);
         let (to_player, inbox) = std::sync::mpsc::channel();
         playing.set(Some(to_player));
-        // The web build: the page's own player; staying in step with the party comes later.
-        #[cfg(target_os = "emscripten")]
-        let ended = {
-            let _ = (inbox, &pending);
-            let (position, duration) = crate::web::play(&url, &view.title.name, 0.).await;
-            Ok::<Result<(player::Progress, Option<player::Ended>), String>, ()>(Ok((player::Progress { position, duration }, None)))
-        };
-        #[cfg(not(target_os = "emscripten"))]
-        let ended = {
         let overlay = player::Overlay {
             title: view.title.name.clone(),
             episode: view.title.episode.clone(),
@@ -461,26 +479,7 @@ fn start_party_player(ctx: &Ctx) {
             stream: view.url.clone(),
             video_id: String::new(),
         };
-        let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_in_window({
-            let (ctx, overlay) = (ctx.clone(), overlay.clone());
-            async move {
-                if let Some((mpv, ready)) = mpv_rx.recv().await {
-                    ctx.show_video(mpv, ready, overlay);
-                    send_presence(&ctx);
-                }
-            }
-        });
         let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let (prefs, title) = (ctx.player_prefs(), view.title.name.clone());
-        std::thread::spawn(move || {
-            let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
-            let played = player::play(&url, &Default::default(), 0., &title, &prefs, Some(video), inbox, |msg| {
-                let _ = to_app.send(msg);
-            });
-            let _ = tx.send(played);
-        });
         // The player's state: on screen, plus what the party needs from it.
         spawn_in_window({
             let ctx = ctx.clone();
@@ -507,6 +506,50 @@ fn start_party_player(ctx: &Ctx) {
                     }
                 }
             }
+        });
+        // The web build: the page's own player, controlled through the mpv stand-in (pause, seek,
+        // speed) and read twice a second for the party (web.rs player_status).
+        #[cfg(target_os = "emscripten")]
+        let ended = {
+            let _ = inbox;
+            ctx.show_video(std::sync::Arc::new(crate::mpv::Mpv), std::sync::mpsc::channel().0, overlay.clone());
+            send_presence(&ctx);
+            let playing_now = std::rc::Rc::new(std::cell::Cell::new(true));
+            spawn_in_window({
+                let playing_now = playing_now.clone();
+                async move {
+                    while playing_now.get() {
+                        if let Some(s) = crate::web::player_status() {
+                            let _ = to_app.send(s);
+                        }
+                        crate::net::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            });
+            let (position, duration) = crate::web::play(&url, &view.title.name, 0.).await;
+            playing_now.set(false);
+            Ok::<Result<(player::Progress, Option<player::Ended>), String>, ()>(Ok((player::Progress { position, duration }, None)))
+        };
+        #[cfg(not(target_os = "emscripten"))]
+        let ended = {
+        let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_in_window({
+            let (ctx, overlay) = (ctx.clone(), overlay.clone());
+            async move {
+                if let Some((mpv, ready)) = mpv_rx.recv().await {
+                    ctx.show_video(mpv, ready, overlay);
+                    send_presence(&ctx);
+                }
+            }
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (prefs, title) = (ctx.player_prefs(), view.title.name.clone());
+        std::thread::spawn(move || {
+            let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
+            let played = player::play(&url, &Default::default(), 0., &title, &prefs, Some(video), inbox, |msg| {
+                let _ = to_app.send(msg);
+            });
+            let _ = tx.send(played);
         });
         rx.await
         };

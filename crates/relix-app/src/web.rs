@@ -15,6 +15,13 @@ unsafe extern "C" {
     fn relix_fetch(id: u32, method: *const c_char, url: *const c_char, headers_json: *const c_char, body: *const u8, body_len: usize, timeout_ms: u32);
     fn relix_set_timeout(id: u32, ms: u32);
     fn relix_play(id: u32, url: *const c_char, title: *const c_char, start: f64);
+    fn relix_ws_open(id: u32, url: *const c_char, token: *const c_char);
+    fn relix_ws_send(id: u32, text: *const c_char);
+    fn relix_ws_close(id: u32);
+    fn relix_toggle_fullscreen();
+    fn relix_player_set(name: *const c_char, value: *const c_char);
+    fn relix_player_get(name: *const c_char, buf: *mut u8, len: usize) -> i32;
+    fn relix_player_command(name: *const c_char, args: *const c_char);
 }
 
 thread_local! {
@@ -22,6 +29,7 @@ thread_local! {
     static FETCHES: RefCell<HashMap<u32, oneshot::Sender<Result<Response, String>>>> = RefCell::default();
     static TIMERS: RefCell<HashMap<u32, oneshot::Sender<()>>> = RefCell::default();
     static PLAYS: RefCell<HashMap<u32, oneshot::Sender<(f64, f64)>>> = RefCell::default();
+    static SOCKETS: RefCell<HashMap<u32, tokio::sync::mpsc::UnboundedSender<WsEvent>>> = RefCell::default();
 }
 
 fn next_id() -> u32 {
@@ -93,4 +101,108 @@ pub extern "C" fn relix_play_done(id: u32, position: f64, duration: f64) {
     if let Some(tx) = PLAYS.with(|p| p.borrow_mut().remove(&id)) {
         let _ = tx.send((position, duration));
     }
+}
+
+/// Fullscreen for the whole page.
+pub fn toggle_fullscreen() {
+    unsafe { relix_toggle_fullscreen() };
+}
+
+enum WsEvent {
+    Open,
+    Message(String),
+    Closed(String),
+}
+
+/// The browser's WebSocket, signed in with the account's token.
+pub struct Socket {
+    id: u32,
+    events: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
+}
+
+impl Socket {
+    /// Opens `url` and waits until it's open.
+    pub async fn open(url: &str, token: &str) -> Result<Socket, String> {
+        let (tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let id = next_id();
+        SOCKETS.with(|s| s.borrow_mut().insert(id, tx));
+        let (u, t) = (c(url), c(token));
+        unsafe { relix_ws_open(id, u.as_ptr(), t.as_ptr()) };
+        let mut socket = Socket { id, events };
+        match socket.events.recv().await {
+            Some(WsEvent::Open) => Ok(socket),
+            Some(WsEvent::Closed(why)) => Err(why),
+            _ => Err("closed".into()),
+        }
+    }
+
+    pub fn send(&self, text: &str) {
+        let t = c(text);
+        unsafe { relix_ws_send(self.id, t.as_ptr()) };
+    }
+
+    /// The next message; `Err` once the connection is gone.
+    pub async fn next(&mut self) -> Result<String, String> {
+        match self.events.recv().await {
+            Some(WsEvent::Message(text)) => Ok(text),
+            Some(WsEvent::Closed(why)) => Err(why),
+            Some(WsEvent::Open) => Err("unexpected".into()),
+            None => Err("closed".into()),
+        }
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        SOCKETS.with(|s| s.borrow_mut().remove(&self.id));
+        unsafe { relix_ws_close(self.id) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn relix_ws_event(id: u32, kind: u32, text: *const c_char) {
+    let text = if text.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned() };
+    let event = match kind {
+        0 => WsEvent::Open,
+        1 => WsEvent::Message(text),
+        _ => WsEvent::Closed(text),
+    };
+    if let Some(tx) = SOCKETS.with(|s| s.borrow().get(&id).cloned()) {
+        let _ = tx.send(event);
+    }
+}
+
+/// Sets one of the page player's properties, by mpv's names ("pause", "speed", "volume").
+pub fn player_set(name: &str, value: &str) {
+    let (n, v) = (c(name), c(value));
+    unsafe { relix_player_set(n.as_ptr(), v.as_ptr()) };
+}
+
+/// One of the page player's properties ("time-pos", "duration", "pause"), if it's playing.
+pub fn player_get(name: &str) -> Option<String> {
+    let n = c(name);
+    let mut buf = vec![0u8; 4096];
+    let len = unsafe { relix_player_get(n.as_ptr(), buf.as_mut_ptr(), buf.len()) };
+    (len >= 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
+}
+
+/// mpv's commands the player screen uses ("seek <s> absolute|relative", "add <prop> <delta>").
+pub fn player_command(name: &str, args: &[&str]) {
+    let (n, a) = (c(name), c(&args.join("\n")));
+    unsafe { relix_player_command(n.as_ptr(), a.as_ptr()) };
+}
+
+/// The page player's state for Watch Together, while it plays.
+pub fn player_status() -> Option<crate::player::Status> {
+    #[derive(serde::Deserialize)]
+    struct S {
+        position: f64,
+        duration: f64,
+        paused: bool,
+        buffering: bool,
+        seeking: bool,
+        loaded: bool,
+    }
+    let s: S = serde_json::from_str(&player_get("relix-status")?).ok()?;
+    Some(crate::player::Status { loaded: s.loaded, position: s.position, duration: s.duration, paused: s.paused, buffering: s.buffering, seeking: s.seeking, ..Default::default() })
 }

@@ -11,7 +11,7 @@ fn main() {
             "-sALLOW_MEMORY_GROWTH=1".into(),
             "-sSTACK_SIZE=16MB".into(),
             "-sINITIAL_MEMORY=256MB".into(),
-            "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free','_relix_fetch_done','_relix_timer_done','_relix_play_done']".into(),
+            "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free','_relix_fetch_done','_relix_timer_done','_relix_play_done','_relix_ws_event']".into(),
             "-sEXPORTED_RUNTIME_METHODS=['FS','addRunDependency','removeRunDependency']".into(),
             "-lidbfs.js".into(),
             format!("--js-library={}", bridge.display()),

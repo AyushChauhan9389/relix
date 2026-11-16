@@ -534,7 +534,9 @@ impl Ctx {
 
     /// Makes Relix's window fullscreen, or back.
     pub fn toggle_fullscreen(&self) {
-        // shortcut: the web version leaves fullscreen to the browser (F11); the Fullscreen API would do it.
+        // The web build: the browser's Fullscreen API for the whole page.
+        #[cfg(target_os = "emscripten")]
+        crate::web::toggle_fullscreen();
         #[cfg(not(target_os = "emscripten"))]
         {
             use freya::winit::window::Fullscreen;
@@ -548,12 +550,12 @@ impl Ctx {
         }
     }
 
-    #[cfg(not(target_os = "emscripten"))]
     /// Shows a player full-window; called with the mpv the player hands over.
     pub fn show_video(&self, mpv: std::sync::Arc<crate::mpv::Mpv>, ready: std::sync::mpsc::Sender<()>, overlay: player::Overlay) {
         // A player that already stopped (a dead link fails fast) hands over its mpv too late to show.
         // Its destroy waits on mpv's threads, so it goes off the UI thread.
         if self.player.peek().is_none() {
+            #[cfg(not(target_os = "emscripten"))]
             std::thread::spawn(move || drop(mpv));
             return;
         }
@@ -673,6 +675,17 @@ fn http_client_native() -> reqwest::Client {
     #[cfg(target_os = "android")]
     let builder = builder.tls_certs_only(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().filter_map(|c| reqwest::Certificate::from_der(c).ok()));
     builder.build().expect("HTTP client")
+}
+
+/// Where to load an image from. The web build can only read images from hosts that allow it, so
+/// art from others (metahub) comes through the Relix server's relay (`/img`); TMDB allows it.
+pub fn image_url(u: &str) -> Option<url::Url> {
+    let url = url::Url::parse(u).ok()?;
+    #[cfg(target_os = "emscripten")]
+    if url.host_str() != Some("image.tmdb.org") {
+        return url::Url::parse_with_params(&sync::server_url("/img"), [("u", u)]).ok();
+    }
+    Some(url)
 }
 
 /// A JSON request that gives up after 20s, so a stalled addon can't hold a screen forever.

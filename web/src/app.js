@@ -3,6 +3,9 @@
 // it stopped, so Relix keeps Continue Watching and moves on to the next episode.
 import { play } from './player.js';
 
+// The open player's <video>, for control() below.
+let active = null;
+
 function open(url, title, start) {
   return new Promise((resolve) => {
     const box = document.createElement('div');
@@ -13,6 +16,7 @@ function open(url, title, start) {
     box.querySelector('.title').textContent = title;
     document.body.append(box);
     const video = box.querySelector('video');
+    active = video;
     const status = box.querySelector('.status');
     let current = null;
     let closed = false;
@@ -22,6 +26,7 @@ function open(url, title, start) {
       const position = video.currentTime || start;
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
       current?.stop();
+      if (active === video) active = null;
       box.remove();
       document.removeEventListener('keydown', onKey, true);
       document.getElementById('canvas')?.focus();
@@ -50,4 +55,36 @@ function open(url, title, start) {
   });
 }
 
-globalThis.relixPlayer = { open };
+/** mpv's property and command names on the open <video> (Watch Together, the player screen). */
+const control = {
+  set(name, value) {
+    const v = active;
+    if (!v) return;
+    if (name === 'pause') value === 'true' ? v.pause() : v.play().catch(() => {});
+    else if (name === 'speed') v.playbackRate = Number(value);
+    else if (name === 'volume') v.volume = Math.min(1, Number(value) / 100);
+    else if (name === 'mute') v.muted = value === 'true';
+  },
+  get(name) {
+    const v = active;
+    if (!v) return null;
+    const duration = Number.isFinite(v.duration) ? v.duration : 0;
+    switch (name) {
+      case 'time-pos': return v.currentTime;
+      case 'duration': return duration;
+      case 'pause': return v.paused;
+      case 'speed': return v.playbackRate;
+      // Everything Watch Together needs at once.
+      case 'relix-status': return JSON.stringify({ position: v.currentTime, duration, paused: v.paused, buffering: v.readyState < 3 && !v.paused, seeking: v.seeking, loaded: v.readyState >= 1 });
+      default: return null;
+    }
+  },
+  command(name, args) {
+    const v = active;
+    if (!v || name !== 'seek') return;
+    const to = Number(args[0]);
+    v.currentTime = (args[1] ?? '').startsWith('absolute') ? to : v.currentTime + to;
+  },
+};
+
+globalThis.relixPlayer = { open, control };
