@@ -1,21 +1,31 @@
+// The web build compiles desktop-only code it doesn't call (the mpv player, live sync).
+#![cfg_attr(target_os = "emscripten", allow(dead_code, unused_imports, unused_variables))]
+
 mod account;
 mod addons;
 mod browse;
 #[cfg(windows)]
 mod bundled;
 mod detail;
+#[cfg_attr(target_os = "emscripten", path = "web_off/discord.rs")]
 mod discord;
+#[cfg_attr(target_os = "emscripten", path = "web_off/drive.rs")]
 mod drive;
+mod drive_links;
 mod filter;
 #[macro_use]
 mod debug;
+#[cfg_attr(target_os = "emscripten", path = "web_off/gamepad.rs")]
 mod gamepad;
 mod focus;
 mod home;
+#[cfg_attr(target_os = "emscripten", path = "web_off/instance.rs")]
 mod instance;
 mod library;
 mod motion;
+mod mpv;
 mod my_list;
+mod net;
 mod player;
 mod player_ui;
 mod search;
@@ -26,9 +36,13 @@ mod tmdb;
 mod store;
 mod stremio;
 mod sync;
+#[cfg_attr(target_os = "emscripten", path = "web_off/update.rs")]
 mod update;
+#[cfg_attr(target_os = "emscripten", path = "web_off/video.rs")]
 mod video;
 mod theme;
+#[cfg(target_os = "emscripten")]
+mod web;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -36,7 +50,7 @@ use std::sync::Arc;
 use freya::prelude::*;
 use freya::router::*;
 use relix_proto::addon::{Addon, CatalogResponse, Manifest, MetaPreview, ResourceRequest, manifest_url, with_admin_addons};
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
 
 use account::Account;
 use addons::Addons;
@@ -55,6 +69,7 @@ use theme::Look;
 const DEFAULT_ADDONS: [&str; 2] =
     ["https://v3-cinemeta.strem.io/manifest.json", "https://opensubtitles-v3.strem.io/manifest.json"];
 
+#[cfg(not(target_os = "emscripten"))]
 /// Picks rustls's crypto before any secure connection. Dependencies switch on both of its
 /// providers (ring and aws-lc-rs, since Freya 0.5.2), and with two it won't choose: the first
 /// HTTPS request panicked (0.2.5 crashed at start on Windows).
@@ -62,7 +77,17 @@ fn tls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// The web build (main.rs, wasm32-unknown-emscripten): Freya draws into the page's canvas.
+#[cfg(target_os = "emscripten")]
+pub fn main() {
+    debug::init();
+    log_panics();
+    // The browser has no system fonts for the canvas: Relix brings its own.
+    freya::web::launch(freya::web::WebConfig::new(app).with_font("Relix Sans", &include_bytes!("../assets/fonts/RelixSans.ttf")[..]));
+}
+
 /// The desktop app (main.rs).
+#[cfg(not(target_os = "emscripten"))]
 pub fn main() {
     debug::init();
     log_panics();
@@ -249,6 +274,7 @@ fn android_insets() -> Option<(i32, i32, i32, i32)> {
     .flatten()
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// Opens the window and runs until it closes.
 fn run(config: LaunchConfig) {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -280,6 +306,7 @@ fn run(config: LaunchConfig) {
     launch(config)
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// Skia's GPU cache: 512 MiB, or an eighth of the memory on smaller devices (a 1 GB TV shares it
 /// with the video decoder; a full cache there gets Relix killed).
 fn gpu_cache_mb() -> usize {
@@ -316,6 +343,7 @@ fn log_panics() {
     }));
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// `--play`: plays `url` in mpv's own window, without the UI.
 fn play_check(url: &str) {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -323,7 +351,7 @@ fn play_check(url: &str) {
         std::thread::spawn(move || {
             let url = format!("https://opensubtitles-v3.strem.io/subtitles/{target}.json");
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(get::<relix_proto::addon::SubtitlesResponse>(reqwest::Client::new(), url)) {
+            match rt.block_on(get::<relix_proto::addon::SubtitlesResponse>(http_client(), url)) {
                 Ok(r) => {
                     println!("{} subtitles", r.subtitles.len());
                     let _ = tx.send(player::sub_add_args(&r.subtitles, "OpenSubtitles"));
@@ -361,6 +389,7 @@ fn test_size() -> (f64, f64) {
     size.as_deref().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).unwrap_or((1440., 900.))
 }
 
+#[cfg(not(target_os = "emscripten"))]
 fn offscreen(attrs: freya::winit::window::WindowAttributes) -> freya::winit::window::WindowAttributes {
     let attrs = attrs.with_position(freya::winit::dpi::PhysicalPosition::new(-20000, -20000)).with_active(false);
     #[cfg(windows)]
@@ -385,6 +414,9 @@ fn bundled_exe(exe: &std::path::Path) -> bool {
 /// Where Relix keeps its database: `data` next to the executable for a portable copy (a file
 /// named `portable` sits beside it), otherwise the usual per-user app data folder of each OS.
 fn data_dir() -> std::path::PathBuf {
+    // The web build: a folder the page keeps in the browser's storage (web/index.html).
+    #[cfg(target_os = "emscripten")]
+    return "/data".into();
     #[cfg(target_os = "android")]
     if let Some(dir) = ANDROID.get().and_then(|app| app.internal_data_path()) {
         return dir;
@@ -408,7 +440,7 @@ fn data_dir() -> std::path::PathBuf {
 /// App-wide data every screen reads.
 #[derive(Clone)]
 pub struct Ctx {
-    pub http: reqwest::Client,
+    pub http: net::Client,
     pub store: Rc<Store>,
     /// Id of the profile every record belongs to (one implicit profile for now).
     pub profile: String,
@@ -502,21 +534,28 @@ impl Ctx {
 
     /// Makes Relix's window fullscreen, or back.
     pub fn toggle_fullscreen(&self) {
-        use freya::winit::window::Fullscreen;
-        let mut fullscreen = self.fullscreen;
-        // The window decides: it may have left fullscreen through the system (a shortcut, the compositor).
-        Platform::get().with_window(Platform::window_id(), move |w| {
-            let on = w.fullscreen().is_none();
-            w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
-            fullscreen.set(on);
-        });
+        // The web build: the browser's Fullscreen API for the whole page.
+        #[cfg(target_os = "emscripten")]
+        crate::web::toggle_fullscreen();
+        #[cfg(not(target_os = "emscripten"))]
+        {
+            use freya::winit::window::Fullscreen;
+            let mut fullscreen = self.fullscreen;
+            // The window decides: it may have left fullscreen through the system (a shortcut, the compositor).
+            Platform::get().with_window(Platform::window_id(), move |w| {
+                let on = w.fullscreen().is_none();
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                fullscreen.set(on);
+            });
+        }
     }
 
     /// Shows a player full-window; called with the mpv the player hands over.
-    pub fn show_video(&self, mpv: std::sync::Arc<libmpv2::Mpv>, ready: std::sync::mpsc::Sender<()>, overlay: player::Overlay) {
+    pub fn show_video(&self, mpv: std::sync::Arc<crate::mpv::Mpv>, ready: std::sync::mpsc::Sender<()>, overlay: player::Overlay) {
         // A player that already stopped (a dead link fails fast) hands over its mpv too late to show.
         // Its destroy waits on mpv's threads, so it goes off the UI thread.
         if self.player.peek().is_none() {
+            #[cfg(not(target_os = "emscripten"))]
             std::thread::spawn(move || drop(mpv));
             return;
         }
@@ -567,6 +606,15 @@ impl Ctx {
     pub fn player_escape(&self) {
         crate::log!("player: Esc");
         let (mut fullscreen, player) = (self.fullscreen, self.player.peek().clone());
+        #[cfg(target_os = "emscripten")]
+        {
+            let _ = &mut fullscreen;
+            if let Some(p) = player {
+                let _ = p.send(player::ToPlayer::Stop);
+            }
+            return;
+        }
+        #[cfg(not(target_os = "emscripten"))]
         Platform::get().with_window(Platform::window_id(), move |w| {
             if w.fullscreen().is_some() {
                 w.set_fullscreen(None);
@@ -607,8 +655,19 @@ impl Ctx {
     }
 }
 
+#[cfg(target_os = "emscripten")]
+fn http_client() -> net::Client {
+    net::Client::new()
+}
+
 /// The one HTTP client for addons, sync and updates.
-fn http_client() -> reqwest::Client {
+#[cfg(not(target_os = "emscripten"))]
+fn http_client() -> net::Client {
+    net::Client::new(http_client_native())
+}
+
+#[cfg(not(target_os = "emscripten"))]
+fn http_client_native() -> reqwest::Client {
     // No overall timeout: the sync event stream and update downloads run long. The read timeout
     // still ends a stalled one (the server sends keep-alives every 15s).
     let builder = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10)).read_timeout(std::time::Duration::from_secs(30));
@@ -618,11 +677,21 @@ fn http_client() -> reqwest::Client {
     builder.build().expect("HTTP client")
 }
 
+/// Where to load an image from. The web build can only read images from hosts that allow it, so
+/// art from others (metahub) comes through the Relix server's relay (`/img`); TMDB allows it.
+pub fn image_url(u: &str) -> Option<url::Url> {
+    let url = url::Url::parse(u).ok()?;
+    #[cfg(target_os = "emscripten")]
+    if url.host_str() != Some("image.tmdb.org") {
+        return url::Url::parse_with_params(&sync::server_url("/img"), [("u", u)]).ok();
+    }
+    Some(url)
+}
+
 /// A JSON request that gives up after 20s, so a stalled addon can't hold a screen forever.
-pub async fn get<T: serde::de::DeserializeOwned>(http: reqwest::Client, url: String) -> reqwest::Result<T> {
-    // Errors drop the URL: addon URLs can carry debrid keys, and errors end up in logs.
-    let res = http.get(url).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.without_url())?;
-    res.error_for_status().map_err(|e| e.without_url())?.json().await.map_err(|e| e.without_url())
+/// Errors never carry the URL: addon URLs can hold debrid keys, and errors end up in logs.
+pub async fn get<T: serde::de::DeserializeOwned>(http: net::Client, url: String) -> Result<T, String> {
+    http.get_json(&url, &[]).await
 }
 
 fn app() -> impl IntoElement {
@@ -966,6 +1035,7 @@ impl Component for Shell {
             let Some(mut rx) = instance::SHOW.lock().unwrap().take() else { return };
             spawn(async move {
                 while rx.recv().await.is_some() {
+                    #[cfg(not(target_os = "emscripten"))]
                     Platform::get().with_window(Platform::window_id(), |w| {
                         w.set_minimized(false);
                         w.focus_window();
@@ -1018,7 +1088,7 @@ impl Component for Shell {
                                 safe.set(gaps);
                             }
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        crate::net::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 });
             }
@@ -1027,6 +1097,8 @@ impl Component for Shell {
             let (ctx, registry) = (ctx.clone(), registry.clone());
             move || {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                // The web build has one thread (and no gamepads yet).
+                #[cfg(not(target_os = "emscripten"))]
                 std::thread::spawn(move || gamepad::run(tx));
                 spawn(async move {
                     while let Some(pad) = rx.recv().await {

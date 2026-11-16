@@ -1643,6 +1643,7 @@ dependencies = [
  "freya-metrics-plugin",
  "freya-router",
  "freya-sdk",
+ "freya-web",
  "freya-winit",
  "torin",
 ]
@@ -1880,6 +1881,25 @@ dependencies = [
  "futures-channel",
  "ragnarok",
  "torin",
+]
+
+[[package]]
+name = "freya-web"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0317bd53d69747228863f44a3c91482f2e3e96242f1d8e0928d179a15612c4d0"
+dependencies = [
+ "accesskit",
+ "euclid",
+ "freya-clipboard",
+ "freya-components",
+ "freya-core",
+ "freya-engine",
+ "futures-channel",
+ "gl",
+ "ragnarok",
+ "torin",
+ "tracing",
 ]
 
 [[package]]
@@ -4356,6 +4376,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "url",
  "webpki-root-certs",
  "winit",
  "winresource",

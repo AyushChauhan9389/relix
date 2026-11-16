@@ -1,14 +1,17 @@
 //! Friends and Watch Together on the app side (ADR 0010): the live connection to the Relix server,
 //! the state the screens read, and the player that follows a party.
 
+
 use std::time::{Duration, Instant};
 
 use freya::prelude::*;
+#[cfg(not(target_os = "emscripten"))]
 use futures_util::{SinkExt, StreamExt};
 use relix_proto::social::{Friends, Me, PartyTitle, PartyView, ToClient, ToServer, Username};
-use reqwest::Method;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+#[cfg(not(target_os = "emscripten"))]
 use tokio_tungstenite::tungstenite::Message;
+#[cfg(not(target_os = "emscripten"))]
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::sync::{account, call, send, server_url};
@@ -117,7 +120,7 @@ pub async fn refresh(ctx: &Ctx) {
 
 pub async fn set_username(ctx: &Ctx, name: &str) -> Result<(), String> {
     let body = Username { username: name.trim().to_owned() };
-    send(&ctx.http, Method::PUT, server_url("/me/username"), Some(&token(ctx)?), Some(&body)).await?;
+    send(&ctx.http, "PUT", server_url("/me/username"), Some(&token(ctx)?), Some(&body)).await?;
     refresh(ctx).await;
     // The live connection needs a username; with one it can start.
     wake();
@@ -129,8 +132,8 @@ pub async fn friend(ctx: &Ctx, action: &str, name: &str) -> Result<(), String> {
     let token = token(ctx)?;
     let body = Username { username: name.trim().to_owned() };
     match action {
-        "remove" => send(&ctx.http, Method::DELETE, server_url(&format!("/friends/{}", body.username)), Some(&token), None::<&()>).await?,
-        other => send(&ctx.http, Method::POST, server_url(&format!("/friends/{other}")), Some(&token), Some(&body)).await?,
+        "remove" => send(&ctx.http, "DELETE", server_url(&format!("/friends/{}", body.username)), Some(&token), None::<&()>).await?,
+        other => send(&ctx.http, "POST", server_url(&format!("/friends/{other}")), Some(&token), Some(&body)).await?,
     };
     refresh(ctx).await;
     Ok(())
@@ -158,7 +161,7 @@ pub async fn run(ctx: Ctx) {
             on_disconnect(&ctx);
         }
         // Sign-in, a new username, or just a pause before trying again.
-        let _ = tokio::time::timeout(Duration::from_secs(5), WAKE.notified()).await;
+        let _ = crate::net::timeout(Duration::from_secs(5), WAKE.notified()).await;
     }
 }
 
@@ -178,6 +181,40 @@ fn on_disconnect(ctx: &Ctx) {
     }
 }
 
+/// The web build: the same connection through the browser's WebSocket (web.rs). Browsers send
+/// no keep-alive pings; a dropped connection reconnects as on desktop.
+#[cfg(target_os = "emscripten")]
+async fn connect(ctx: &Ctx, token: &str) -> Result<(), String> {
+    let mut socket = crate::web::Socket::open(&ws_url(), token).await?;
+    crate::log!("live: connected");
+    let (tx, mut rx) = unbounded_channel::<ToServer>();
+    let mut out = ctx.social.out;
+    out.set(Some(tx));
+    send_presence(ctx);
+    if let Some(code) = ctx.social.rejoin.peek().clone() {
+        send_live(ctx, ToServer::Join { code });
+    }
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                let Some(msg) = msg else { return Ok(()) };
+                socket.send(&serde_json::to_string(&msg).map_err(|e| e.to_string())?);
+            }
+            text = socket.next() => {
+                if let Ok(msg) = serde_json::from_str::<ToClient>(&text?) {
+                    handle(ctx, msg);
+                }
+            }
+            _ = crate::net::sleep(Duration::from_secs(25)) => {
+                if account(&ctx.store).is_none() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "emscripten"))]
 async fn connect(ctx: &Ctx, token: &str) -> Result<(), String> {
     let mut req = ws_url().into_client_request().map_err(|e| e.to_string())?;
     req.headers_mut().insert("authorization", format!("Bearer {token}").parse().map_err(|_| "bad token")?);
@@ -210,7 +247,7 @@ async fn connect(ctx: &Ctx, token: &str) -> Result<(), String> {
                 _ => {}
             },
             // Keeps the connection from looking idle to proxies; signing out ends it.
-            _ = tokio::time::sleep(Duration::from_secs(25)) => {
+            _ = crate::net::sleep(Duration::from_secs(25)) => {
                 if account(&ctx.store).is_none() {
                     return Ok(());
                 }
@@ -372,7 +409,7 @@ fn catch_up(diff: f64, playing: bool, explicit: bool) -> CatchUp {
 
 
 /// Pause or play. In a party it asks the server, which tells everyone (this player included).
-pub fn set_paused(ctx: &Ctx, mpv: &libmpv2::Mpv, paused: bool) {
+pub fn set_paused(ctx: &Ctx, mpv: &crate::mpv::Mpv, paused: bool) {
     if ctx.social.in_party_player() {
         let position = ctx.player_status.peek().position;
         send_live(ctx, ToServer::Control { playing: !paused, position });
@@ -382,7 +419,7 @@ pub fn set_paused(ctx: &Ctx, mpv: &libmpv2::Mpv, paused: bool) {
 }
 
 /// Seek to `seconds`. In a party it goes through the server like [`set_paused`].
-pub fn seek_to(ctx: &Ctx, mpv: &libmpv2::Mpv, seconds: f64) {
+pub fn seek_to(ctx: &Ctx, mpv: &crate::mpv::Mpv, seconds: f64) {
     let seconds = seconds.max(0.);
     if ctx.social.in_party_player() {
         let playing = !ctx.player_status.peek().paused;
@@ -393,7 +430,7 @@ pub fn seek_to(ctx: &Ctx, mpv: &libmpv2::Mpv, seconds: f64) {
 }
 
 /// Seek `delta` seconds from here.
-pub fn seek_by(ctx: &Ctx, mpv: &libmpv2::Mpv, delta: f64) {
+pub fn seek_by(ctx: &Ctx, mpv: &crate::mpv::Mpv, delta: f64) {
     if ctx.social.in_party_player() {
         let position = ctx.player_status.peek().position + delta;
         seek_to(ctx, mpv, position);
@@ -427,7 +464,7 @@ fn start_party_player(ctx: &Ctx) {
         };
         // Let a stopped player finish closing first.
         while ctx.player.peek().is_some() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            crate::net::sleep(Duration::from_millis(50)).await;
         }
         let (mut playing, mut party_player, mut pending) = (ctx.player, ctx.social.party_player, ctx.social.pending);
         party_player.set(true);
@@ -442,26 +479,7 @@ fn start_party_player(ctx: &Ctx) {
             stream: view.url.clone(),
             video_id: String::new(),
         };
-        let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_in_window({
-            let (ctx, overlay) = (ctx.clone(), overlay.clone());
-            async move {
-                if let Some((mpv, ready)) = mpv_rx.recv().await {
-                    ctx.show_video(mpv, ready, overlay);
-                    send_presence(&ctx);
-                }
-            }
-        });
         let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let (prefs, title) = (ctx.player_prefs(), view.title.name.clone());
-        std::thread::spawn(move || {
-            let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
-            let played = player::play(&url, &Default::default(), 0., &title, &prefs, Some(video), inbox, |msg| {
-                let _ = to_app.send(msg);
-            });
-            let _ = tx.send(played);
-        });
         // The player's state: on screen, plus what the party needs from it.
         spawn_in_window({
             let ctx = ctx.clone();
@@ -489,7 +507,52 @@ fn start_party_player(ctx: &Ctx) {
                 }
             }
         });
-        let ended = rx.await;
+        // The web build: the page's own player, controlled through the mpv stand-in (pause, seek,
+        // speed) and read twice a second for the party (web.rs player_status).
+        #[cfg(target_os = "emscripten")]
+        let ended = {
+            let _ = inbox;
+            ctx.show_video(std::sync::Arc::new(crate::mpv::Mpv), std::sync::mpsc::channel().0, overlay.clone());
+            send_presence(&ctx);
+            let playing_now = std::rc::Rc::new(std::cell::Cell::new(true));
+            spawn_in_window({
+                let playing_now = playing_now.clone();
+                async move {
+                    while playing_now.get() {
+                        if let Some(s) = crate::web::player_status() {
+                            let _ = to_app.send(s);
+                        }
+                        crate::net::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            });
+            let (position, duration) = crate::web::play(&url, &view.title.name, 0.).await;
+            playing_now.set(false);
+            Ok::<Result<(player::Progress, Option<player::Ended>), String>, ()>(Ok((player::Progress { position, duration }, None)))
+        };
+        #[cfg(not(target_os = "emscripten"))]
+        let ended = {
+        let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_in_window({
+            let (ctx, overlay) = (ctx.clone(), overlay.clone());
+            async move {
+                if let Some((mpv, ready)) = mpv_rx.recv().await {
+                    ctx.show_video(mpv, ready, overlay);
+                    send_presence(&ctx);
+                }
+            }
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (prefs, title) = (ctx.player_prefs(), view.title.name.clone());
+        std::thread::spawn(move || {
+            let video = Box::new(move |mpv, ready| drop(to_ui.send((mpv, ready))));
+            let played = player::play(&url, &Default::default(), 0., &title, &prefs, Some(video), inbox, |msg| {
+                let _ = to_app.send(msg);
+            });
+            let _ = tx.send(played);
+        });
+        rx.await
+        };
         if let Some(relay) = relay {
             relay.abort();
         }
@@ -517,7 +580,7 @@ fn start_party_player(ctx: &Ctx) {
 
 /// Where to play a Drive party from: this device's relay, once the host has shared the file
 /// with this member's Google account (they ask the server, which asks the host's Relix).
-async fn drive_source(ctx: &Ctx, view: &PartyView, file_id: &str) -> Result<(String, tokio::task::AbortHandle), String> {
+async fn drive_source(ctx: &Ctx, view: &PartyView, file_id: &str) -> Result<(String, crate::drive::Relay), String> {
     let me = ctx.social.me.peek().as_ref().and_then(|m| m.username.clone());
     if me.as_deref() != Some(view.host.as_str()) {
         push(ctx, "", "This party plays from Google Drive: sign in to Google in your browser…".into());
@@ -533,7 +596,7 @@ async fn drive_source(ctx: &Ctx, view: &PartyView, file_id: &str) -> Result<(Str
             if Instant::now() > deadline {
                 return Err(format!("{} hasn't shared the video with {email}. Ask them to check, then join again.", view.host));
             }
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            crate::net::sleep(Duration::from_secs(3)).await;
         }
     }
     crate::drive::relay(ctx, file_id).await
@@ -565,6 +628,8 @@ pub async fn create_party(ctx: &Ctx, title: PartyTitle, link: &str) -> Result<()
         return Err("Paste a Google Drive share link or a video link (http/https)".into());
     }
     crate::log!("party: checking {}", crate::debug::host(&url));
+    #[cfg(not(target_os = "emscripten"))]
+    {
     let res = ctx
         .http
         .get(&url)
@@ -578,6 +643,7 @@ pub async fn create_party(ctx: &Ctx, title: PartyTitle, link: &str) -> Result<()
         return Err("That link doesn't give a video".into());
     }
     crate::log!("party: link answers {} {kind}", res.status());
+    }
     if !ctx.social.connected() {
         return Err("Not connected to the Relix server; try again in a moment".into());
     }

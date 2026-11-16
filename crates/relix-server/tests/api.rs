@@ -390,3 +390,28 @@ async fn intros_are_shared_by_median_and_validated() {
     let token = account(&app, "intro9@example.com").await;
     assert_eq!(send(&app, "PUT", "/intros/bad%20id!", Some(&token), intro(0., 90.)).await.0, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn the_web_app_is_uploaded_served_and_revalidated() {
+    let (app, _) = server(false);
+    assert_eq!(put(&app, "/admin/web/index.html", None, b"<p>hi</p>").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(put(&app, "/admin/web/index.html", Some(ADMIN), b"<p>hi</p>").await, StatusCode::NO_CONTENT);
+    let get = |uri: &str, etag: Option<&str>| {
+        let mut req = Request::builder().uri(uri);
+        if let Some(e) = etag {
+            req = req.header("if-none-match", e);
+        }
+        app.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    let res = get("/app/", None).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
+    let etag = res.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(&res.into_body().collect().await.unwrap().to_bytes()[..], b"<p>hi</p>");
+    assert_eq!(get("/app/index.html", Some(&etag)).await.unwrap().status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(get("/app", None).await.unwrap().status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(get("/app/missing.js", None).await.unwrap().status(), StatusCode::NOT_FOUND);
+    // The image relay takes art hosts only: no open proxy.
+    assert_eq!(get("/img?u=https%3A%2F%2Fexample.com%2Fa.png", None).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(get("/img?u=http%3A%2F%2Fimages.metahub.space%2Fa.png", None).await.unwrap().status(), StatusCode::BAD_REQUEST);
+}

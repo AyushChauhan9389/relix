@@ -123,7 +123,7 @@ impl Component for Settings {
                                     let ready = ready.clone();
                                     // Copying the files happens off the UI thread; on success Relix restarts.
                                     spawn(async move {
-                                        let applied = tokio::task::spawn_blocking(move || update::apply(&ready).map_err(|e| e.to_string())).await;
+                                        let applied = crate::net::blocking(move || update::apply(&ready).map_err(|e| e.to_string())).await;
                                         if let Ok(Err(e)) = applied {
                                             found.set(Some(format!("Couldn't install the update: {e}")));
                                         }

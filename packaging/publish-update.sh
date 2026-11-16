@@ -36,4 +36,10 @@ if [ -z "$nightly" ] && [ -f dist/latest-windows.json ]; then
 fi
 # Manifests last, so no client sees a version whose file isn't there yet.
 for m in "${manifests[@]}"; do up "$m"; done
+# The web version at /app (the web job's files): index.html last, so a page never loads half of it.
+if [ -f dist/relix_app.wasm ]; then
+  web() { curl -fsS -X PUT --data-binary "@dist/$1" -H "authorization: Bearer $TOKEN" "$RELIX_SERVER/admin/web/$1"; }
+  for f in relix_app.wasm relix-app.js app.js icon.png index.html; do web "$f"; done
+  echo "published the web app"
+fi
 echo "published $version: ${manifests[*]}"

@@ -33,3 +33,11 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # The web version (web/build.sh): Relix compiled to WebAssembly with Emscripten.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/web-setup
+      - run: bash web/build.sh

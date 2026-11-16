@@ -42,7 +42,7 @@ impl Drop for VideoRenderer {
         // it happens now.
         if freya_core::current_context::CurrentContext::try_with(|_| ()).is_some() {
             spawn_in_window(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                crate::net::sleep(std::time::Duration::from_millis(500)).await;
                 release(gl, mpv);
             });
         } else {

@@ -237,7 +237,7 @@ impl Component for Hero {
             let focused = Platform::get().current_window().is_app_focused;
             spawn(async move {
                 loop {
-                    tokio::time::sleep(ROTATE_EVERY).await;
+                    crate::net::sleep(ROTATE_EVERY).await;
                     let (i, len) = (*index.peek(), *count.peek());
                     if *swiped.peek() {
                         swiped.set(false);
@@ -317,7 +317,7 @@ pub fn layer() -> Rect {
 }
 
 pub fn backdrop(background: Option<&str>) -> Rect {
-    match background.and_then(|u| Url::parse(u).ok()) {
+    match background.and_then(crate::image_url) {
         Some(url) => layer()
             .child(FadeIn::page(
                 ImageViewer::new(url)
@@ -399,7 +399,7 @@ fn play_title(meta: &MetaPreview, mut autoplay: State<Option<String>>) -> EventH
 pub fn title_art(logo: Option<&str>, name: &str) -> Element {
     let text = |name: String| paragraph().width(Size::fill()).max_lines(2).font_size(if phone() { 34. } else { 56. }).font_weight(FontWeight::BOLD).span(name).into();
     let (w, h) = if phone() { (260., 96.) } else { (420., 150.) };
-    match logo.and_then(|u| Url::parse(u).ok()) {
+    match logo.and_then(crate::image_url) {
         Some(url) => {
             let name = name.to_owned();
             ImageViewer::new(url)
@@ -609,7 +609,7 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
     let art: Element = rect()
         .corner_radius(theme().radius)
         .overflow(Overflow::Clip)
-        .child(match meta.poster.as_deref().and_then(|p| Url::parse(p).ok()) {
+        .child(match meta.poster.as_deref().and_then(crate::image_url) {
             Some(url) => FadeIn::image(
                 ImageViewer::new(url)
                     .width(Size::px(poster_w()))

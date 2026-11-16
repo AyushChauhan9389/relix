@@ -5,26 +5,35 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-discord-rich-presence = "1.1.0"
-freya = { version = "=0.5.2", features = ["remote-asset", "sdk-tokio", "router", "metrics"] }
 freya-core = "=0.5.2"
-freya-skia-safe = { version = "=0.104.0", features = ["gl"] }
 futures-util = "0.3.34"
 # Google sign-in (drive.rs): PKCE.
 base64 = "0.22.1"
 getrandom = "0.3.4"
 sha2 = "0.11.1"
-gilrs = "0.11.2"
-libmpv2 = { version = "6", default-features = false, features = ["render"] }
 relix-proto = { version = "0.1.0", path = "../relix-proto" }
-# Only to pick its crypto provider at start (lib.rs tls_provider).
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "charset"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = "1.0.229"
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+url = "2"
+
+# Desktop and Android (the web build, wasm32-unknown-emscripten, uses the browser for these: net.rs, web.rs).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+discord-rich-presence = "1.1.0"
+freya = { version = "=0.5.2", features = ["remote-asset", "sdk-tokio", "router", "metrics"] }
+freya-skia-safe = { version = "=0.104.0", features = ["gl"] }
+gilrs = "0.11.2"
+libmpv2 = { version = "6", default-features = false, features = ["render"] }
+# Only to pick its crypto provider at start (lib.rs tls_provider).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "charset"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+
+# The web build: Freya draws into a WebGL canvas; tokio only for its runtime-free parts (channels).
+[target.'cfg(target_os = "emscripten")'.dependencies]
+freya = { version = "=0.5.2", default-features = false, features = ["web", "remote-asset", "router"] }
+tokio = { version = "1.54.1", features = ["sync", "macros"] }
 
 [dev-dependencies]
 # Headless runs with touch input, to check how scrolling feels on phones.

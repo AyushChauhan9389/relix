@@ -3,7 +3,7 @@
 use relix_proto::addon::{Addon, Manifest, manifest_url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
 
 use crate::{Ctx, get};
 
@@ -102,16 +102,13 @@ pub fn export(mut theirs: Vec<Descriptor>, mine: Vec<(Addon, Value)>) -> (Vec<De
 }
 
 /// Calls a Stremio API method; Stremio answers `{"result": ...}` or `{"error": {"message": ...}}`.
-async fn call<T: DeserializeOwned>(http: &reqwest::Client, method: &str, body: Value) -> Result<T, String> {
-    let reply: Value = http
-        .post(format!("{API}{method}"))
-        .json(&body)
-        .send()
+async fn call<T: DeserializeOwned>(http: &crate::net::Client, method: &str, body: Value) -> Result<T, String> {
+    let body = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
+    let res = http
+        .request("POST", &format!("{API}{method}"), &[("content-type", "application/json")], Some(body), std::time::Duration::from_secs(30))
         .await
-        .map_err(|e| format!("Can't reach Stremio: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Unexpected reply from Stremio: {e}"))?;
+        .map_err(|e| format!("Can't reach Stremio: {e}"))?;
+    let reply: Value = res.json().map_err(|e| format!("Unexpected reply from Stremio: {e}"))?;
     if let Some(msg) = reply.pointer("/error/message").and_then(Value::as_str) {
         return Err(format!("Stremio: {msg}"));
     }

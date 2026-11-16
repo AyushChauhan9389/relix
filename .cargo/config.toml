@@ -1,0 +1,4 @@
+# The web build (wasm32-unknown-emscripten, see web/build.sh) needs WebAssembly exceptions in the
+# C code it compiles (Skia, SQLite) and its link; emcc reads this, other builds ignore it.
+[env]
+EMCC_CFLAGS = "-fwasm-exceptions"

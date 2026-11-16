@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relix Web Player</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #000; color: #eee; font: 15px system-ui, sans-serif; }
+    form { display: flex; gap: 8px; padding: 12px 16px; }
+    input { flex: 1; min-width: 0; padding: 8px 10px; background: #1a1a1a; color: #eee; border: 1px solid #333; border-radius: 6px; }
+    button { padding: 8px 16px; border: 0; border-radius: 6px; background: #fff; color: #000; font-weight: 700; }
+    video { display: block; width: 100%; max-height: calc(100vh - 110px); background: #000; }
+    #log { padding: 8px 16px; color: #999; font: 12px ui-monospace, monospace; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <form id="form"><input id="url" placeholder="Stream link (MKV, MP4, WebM)" required><button>Play</button></form>
+  <video id="video" controls autoplay playsinline></video>
+  <div id="log"></div>
+  <script type="module">
+    import { play } from './dist/player.js'; // npm run build:player
+    const $ = (id) => document.getElementById(id);
+    let current = null;
+    const log = (event, detail) => {
+      $('log').textContent += `${event} ${JSON.stringify(detail)}\n`;
+      (window.relixLog ??= []).push({ event, ...detail, t: performance.now() });
+    };
+    const start = async (url) => {
+      current?.stop();
+      $('log').textContent = '';
+      try { current = await play($('video'), url, log); } catch (e) { log('error', { message: String(e.message ?? e) }); }
+    };
+    $('form').addEventListener('submit', (e) => { e.preventDefault(); start($('url').value); });
+    const src = new URLSearchParams(location.search).get('src');
+    if (src) { $('url').value = src; start(src); }
+  </script>
+</body>
+</html>

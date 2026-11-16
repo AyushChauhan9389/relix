@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
+#[cfg(not(target_os = "emscripten"))]
 use libmpv2::{Format, Mpv, events::Event, events::PropertyData};
 pub use relix_proto::addon::Subtitle;
 
@@ -165,6 +166,7 @@ fn lang_name(code: &str) -> String {
     name.into()
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// Gives the UI the player and a sender for "render context ready".
 pub type HandOver = Box<dyn FnOnce(Arc<Mpv>, Sender<()>) + Send>;
 
@@ -209,6 +211,7 @@ pub fn android_init(vm: *mut std::ffi::c_void) {
     crate::log!("player: av_jni_set_java_vm not found, decoding in software");
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
 /// With `video`, mpv renders for Relix to draw in its own window (video.rs): it's handed the
@@ -311,6 +314,7 @@ pub fn play(
     played
 }
 
+#[cfg(not(target_os = "emscripten"))]
 fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &impl Fn(Status)) -> libmpv2::Result<(Progress, Option<Ended>)> {
     for (id, (name, format)) in [
         ("time-pos", Format::Double),
@@ -460,6 +464,7 @@ impl DropWatch {
     }
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// The intros and where the credits start, from the file's chapters.
 fn chapter_marks(mpv: &Mpv, count: i64, duration: f64) -> (Vec<(f64, f64)>, Option<f64>) {
     let chapters: Vec<(String, f64)> = (0..count)
@@ -507,6 +512,7 @@ fn progress(s: &Status) -> Progress {
     Progress { position: if in_credits { s.duration } else { s.position }, duration: s.duration }
 }
 
+#[cfg(not(target_os = "emscripten"))]
 /// The file's subtitle and audio tracks.
 fn tracks(mpv: &Mpv, count: i64) -> (Vec<Track>, Vec<Track>) {
     let (mut subs, mut audio) = (vec![], vec![]);

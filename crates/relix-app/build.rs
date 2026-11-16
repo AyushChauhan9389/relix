@@ -1,6 +1,25 @@
 // ponytail: links the vendored Windows libmpv (vendor/mpv, see PLAN.md) or Android's fetched one; Linux/macOS use the system libmpv.
 fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // The web build: WebGL 2 for Freya, room to grow, the JavaScript bridge (web.rs) and the
+    // browser storage that keeps the database across reloads (IDBFS).
+    if os == "emscripten" {
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/relix-bridge.js");
+        println!("cargo:rerun-if-changed={}", bridge.display());
+        for arg in [
+            "-sMAX_WEBGL_VERSION=2".to_owned(),
+            "-sALLOW_MEMORY_GROWTH=1".into(),
+            "-sSTACK_SIZE=16MB".into(),
+            "-sINITIAL_MEMORY=256MB".into(),
+            "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free','_relix_fetch_done','_relix_timer_done','_relix_play_done','_relix_ws_event']".into(),
+            "-sEXPORTED_RUNTIME_METHODS=['FS','addRunDependency','removeRunDependency']".into(),
+            "-lidbfs.js".into(),
+            format!("--js-library={}", bridge.display()),
+        ] {
+            println!("cargo:rustc-link-arg-bins={arg}");
+        }
+        return;
+    }
     // Android links the libmpv that packaging/android/fetch-mpv.sh put where the APK takes it from.
     if os == "android" {
         let abi = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
