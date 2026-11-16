@@ -76,7 +76,7 @@ pub fn glide(mut controller: ScrollController, vertical: bool, from: f32, to: f3
             } else {
                 controller.scroll_to_x(at);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(14)).await;
+            crate::net::sleep(std::time::Duration::from_millis(14)).await;
         }
     });
 }

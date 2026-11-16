@@ -27,7 +27,7 @@ pub const MAX_VOLUME: f64 = 150.;
 /// Sets the volume, 0-150%. mpv's own volume covers 0-100; above that a gain filter boosts it with a
 /// limiter right after, so loud scenes don't crackle (mpv applies its volume after the filters, so
 /// a limiter alone wouldn't see the boost).
-pub fn set_volume(ctx: &Ctx, mpv: &libmpv2::Mpv, v: f64) {
+pub fn set_volume(ctx: &Ctx, mpv: &crate::mpv::Mpv, v: f64) {
     let v = v.clamp(0., MAX_VOLUME);
     let _ = mpv.set_property("volume", v.min(100.));
     let gain = (v / 100.).max(1.);
@@ -111,7 +111,7 @@ impl Component for Player {
             move || {
                 spawn(async move {
                     loop {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        crate::net::sleep(Duration::from_millis(250)).await;
                         let keep = status.peek().paused || menu.peek().is_some() || active.peek().elapsed() < HIDE_AFTER;
                         if keep != *visible.peek() {
                             visible.set(keep);
@@ -581,7 +581,7 @@ fn subtitle_style(ctx: &Ctx, r: &Rc<VideoRenderer>) -> Vec<Element> {
 }
 
 /// Moves the subtitles `step` seconds later (negative: earlier), remembered for this stream.
-fn shift_subs(ctx: &Ctx, mpv: &libmpv2::Mpv, step: f64) {
+fn shift_subs(ctx: &Ctx, mpv: &crate::mpv::Mpv, step: f64) {
     let _ = mpv.command("add", &["sub-delay", &step.to_string()]);
     let delay = (mpv.get_property::<f64>("sub-delay").unwrap_or(0.) * 10.).round() / 10.;
     let Some(stream) = ctx.now_playing.peek().as_ref().map(|np| np.stream.clone()).filter(|s| !s.is_empty()) else { return };
@@ -697,7 +697,7 @@ fn share_intro(ctx: &Ctx, start: f64, end: f64) {
     }
     let (http, url) = (ctx.http.clone(), crate::sync::server_url(&format!("/intros/{}", np.video_id)));
     spawn(async move {
-        if let Err(e) = crate::sync::send(&http, reqwest::Method::PUT, url, Some(&acc.token), Some(&intro)).await {
+        if let Err(e) = crate::sync::send(&http, "PUT", url, Some(&acc.token), Some(&intro)).await {
             crate::log!("sharing intro: {e}");
         }
     });

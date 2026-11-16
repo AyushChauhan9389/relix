@@ -73,7 +73,7 @@ pub fn write(args: std::fmt::Arguments) {
 
 /// A URL reduced to its host: stream and addon URLs can carry debrid keys, which logs mustn't.
 pub fn host(url: &str) -> String {
-    reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "?".into())
+    url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "?".into())
 }
 
 #[macro_export]

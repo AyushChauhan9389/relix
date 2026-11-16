@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use freya::prelude::*;
 use relix_proto::addon::{CatalogResponse, search_requests};
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
 
 use crate::focus::{use_page_scroller, use_scroller};
 use crate::home::{PosterRow, Row};
@@ -31,7 +31,7 @@ impl Component for Search {
                 let q = query.read().clone();
                 let ctx = ctx.clone();
                 spawn(async move {
-                    tokio::time::sleep(DEBOUNCE).await;
+                    crate::net::sleep(DEBOUNCE).await;
                     // Typing continued; a newer run handles it.
                     if *query.peek() != q {
                         return;

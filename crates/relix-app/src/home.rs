@@ -237,7 +237,7 @@ impl Component for Hero {
             let focused = Platform::get().current_window().is_app_focused;
             spawn(async move {
                 loop {
-                    tokio::time::sleep(ROTATE_EVERY).await;
+                    crate::net::sleep(ROTATE_EVERY).await;
                     let (i, len) = (*index.peek(), *count.peek());
                     if *swiped.peek() {
                         swiped.set(false);

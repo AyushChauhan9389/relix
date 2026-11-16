@@ -8,7 +8,6 @@ use relix_proto::sync::{
     DeleteAccount, ForgotPassword, Login, PullResponse, Push, PushRecord, PushResponse, ResetPassword, Session, Signup, SignupResponse,
     Verify,
 };
-use reqwest::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::store::Store;
@@ -35,36 +34,40 @@ pub fn account(store: &Store) -> Option<Account> {
 
 /// Sends a request; a failed one becomes the server's error message.
 pub(crate) async fn send<B: Serialize>(
-    http: &reqwest::Client,
-    method: Method,
+    http: &crate::net::Client,
+    method: &str,
     url: String,
     token: Option<&str>,
     body: Option<&B>,
-) -> Result<reqwest::Response, String> {
-    let mut req = http.request(method, url);
-    if let Some(b) = body {
-        req = req.json(b);
+) -> Result<crate::net::Response, String> {
+    let auth = token.map(|t| format!("Bearer {t}"));
+    let mut headers = vec![];
+    if let Some(auth) = &auth {
+        headers.push(("authorization", auth.as_str()));
     }
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-    let res = req.send().await.map_err(|e| format!("Can't reach the server: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let msg = res.json::<serde_json::Value>().await.ok().and_then(|v| v["error"].as_str().map(str::to_owned));
-        return Err(msg.unwrap_or_else(|| format!("Server error {status}")));
+    let body = match body {
+        Some(b) => {
+            headers.push(("content-type", "application/json"));
+            Some(serde_json::to_vec(b).map_err(|e| e.to_string())?)
+        }
+        None => None,
+    };
+    let res = http.request(method, &url, &headers, body, std::time::Duration::from_secs(30)).await.map_err(|e| format!("Can't reach the server: {e}"))?;
+    if !res.ok() {
+        let msg = res.json::<serde_json::Value>().ok().and_then(|v| v["error"].as_str().map(str::to_owned));
+        return Err(msg.unwrap_or_else(|| format!("Server error {}", res.status)));
     }
     Ok(res)
 }
 
 pub(crate) async fn call<B: Serialize, T: DeserializeOwned>(
-    http: &reqwest::Client,
+    http: &crate::net::Client,
     url: String,
     token: Option<&str>,
     body: Option<&B>,
 ) -> Result<T, String> {
-    let method = if body.is_some() { Method::POST } else { Method::GET };
-    send(http, method, url, token, body).await?.json().await.map_err(|e| format!("Unexpected server reply: {e}"))
+    let method = if body.is_some() { "POST" } else { "GET" };
+    send(http, method, url, token, body).await?.json().map_err(|e| format!("Unexpected server reply: {e}"))
 }
 
 pub fn server_url(path: &str) -> String {
@@ -110,7 +113,7 @@ pub fn sign_out(ctx: &Ctx) {
     if let Some(acc) = account(&ctx.store) {
         let http = ctx.http.clone();
         spawn(async move {
-            let _ = send(&http, Method::POST, server_url("/logout"), Some(&acc.token), None::<&()>).await;
+            let _ = send(&http, "POST", server_url("/logout"), Some(&acc.token), None::<&()>).await;
         });
     }
     forget_account(ctx);
@@ -119,14 +122,14 @@ pub fn sign_out(ctx: &Ctx) {
 /// Signs every device out of the account, this one included.
 pub async fn sign_out_everywhere(ctx: &Ctx) -> Result<(), String> {
     let acc = account(&ctx.store).ok_or("Not signed in")?;
-    send(&ctx.http, Method::POST, server_url("/logout/all"), Some(&acc.token), None::<&()>).await?;
+    send(&ctx.http, "POST", server_url("/logout/all"), Some(&acc.token), None::<&()>).await?;
     forget_account(ctx);
     Ok(())
 }
 
 pub async fn forgot_password(ctx: &Ctx, email: &str) -> Result<(), String> {
     let req = ForgotPassword { email: email.into() };
-    send(&ctx.http, Method::POST, server_url("/password/forgot"), None, Some(&req)).await.map(drop)
+    send(&ctx.http, "POST", server_url("/password/forgot"), None, Some(&req)).await.map(drop)
 }
 
 pub async fn reset_password(ctx: &Ctx, email: &str, code: &str, password: &str) -> Result<(), String> {
@@ -139,7 +142,7 @@ pub async fn reset_password(ctx: &Ctx, email: &str, code: &str, password: &str) 
 pub async fn delete_account(ctx: &Ctx, password: &str) -> Result<(), String> {
     let acc = account(&ctx.store).ok_or("Not signed in")?;
     let req = DeleteAccount { password: password.into() };
-    send(&ctx.http, Method::DELETE, server_url("/account"), Some(&acc.token), Some(&req)).await?;
+    send(&ctx.http, "DELETE", server_url("/account"), Some(&acc.token), Some(&req)).await?;
     forget_account(ctx);
     Ok(())
 }
@@ -209,8 +212,20 @@ async fn sync_now(ctx: &Ctx, acc: &Account) -> Result<(), String> {
     Ok(())
 }
 
+/// The server's event stream (desktop); the web version syncs on the idle interval instead.
+#[cfg(not(target_os = "emscripten"))]
+type Events = Option<reqwest::Response>;
+#[cfg(target_os = "emscripten")]
+type Events = Option<()>;
+
+#[cfg(target_os = "emscripten")]
+async fn next_event(_: &mut Events) {
+    std::future::pending().await
+}
+
 /// Waits for the next `data:` event on the SSE stream; drops the stream when it ends or fails.
-async fn next_event(events: &mut Option<reqwest::Response>) {
+#[cfg(not(target_os = "emscripten"))]
+async fn next_event(events: &mut Events) {
     let Some(res) = events.as_mut() else { return std::future::pending().await };
     loop {
         match res.chunk().await {
@@ -219,7 +234,7 @@ async fn next_event(events: &mut Option<reqwest::Response>) {
             Ok(Some(_)) => {}
             _ => {
                 *events = None;
-                tokio::time::sleep(RECONNECT).await;
+                crate::net::sleep(RECONNECT).await;
                 return;
             }
         }
@@ -229,7 +244,7 @@ async fn next_event(events: &mut Option<reqwest::Response>) {
 /// Runs for the app's lifetime: syncs when signed in, then waits for a server event,
 /// a local change, or the idle interval.
 pub async fn run(ctx: Ctx) {
-    let mut events: Option<reqwest::Response> = None;
+    let mut events: Events = None;
     loop {
         let Some(acc) = account(&ctx.store) else {
             events = None;
@@ -247,6 +262,7 @@ pub async fn run(ctx: Ctx) {
             }
             Err(e) => status.set(e),
         }
+        #[cfg(not(target_os = "emscripten"))]
         if events.is_none() {
             let res = ctx.http.get(server_url("/sync/events")).bearer_auth(&acc.token).send().await;
             events = res.ok().filter(|r| r.status().is_success());
@@ -254,7 +270,7 @@ pub async fn run(ctx: Ctx) {
         tokio::select! {
             () = next_event(&mut events) => {}
             () = ctx.sync.notified() => {}
-            () = tokio::time::sleep(IDLE_SYNC) => {}
+            () = crate::net::sleep(IDLE_SYNC) => {}
         }
     }
 }

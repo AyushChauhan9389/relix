@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use freya::prelude::*;
 use relix_proto::addon::{Catalog, CatalogResponse, ExtraProp, MetaPreview, discover_catalogs};
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
 
 use crate::filter::{Filter, Sort, apply, year_bounds};
 use crate::focus::{Focusable, Scroller, use_page_scroller, use_scroller};

@@ -8,7 +8,7 @@
 
 use relix_proto::addon::MetaPreview;
 use serde::Deserialize;
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
 
 use crate::filter::{Filter, Sort};
 
@@ -155,15 +155,15 @@ struct ExternalIds {
 /// TMDB allows about 40 requests a second; Home asks for ~150 at once (a page is ~21).
 static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
-async fn get<T: serde::de::DeserializeOwned>(http: &reqwest::Client, url: String) -> Result<T, String> {
+async fn get<T: serde::de::DeserializeOwned>(http: &crate::net::Client, url: String) -> Result<T, String> {
     let _slot = SLOTS.acquire().await.map_err(|e| e.to_string())?;
-    let res = http.get(url).bearer_auth(TOKEN.unwrap_or_default()).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.without_url().to_string())?;
-    res.error_for_status().map_err(|e| format!("TMDB: {}", e.without_url()))?.json().await.map_err(|e| e.without_url().to_string())
+    let auth = format!("Bearer {}", TOKEN.unwrap_or_default());
+    http.get_json(&url, &[("authorization", &auth)]).await.map_err(|e| format!("TMDB: {e}"))
 }
 
 /// One page of the filtered catalog, and whether there are more. Titles without an IMDb id are
 /// left out: addons can't find streams for them.
-pub async fn discover(http: &reqwest::Client, kind: &str, f: &Filter, page: u32) -> Result<(Vec<MetaPreview>, bool), String> {
+pub async fn discover(http: &crate::net::Client, kind: &str, f: &Filter, page: u32) -> Result<(Vec<MetaPreview>, bool), String> {
     let found: Page = get(http, discover_url(kind, f, page)).await?;
     // TMDB stops at page 500.
     let more = found.page < found.total_pages.min(500);
@@ -171,15 +171,15 @@ pub async fn discover(http: &reqwest::Client, kind: &str, f: &Filter, page: u32)
 }
 
 /// TMDB's titles matching `query`: Search's first rows.
-pub async fn search(http: &reqwest::Client, kind: &str, query: &str) -> Result<Vec<MetaPreview>, String> {
+pub async fn search(http: &crate::net::Client, kind: &str, query: &str) -> Result<Vec<MetaPreview>, String> {
     let path = format!("{API}/search/{}", if kind == "series" { "tv" } else { "movie" });
-    let url = reqwest::Url::parse_with_params(&path, [("query", query), ("include_adult", "false")]).map_err(|e| e.to_string())?;
+    let url = url::Url::parse_with_params(&path, [("query", query), ("include_adult", "false")]).map_err(|e| e.to_string())?;
     let found: Page = get(http, url.to_string()).await?;
     Ok(with_imdb_ids(http, kind, found.results).await)
 }
 
 /// What's trending on TMDB this week: a Home row.
-pub async fn trending(http: &reqwest::Client, kind: &str) -> Result<Vec<MetaPreview>, String> {
+pub async fn trending(http: &crate::net::Client, kind: &str) -> Result<Vec<MetaPreview>, String> {
     let found: Page = get(http, format!("{API}/trending/{}/week", if kind == "series" { "tv" } else { "movie" })).await?;
     Ok(with_imdb_ids(http, kind, found.results).await)
 }
@@ -212,13 +212,13 @@ struct FindResults {
 }
 
 /// TMDB's entry for an IMDb id.
-async fn find(http: &reqwest::Client, imdb: &str, kind: &str) -> Option<Found> {
+async fn find(http: &crate::net::Client, imdb: &str, kind: &str) -> Option<Found> {
     let r: FindResults = get(http, format!("{API}/find/{imdb}?external_source=imdb_id")).await.ok()?;
     if kind == "series" { r.tv_results } else { r.movie_results }.into_iter().next()
 }
 
 /// TMDB's lists for one seed: what its viewers also liked (weighted double) and what's similar.
-async fn lists_for(http: &reqwest::Client, seed: &Seed) -> Vec<(i32, Vec<Item>)> {
+async fn lists_for(http: &crate::net::Client, seed: &Seed) -> Vec<(i32, Vec<Item>)> {
     let Some(found) = find(http, &seed.imdb, &seed.kind).await else { return vec![] };
     let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
     let (recs, similar) = tokio::join!(
@@ -229,7 +229,7 @@ async fn lists_for(http: &reqwest::Client, seed: &Seed) -> Vec<(i32, Vec<Item>)>
 }
 
 /// "More like this" and "Because you watched X": titles like one title, ranked.
-pub async fn more_like(http: &reqwest::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
+pub async fn more_like(http: &crate::net::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
     let lists = lists_for(http, seed).await;
     if lists.is_empty() {
         return Err("not on TMDB".into());
@@ -240,7 +240,7 @@ pub async fn more_like(http: &reqwest::Client, seed: &Seed) -> Result<Vec<MetaPr
 /// "For You": what viewers of several of the seeds (one type) also liked, ranked by how many
 /// seeds point to it, how high, its rating, and how much each seed says (item-based
 /// collaborative filtering: TMDB's recommendations do the learning). Turned-down seeds subtract.
-pub async fn for_you(http: &reqwest::Client, kind: &str, seeds: &[Seed]) -> Result<Vec<MetaPreview>, String> {
+pub async fn for_you(http: &crate::net::Client, kind: &str, seeds: &[Seed]) -> Result<Vec<MetaPreview>, String> {
     let mut set = JoinSet::new();
     for seed in seeds {
         let (http, seed) = (http.clone(), seed.clone());
@@ -271,7 +271,7 @@ fn rank(lists: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
     ranked.into_iter().take(20).map(|(_, item)| item).collect()
 }
 
-async fn with_imdb_ids(http: &reqwest::Client, kind: &str, results: Vec<Item>) -> Vec<MetaPreview> {
+async fn with_imdb_ids(http: &crate::net::Client, kind: &str, results: Vec<Item>) -> Vec<MetaPreview> {
     let tmdb_kind = if kind == "series" { "tv" } else { "movie" };
     // TMDB's ids aren't IMDb's: one lookup per title, all at once.
     let mut set = JoinSet::new();

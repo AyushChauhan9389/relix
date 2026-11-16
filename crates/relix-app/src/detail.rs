@@ -7,7 +7,9 @@ use relix_proto::addon::{
     pick_binge_stream, pick_preferred, subtitle_requests, without_torrents,
 };
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
+use crate::net::Tasks as JoinSet;
+
+const DEAD: &str = "This stream didn't play: the link is dead or the format isn't supported. Try another one.";
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
 use crate::motion::{FadeIn, Placeholder, busy};
@@ -145,6 +147,7 @@ impl Component for Detail {
                         let next = next_video(&m.videos, &vid);
                         let (to_player, inbox) = std::sync::mpsc::channel();
                         playing.set(Some(to_player.clone()));
+                        #[cfg(not(target_os = "emscripten"))]
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let overlay = player::Overlay {
                             title: m.name.clone(),
@@ -155,6 +158,16 @@ impl Component for Detail {
                             stream: req.url.clone(),
                             video_id: if m.r#type == "series" { vid.clone() } else { String::new() },
                         };
+                        // The web build: the page's own player, over the app, until it's closed.
+                        #[cfg(target_os = "emscripten")]
+                        let (mut p, ended) = {
+                            let _ = (&to_app, to_player);
+                            let (position, duration) = crate::web::play(&req.url, &overlay.title, start).await;
+                            playing.set(None);
+                            (Progress { position, duration }, None::<Ended>)
+                        };
+                        #[cfg(not(target_os = "emscripten"))]
+                        let (mut p, ended) = {
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
                         // The player hands its mpv over from its thread; the video is drawn here.
                         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -177,13 +190,13 @@ impl Component for Detail {
                         });
                         fetch_subtitles(&ctx, &m.r#type, &vid, req.filename.as_deref(), to_player);
 
-                        let dead = "This stream didn't play: the link is dead or the format isn't supported. Try another one.";
-                        let (mut p, ended) = match rx.await {
+                        match rx.await {
                             // Loading failed (-13), nothing playable (-16) or an unknown format (-17).
-                            Ok(Err(libmpv2::Error::Raw(-13 | -16 | -17))) => return play_error.set(Some(dead.into())),
+                            Ok(Err(libmpv2::Error::Raw(-13 | -16 | -17))) => return play_error.set(Some(DEAD.into())),
                             Ok(Ok(played)) => played,
                             Ok(Err(e)) => return play_error.set(Some(format!("The player failed to start: {e}"))),
                             Err(_) => return,
+                        }
                         };
                         // Closed before the stream loaded: keep where it was, not 0 of 0.
                         if p.duration <= 0. {
@@ -211,7 +224,7 @@ impl Component for Detail {
                         ctx.sync_soon();
 
                         if ended == Some(Ended::Failed) {
-                            return play_error.set(Some(dead.into()));
+                            return play_error.set(Some(DEAD.into()));
                         }
                         // Closing the player during the credits still counts as watched, but stays closed.
                         let Some(next_id) = next.filter(|_| finished && ended != Some(Ended::Stopped)) else { return };
@@ -225,7 +238,7 @@ impl Component for Detail {
                         let mut now = ctx.now_playing;
                         now.set(None);
                         let lookup = binge_stream(&ctx, &m.r#type, &next_id, req.addon, &group);
-                        let Ok(Some(next_req)) = tokio::time::timeout(std::time::Duration::from_secs(30), lookup).await else { return };
+                        let Ok(Some(next_req)) = crate::net::timeout(std::time::Duration::from_secs(30), lookup).await else { return };
                         (req, vid) = (next_req, next_id);
                     }
                     }

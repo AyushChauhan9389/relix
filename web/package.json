@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Relix in the browser: streams play through the browser's own player, MKV repackaged and unsupported audio converted on the fly (Mediabunny).",
   "scripts": {
-    "build": "esbuild src/player.js --bundle --format=esm --minify --sourcemap --outdir=dist",
+    "build": "./build.sh", "build:player": "esbuild src/player.js --bundle --format=esm --minify --sourcemap --outdir=dist",
     "dev": "esbuild src/player.js --bundle --format=esm --sourcemap --outdir=dist --watch"
   },
   "dependencies": {

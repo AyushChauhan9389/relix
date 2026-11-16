@@ -46,23 +46,7 @@ pub fn enabled() -> bool {
     [CLIENT_ID, CLIENT_SECRET].iter().all(|v| v.is_some_and(|v| !v.is_empty())) && !cfg!(target_os = "android")
 }
 
-/// The Drive file id in a link: a share link (`/file/d/<id>/view`, `open?id=`) or a download one.
-pub fn file_id(url: &str) -> Option<String> {
-    let id = if let Some(rest) = url.split("/file/d/").nth(1) {
-        rest.split(['/', '?', '#']).next()?
-    } else {
-        let is_drive = url.contains("drive.google.com") || url.contains("drive.usercontent.google.com") || url.contains("docs.google.com");
-        let query = url.split_once('?')?.1;
-        query.split('&').find_map(|kv| kv.strip_prefix("id=")).filter(|_| is_drive)?
-    };
-    let valid = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    valid.then(|| id.to_owned())
-}
-
-/// The link a party keeps for a Drive file.
-pub fn party_url(file_id: &str) -> String {
-    format!("https://drive.google.com/file/d/{file_id}/view")
-}
+pub use crate::drive_links::{file_id, party_url};
 
 #[derive(Deserialize)]
 struct Tokens {
@@ -244,7 +228,10 @@ pub async fn trash(ctx: &Ctx, file_id: &str) -> Result<(), String> {
 
 /// Serves the Drive file on 127.0.0.1 for mpv, adding a fresh token to each request (tokens last
 /// an hour; a film is longer). Returns the URL to play and a handle that stops it.
-pub async fn relay(ctx: &Ctx, file_id: &str) -> Result<(String, tokio::task::AbortHandle), String> {
+/// Stops a running relay.
+pub type Relay = tokio::task::AbortHandle;
+
+pub async fn relay(ctx: &Ctx, file_id: &str) -> Result<(String, Relay), String> {
     access_token(ctx).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
