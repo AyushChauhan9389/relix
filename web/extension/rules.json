@@ -5,14 +5,32 @@
     "action": {
       "type": "modifyHeaders",
       "responseHeaders": [
-        { "header": "Access-Control-Allow-Origin", "operation": "set", "value": "*" },
-        { "header": "Access-Control-Allow-Headers", "operation": "set", "value": "Range" },
-        { "header": "Access-Control-Expose-Headers", "operation": "set", "value": "Content-Length, Content-Range, Accept-Ranges, Content-Type" }
+        {
+          "header": "Access-Control-Allow-Origin",
+          "operation": "set",
+          "value": "*"
+        },
+        {
+          "header": "Access-Control-Allow-Headers",
+          "operation": "set",
+          "value": "Range, Authorization, Content-Type"
+        },
+        {
+          "header": "Access-Control-Expose-Headers",
+          "operation": "set",
+          "value": "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+        }
       ]
     },
     "condition": {
-      "initiatorDomains": ["relix.carbonkit.tech"],
-      "resourceTypes": ["xmlhttprequest", "media", "other"]
+      "initiatorDomains": [
+        "relix.carbonkit.tech"
+      ],
+      "resourceTypes": [
+        "xmlhttprequest",
+        "media",
+        "other"
+      ]
     }
   }
 ]
