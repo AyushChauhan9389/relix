@@ -9,13 +9,35 @@
     html, body { margin: 0; height: 100dvh; overflow: hidden; background: #141414; color: #eee; font: 15px system-ui, sans-serif; }
     #canvas { display: block; width: 100dvw; height: 100dvh; outline: none; user-select: none; touch-action: none; }
     #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #888; }
-    #relix-player { position: fixed; inset: 0; background: #000; z-index: 10; }
+    #relix-player { position: fixed; inset: 0; background: #000; z-index: 10; color: #fff; }
     #relix-player video { width: 100%; height: 100%; background: #000; }
-    #relix-player .bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 16px; padding: 16px 24px;
-      background: linear-gradient(#000c, #0000); font-size: 20px; font-weight: 700; pointer-events: none; }
-    #relix-player .close { pointer-events: auto; font-size: 34px; line-height: 1; background: none; border: 0; color: #fff; cursor: pointer; }
-    #relix-player .status { margin-left: auto; font-size: 14px; font-weight: 400; color: #f88; pointer-events: auto; }
+    #relix-player.idle { cursor: none; }
+    #relix-player .bar, #relix-player .controls { position: absolute; left: 0; right: 0; transition: opacity .25s; }
+    #relix-player.idle .bar, #relix-player.idle .controls { opacity: 0; pointer-events: none; }
+    #relix-player .bar { top: 0; display: flex; align-items: center; gap: 16px; padding: 24px 40px 48px 32px;
+      background: linear-gradient(#000c, #0000); font-size: 22px; font-weight: 700; }
+    #relix-player .close { font-size: 34px; line-height: 1; background: none; border: 0; color: #fff; cursor: pointer; }
+    #relix-player .status { margin-left: auto; font-size: 14px; font-weight: 400; color: #f88; }
     #relix-player .status a { color: #fff; }
+    #relix-player .controls { bottom: 0; padding: 48px 40px 20px; background: linear-gradient(#0000, #000d); }
+    #relix-player .seek { position: relative; height: 18px; margin-bottom: 8px; }
+    #relix-player .seek > div { position: absolute; left: 0; top: 7px; height: 4px; border-radius: 2px; pointer-events: none; }
+    #relix-player .seek::before { content: ''; position: absolute; left: 0; right: 0; top: 7px; height: 4px; border-radius: 2px; background: #ffffff40; }
+    #relix-player .buffered { background: #ffffff70; }
+    #relix-player .played { background: #e50914; }
+    #relix-player .seek input { position: absolute; inset: 0; width: 100%; margin: 0; opacity: 0; cursor: pointer; }
+    #relix-player .row { display: flex; align-items: center; gap: 14px; }
+    #relix-player .row button { width: 44px; height: 44px; padding: 8px; background: none; border: 0; color: #fff; cursor: pointer; border-radius: 22px; }
+    #relix-player .row button:hover { background: #ffffff20; }
+    #relix-player .row svg { width: 100%; height: 100%; fill: #fff; }
+    #relix-player .row svg text { fill: #fff; font: 700 7px system-ui; }
+    #relix-player .volume { width: 110px; accent-color: #e50914; }
+    #relix-player .time { margin-left: 6px; font-size: 14px; color: #ddd; font-variant-numeric: tabular-nums; }
+    #relix-player .full { margin-left: auto; }
+    #relix-player .spinner { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px; border-radius: 50%;
+      border: 4px solid #ffffff30; border-top-color: #fff; animation: relix-spin .8s linear infinite; display: none; pointer-events: none; }
+    #relix-player.waiting .spinner { display: block; }
+    @keyframes relix-spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>

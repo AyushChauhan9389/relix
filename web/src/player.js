@@ -15,6 +15,12 @@ registerDtsDecoder();
 const AHEAD = 30;
 const BEHIND = 30;
 
+/**
+ * Converted audio: stereo, which every browser's encoder takes (Chrome's AAC encoder refuses 7.1:
+ * "encoder configuration (mp4a.40.2, 8 channels) is not supported").
+ */
+const CONVERTED = { numberOfChannels: 2, sampleRate: 48000, bitrate: 192000 };
+
 const mse = (type, codec) => codec != null && MediaSource.isTypeSupported(`${type}/mp4; codecs="${codec}"`);
 
 /**
@@ -32,7 +38,7 @@ export async function inspect(input) {
   if (at && !mse('audio', audio)) {
     for (const codec of ['aac', 'opus']) {
       const mime = codec === 'aac' ? 'mp4a.40.2' : 'opus';
-      if (mse('audio', mime) && (await canEncodeAudio(codec))) {
+      if (mse('audio', mime) && (await canEncodeAudio(codec, CONVERTED))) {
         convertAudio = codec;
         break;
       }
@@ -62,8 +68,18 @@ const blocked = (e) => e instanceof TypeError || /fetch|cors/i.test(String(e?.me
  */
 export async function play(video, url, log = () => {}) {
   let current;
+  // The page's own conversion failed after it started (an encoder that refuses, say): the
+  // browser's player takes the link as is, rather than a frozen screen.
+  let fellBack = false;
+  const fallBack = () => {
+    if (fellBack || current?.stopped) return;
+    fellBack = true;
+    const at = video.currentTime;
+    current?.stop();
+    current = playDirect(video, url, log, at);
+  };
   try {
-    current = await playOnce(video, url, log, false);
+    current = await playOnce(video, url, log, false, fallBack);
   } catch (e) {
     if (!blocked(e)) throw e;
     return playDirect(video, url, log);
@@ -74,7 +90,7 @@ export async function play(video, url, log = () => {}) {
     if (!current.plan.audio || current.plan.convertAudio || current.stopped) return;
     log('retry', { why: video.error?.message, convertAudio: true });
     current.stop();
-    playOnce(video, url, log, true).then((next) => (current = next), (e) => log('error', { message: String(e) }));
+    playOnce(video, url, log, true, fallBack).then((next) => (current = next), (e) => log('error', { message: String(e) }));
   };
   video.addEventListener('error', retry, { once: true });
   return {
@@ -88,12 +104,12 @@ export async function play(video, url, log = () => {}) {
   };
 }
 
-async function playOnce(video, url, log, forceAudio) {
+async function playOnce(video, url, log, forceAudio, onFail) {
   const started = performance.now();
   const input = new Input({ source: new UrlSource(url), formats: ALL_FORMATS });
   const plan = await inspect(input);
   if (plan.ok && forceAudio && plan.audio && !plan.convertAudio) {
-    plan.convertAudio = (await canEncodeAudio('aac')) && mse('audio', 'mp4a.40.2') ? 'aac' : 'opus';
+    plan.convertAudio = (await canEncodeAudio('aac', CONVERTED)) && mse('audio', 'mp4a.40.2') ? 'aac' : 'opus';
   }
   log('inspected', { ms: Math.round(performance.now() - started), ...plan });
   if (!plan.ok) throw new Error(plan.reason);
@@ -174,7 +190,7 @@ async function playOnce(video, url, log, forceAudio) {
       output,
       trim: { start },
       // The chosen audio track only.
-      audio: (track) => (track !== plan.audioTrack ? { discard: true } : plan.convertAudio ? { codec: plan.convertAudio, forceTranscode: true } : {}),
+      audio: (track) => (track !== plan.audioTrack ? { discard: true } : plan.convertAudio ? { codec: plan.convertAudio, forceTranscode: true, ...CONVERTED } : {}),
       // Copy video and audio exactly where they are (keeps the timeline as the file has it).
       copy: { boundaryPolicy: 'expand' },
     });
@@ -214,7 +230,9 @@ async function playOnce(video, url, log, forceAudio) {
       ms.duration = plan.duration;
     }
     feed(t).catch((e) => {
-      if (e?.name !== 'ConversionCanceledError') log('error', { message: String(e) });
+      if (e?.name === 'ConversionCanceledError') return;
+      log('error', { message: String(e) });
+      onFail?.(e);
     });
   };
 
@@ -251,9 +269,10 @@ async function playOnce(video, url, log, forceAudio) {
  * own player takes the link as is, which needs no permission. Chrome plays many MKV and MP4 files
  * that way, but not DTS, TrueHD or AC-3 audio; the Relix Web Helper extension lifts the block.
  */
-function playDirect(video, url, log) {
+function playDirect(video, url, log, at = 0) {
   log('direct', { why: "the host doesn't allow the page to read the file" });
   video.src = url;
+  if (at > 1) video.currentTime = at;
   video.play().catch(() => {});
   // No sound after a few seconds of playing: the audio is a kind the browser can't play.
   const check = setTimeout(() => {
