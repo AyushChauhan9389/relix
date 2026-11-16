@@ -87,14 +87,16 @@ addToLibrary({
   },
 
   // The page's player (web/src/app.js) over the app; resolves when it's closed or ends.
-  relix_play: function (id, urlPtr, titlePtr, start) {
+  // `info`: { title, episode, hasNext, accent } (web.rs play). Answers where it stopped and
+  // whether Next was pressed.
+  relix_play: function (id, urlPtr, infoPtr, start) {
     const url = UTF8ToString(urlPtr);
-    const title = UTF8ToString(titlePtr);
+    const info = JSON.parse(UTF8ToString(infoPtr));
     const open = globalThis.relixPlayer && globalThis.relixPlayer.open;
-    const result = open ? open(url, title, start) : Promise.resolve({ position: start, duration: 0 });
+    const result = open ? open(url, info, start) : Promise.resolve({ position: start, duration: 0 });
     result.then(
-      ({ position, duration }) => _relix_play_done(id, position || 0, duration || 0),
-      () => _relix_play_done(id, start, 0),
+      ({ position, duration, next }) => _relix_play_done(id, position || 0, duration || 0, next ? 1 : 0),
+      () => _relix_play_done(id, start, 0, 0),
     );
   },
 });

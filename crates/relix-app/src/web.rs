@@ -14,7 +14,7 @@ use crate::net::Response;
 unsafe extern "C" {
     fn relix_fetch(id: u32, method: *const c_char, url: *const c_char, headers_json: *const c_char, body: *const u8, body_len: usize, timeout_ms: u32);
     fn relix_set_timeout(id: u32, ms: u32);
-    fn relix_play(id: u32, url: *const c_char, title: *const c_char, start: f64);
+    fn relix_play(id: u32, url: *const c_char, info_json: *const c_char, start: f64);
     fn relix_ws_open(id: u32, url: *const c_char, token: *const c_char);
     fn relix_ws_send(id: u32, text: *const c_char);
     fn relix_ws_close(id: u32);
@@ -28,7 +28,7 @@ thread_local! {
     static NEXT: RefCell<u32> = const { RefCell::new(1) };
     static FETCHES: RefCell<HashMap<u32, oneshot::Sender<Result<Response, String>>>> = RefCell::default();
     static TIMERS: RefCell<HashMap<u32, oneshot::Sender<()>>> = RefCell::default();
-    static PLAYS: RefCell<HashMap<u32, oneshot::Sender<(f64, f64)>>> = RefCell::default();
+    static PLAYS: RefCell<HashMap<u32, oneshot::Sender<Played>>> = RefCell::default();
     static SOCKETS: RefCell<HashMap<u32, tokio::sync::mpsc::UnboundedSender<WsEvent>>> = RefCell::default();
 }
 
@@ -85,21 +85,36 @@ pub extern "C" fn relix_timer_done(id: u32) {
     }
 }
 
-/// Plays `url` in the page's video player (over the app) from `start` seconds; resolves when it's
-/// closed or ends, with the last (position, duration).
-pub async fn play(url: &str, title: &str, start: f64) -> (f64, f64) {
+/// Where the page's player stopped, and whether Next (the next episode) was pressed.
+pub struct Played {
+    pub position: f64,
+    pub duration: f64,
+    pub next: bool,
+}
+
+/// Plays `url` in the page's video player (over the app) from `start` seconds, drawn like the
+/// desktop player (web/src/app.js): the overlay's title and episode, the look's accent colour, and
+/// Next when there's a next episode. Resolves when it's closed, ends, or Next is pressed.
+pub async fn play(url: &str, overlay: &crate::player::Overlay, start: f64) -> Played {
     let (tx, rx) = oneshot::channel();
     let id = next_id();
     PLAYS.with(|p| p.borrow_mut().insert(id, tx));
-    let (u, t) = (c(url), c(title));
-    unsafe { relix_play(id, u.as_ptr(), t.as_ptr(), start) };
-    rx.await.unwrap_or((start, 0.))
+    let (r, g, b) = crate::theme::theme().accent;
+    let info = serde_json::json!({
+        "title": overlay.title,
+        "episode": overlay.episode,
+        "hasNext": overlay.has_next,
+        "accent": format!("rgb({r}, {g}, {b})"),
+    });
+    let (u, i) = (c(url), c(&info.to_string()));
+    unsafe { relix_play(id, u.as_ptr(), i.as_ptr(), start) };
+    rx.await.unwrap_or(Played { position: start, duration: 0., next: false })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn relix_play_done(id: u32, position: f64, duration: f64) {
+pub extern "C" fn relix_play_done(id: u32, position: f64, duration: f64, next: u32) {
     if let Some(tx) = PLAYS.with(|p| p.borrow_mut().remove(&id)) {
-        let _ = tx.send((position, duration));
+        let _ = tx.send(Played { position, duration, next: next != 0 });
     }
 }
 

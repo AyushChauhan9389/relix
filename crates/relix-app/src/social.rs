@@ -526,9 +526,9 @@ fn start_party_player(ctx: &Ctx) {
                     }
                 }
             });
-            let (position, duration) = crate::web::play(&url, &view.title.name, 0.).await;
+            let played = crate::web::play(&url, &overlay, 0.).await;
             playing_now.set(false);
-            Ok::<Result<(player::Progress, Option<player::Ended>), String>, ()>(Ok((player::Progress { position, duration }, None)))
+            Ok::<Result<(player::Progress, Option<player::Ended>), String>, ()>(Ok((player::Progress { position: played.position, duration: played.duration }, None)))
         };
         #[cfg(not(target_os = "emscripten"))]
         let ended = {

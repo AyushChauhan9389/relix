@@ -162,9 +162,10 @@ impl Component for Detail {
                         #[cfg(target_os = "emscripten")]
                         let (mut p, ended) = {
                             let _ = (&to_app, to_player);
-                            let (position, duration) = crate::web::play(&req.url, &overlay.title, start).await;
+                            let played = crate::web::play(&req.url, &overlay, start).await;
                             playing.set(None);
-                            (Progress { position, duration }, None::<Ended>)
+                            let ended = played.next.then_some(Ended::NextRequested);
+                            (Progress { position: played.position, duration: played.duration }, ended)
                         };
                         #[cfg(not(target_os = "emscripten"))]
                         let (mut p, ended) = {
