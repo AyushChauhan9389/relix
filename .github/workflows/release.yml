@@ -262,6 +262,7 @@ jobs:
             web/dist/relix-app.js
             web/dist/relix_app.wasm
             web/dist/icon.png
+            web/dist/relix-web-helper.zip
 
   publish:
     needs: [check, windows, linux, android, web]

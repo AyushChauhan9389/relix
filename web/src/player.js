@@ -22,7 +22,7 @@ const mse = (type, codec) => codec != null && MediaSource.isTypeSupported(`${typ
  * @returns {Promise<{ok: true, video: string|null, audio: string|null, convertAudio: 'aac'|'opus'|null, duration: number} | {ok: false, reason: string}>}
  */
 export async function inspect(input) {
-  const [vt, at] = await Promise.all([input.getPrimaryVideoTrack(), input.getPrimaryAudioTrack()]);
+  const [vt, at] = await Promise.all([input.getPrimaryVideoTrack(), pickAudio(input)]);
   const video = vt && (await vt.getCodecParameterString());
   const audio = at && (await at.getCodecParameterString());
   if (vt && !mse('video', video)) {
@@ -39,15 +39,35 @@ export async function inspect(input) {
     }
     if (!convertAudio) return { ok: false, reason: `This browser can't play the audio (${audio})` };
   }
-  return { ok: true, video, audio, convertAudio, duration: await input.computeDuration() };
+  return { ok: true, video, audio, audioTrack: at, convertAudio, duration: await input.computeDuration() };
 }
+
+/**
+ * The audio track to play: releases often carry several (TrueHD 7.1 and an AC-3 one for
+ * compatibility). One the browser plays as is, else one that can be converted, else the first.
+ */
+async function pickAudio(input) {
+  const tracks = await input.getAudioTracks();
+  for (const t of tracks) if (mse('audio', await t.getCodecParameterString())) return t;
+  for (const t of tracks) if (await t.canDecode()) return t;
+  return tracks[0] ?? null;
+}
+
+/** The host doesn't let the page read the file (CORS), or it's unreachable: fetch's TypeError. */
+const blocked = (e) => e instanceof TypeError || /fetch|cors/i.test(String(e?.message ?? e));
 
 /**
  * Plays `url` in `video`. Returns { plan, stop() }; seeking with the video's own controls works.
  * `log(event, detail)` reports progress (for the page and for measuring).
  */
 export async function play(video, url, log = () => {}) {
-  let current = await playOnce(video, url, log, false);
+  let current;
+  try {
+    current = await playOnce(video, url, log, false);
+  } catch (e) {
+    if (!blocked(e)) throw e;
+    return playDirect(video, url, log);
+  }
   // Audio the browser said it plays can still be refused (AAC with an unusual channel map, say):
   // once, play again with the audio converted.
   const retry = () => {
@@ -153,7 +173,8 @@ async function playOnce(video, url, log, forceAudio) {
       input,
       output,
       trim: { start },
-      audio: plan.convertAudio ? { codec: plan.convertAudio, forceTranscode: true } : {},
+      // The chosen audio track only.
+      audio: (track) => (track !== plan.audioTrack ? { discard: true } : plan.convertAudio ? { codec: plan.convertAudio, forceTranscode: true } : {}),
       // Copy video and audio exactly where they are (keeps the timeline as the file has it).
       copy: { boundaryPolicy: 'expand' },
     });
@@ -221,6 +242,30 @@ async function playOnce(video, url, log, forceAudio) {
       video.removeAttribute('src');
       video.load();
       input.dispose?.();
+    },
+  };
+}
+
+/**
+ * When the host won't let the page read the file (no CORS, common for debrid CDNs): the browser's
+ * own player takes the link as is, which needs no permission. Chrome plays many MKV and MP4 files
+ * that way, but not DTS, TrueHD or AC-3 audio; the Relix Web Helper extension lifts the block.
+ */
+function playDirect(video, url, log) {
+  log('direct', { why: "the host doesn't allow the page to read the file" });
+  video.src = url;
+  video.play().catch(() => {});
+  // No sound after a few seconds of playing: the audio is a kind the browser can't play.
+  const check = setTimeout(() => {
+    if (!video.paused && video.webkitAudioDecodedByteCount === 0) log('no-audio', {});
+  }, 4000);
+  return {
+    plan: { ok: true, direct: true },
+    stopped: false,
+    stop() {
+      clearTimeout(check);
+      video.removeAttribute('src');
+      video.load();
     },
   };
 }

@@ -40,8 +40,18 @@ function open(url, title, start) {
     document.addEventListener('keydown', onKey, true);
     box.querySelector('.close').addEventListener('click', close);
     video.addEventListener('ended', close);
+    // A host that blocks the page: what's wrong, and the helper extension that fixes it.
+    const needsHelper = (text) => {
+      status.textContent = `${text} `;
+      const a = document.createElement('a');
+      a.href = 'relix-web-helper.zip';
+      a.textContent = 'Get the Relix Web Helper';
+      status.append(a);
+    };
     play(video, url, (event, detail) => {
       if (event === 'error') status.textContent = detail.message;
+      if (event === 'no-audio') needsHelper("No sound: this host doesn't let the page convert the audio.");
+      if (event === 'direct') video.addEventListener('error', () => needsHelper("This host doesn't let the page play the file."), { once: true });
     })
       .then((c) => {
         current = c;

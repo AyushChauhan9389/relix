@@ -9,5 +9,8 @@ mkdir -p dist
 cp "$target/wasm32-unknown-emscripten/release/relix-app.js" "$target/wasm32-unknown-emscripten/release/relix_app.wasm" dist/
 cp index.html dist/
 cp ../crates/relix-app/assets/icon.png dist/
+# The helper extension (web/extension), downloadable from the player when a host blocks the page.
+rm -f dist/relix-web-helper.zip
+python3 -c "import shutil; shutil.make_archive('dist/relix-web-helper', 'zip', 'extension')"
 npx esbuild src/app.js --bundle --format=esm --minify --sourcemap --outfile=dist/app.js
 echo "built web/dist"

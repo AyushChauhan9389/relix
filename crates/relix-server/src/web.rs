@@ -50,6 +50,7 @@ pub async fn app_file(State(s): State<AppState>, headers: HeaderMap, Path(name):
         Some("js") => "text/javascript",
         Some("wasm") => "application/wasm",
         Some("png") => "image/png",
+        Some("zip") => "application/zip",
         Some("map") | Some("json") => "application/json",
         _ => "application/octet-stream",
     };
