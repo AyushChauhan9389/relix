@@ -1,0 +1,18 @@
+{
+  "name": "relix-web",
+  "private": true,
+  "type": "module",
+  "description": "Relix in the browser: streams play through the browser's own player, MKV repackaged and unsupported audio converted on the fly (Mediabunny).",
+  "scripts": {
+    "build": "esbuild src/player.js --bundle --format=esm --minify --sourcemap --outdir=dist",
+    "dev": "esbuild src/player.js --bundle --format=esm --sourcemap --outdir=dist --watch"
+  },
+  "dependencies": {
+    "@mediabunny/ac3": "1.66.0",
+    "@mediabunny/dts": "1.66.0",
+    "mediabunny": "1.66.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
