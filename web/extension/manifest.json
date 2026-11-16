@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Relix Web Helper",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Lets the Relix web app (relix.carbonkit.tech/app) play streams from hosts that don't allow web pages to read them, such as debrid CDNs.",
   "icons": {
     "128": "icon.png"
@@ -20,5 +20,16 @@
         "path": "rules.json"
       }
     ]
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://relix.carbonkit.tech/*"
+      ],
+      "js": [
+        "marker.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
 }

@@ -2,6 +2,7 @@
 // through player.js (the browser's own <video>, MKV repackaged on the fly) and answers with where
 // it stopped, so Relix keeps Continue Watching and moves on to the next episode.
 import { play } from './player.js';
+import { helperBanner, helperState, showInstallDialog } from './helper.js';
 
 // The open player's <video>, for control() below.
 let active = null;
@@ -110,12 +111,17 @@ function open(url, info, start) {
     document.addEventListener('keydown', onKey, true);
     box.querySelector('.back').addEventListener('click', () => close());
     video.addEventListener('ended', () => close(info.hasNext));
-    // A host that blocks the page: what's wrong, and the helper extension that fixes it.
+    // A host that blocks the page: what's wrong, and (without the helper) the steps to install it.
     const needsHelper = (text) => {
       status.textContent = `${text} `;
-      const a = document.createElement('a');
-      a.href = 'relix-web-helper.zip';
-      a.textContent = 'Get the Relix Web Helper';
+      const a = document.createElement('button');
+      a.className = 'relix-link';
+      a.textContent = helperState() === 'ok' ? 'Open it in the Relix app instead' : 'Install the Relix Web Helper';
+      if (helperState() !== 'ok') {
+        a.addEventListener('click', () => showInstallDialog(text));
+        video.pause();
+        showInstallDialog(`${text} It needs the Relix Web Helper: without it this stream won't play properly in the browser.`);
+      }
       status.append(a);
     };
     play(video, url, (event, detail) => {
@@ -311,3 +317,6 @@ const control = {
 };
 
 globalThis.relixPlayer = { open, control };
+
+// The helper's marker is set before the page's scripts run (document_start).
+helperBanner();

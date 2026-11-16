@@ -56,6 +56,29 @@
       border: 4px solid rgba(255, 255, 255, .2); border-top-color: #fff; animation: relix-spin .8s linear infinite; display: none; pointer-events: none; }
     #relix-player.waiting .spinner { display: block; }
     @keyframes relix-spin { to { transform: rotate(360deg); } }
+    #relix-player .relix-link { margin-left: 6px; padding: 0; border: 0; background: none; color: #fff; font: inherit; text-decoration: underline; cursor: pointer; }
+    /* The Relix Web Helper: the banner on opening the app, and the install steps (src/helper.js). */
+    #relix-banner { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 14px;
+      max-width: min(940px, calc(100vw - 32px)); box-sizing: border-box; padding: 14px 14px 14px 20px; border-radius: 12px;
+      background: rgba(20, 20, 20, .97); border: 1px solid rgba(255, 255, 255, .12); box-shadow: 0 10px 40px rgba(0, 0, 0, .6); font-size: 14px; line-height: 1.4; }
+    #relix-banner span { flex: 1; }
+    #relix-banner button, #relix-dialog button { font: inherit; cursor: pointer; }
+    #relix-banner .relix-how { padding: 9px 14px; border-radius: 8px; border: 0; background: rgba(255, 255, 255, .12); color: #fff; white-space: nowrap; }
+    #relix-banner .relix-x { padding: 6px 8px; border: 0; background: none; color: #aaa; font-size: 16px; }
+    .relix-primary { padding: 9px 16px; border-radius: 8px; background: rgb(229, 9, 20); color: #fff; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    #relix-dialog { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .7); }
+    #relix-dialog .relix-card { width: min(560px, 100%); box-sizing: border-box; padding: 28px; border-radius: 14px; background: rgb(24, 24, 24);
+      border: 1px solid rgba(255, 255, 255, .1); font-size: 15px; line-height: 1.5; }
+    #relix-dialog h2 { margin: 0 0 8px; font-size: 22px; }
+    #relix-dialog .relix-why { margin: 0 0 12px; color: #ccc; }
+    #relix-dialog ol { margin: 0 0 12px; padding-left: 22px; }
+    #relix-dialog li { margin: 6px 0; }
+    #relix-dialog code { padding: 1px 6px; border-radius: 4px; background: rgba(255, 255, 255, .1); }
+    #relix-dialog a { color: #fff; }
+    #relix-dialog .relix-small { color: #999; font-size: 13px; }
+    #relix-dialog .relix-warn { color: #f88; }
+    #relix-dialog .relix-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    #relix-dialog .relix-secondary { padding: 9px 16px; border-radius: 8px; border: 0; background: rgba(255, 255, 255, .12); color: #fff; }
   </style>
 </head>
 <body>
