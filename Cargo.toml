@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["patched"]
 
 [workspace.package]
 edition = "2024"
@@ -10,8 +9,3 @@ license = "GPL-3.0-only"
 [profile.release]
 # Thin LTO: most of fat LTO's speed-up at a fraction of the build time.
 lto = "thin"
-
-# Freya's window crate, 0.5.2, with one change (src/drivers/gl.rs: OpenGL 4.3 is asked for first).
-# Drop this and patched/freya-winit once Freya asks for it itself.
-[patch.crates-io]
-freya-winit = { path = "patched/freya-winit" }

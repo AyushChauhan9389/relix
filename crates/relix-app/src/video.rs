@@ -117,7 +117,9 @@ impl VideoRenderer {
         let gl = gl.as_mut()?;
         if gl.target.as_ref().is_none_or(|(s, _)| *s != size) {
             let info = ImageInfo::new_n32_premul(size, None);
-            let surface = gpu::surfaces::render_target(dctx, Budgeted::Yes, &info, None, SurfaceOrigin::BottomLeft, None, false, None)?;
+            let mut surface = gpu::surfaces::render_target(dctx, Budgeted::Yes, &info, None, SurfaceOrigin::BottomLeft, None, false, None)?;
+            // A new target holds whatever was in GPU memory; never show that.
+            surface.canvas().clear(skia_safe::Color::BLACK);
             gl.target = Some((size, surface));
             gl.drawn = false;
         }
