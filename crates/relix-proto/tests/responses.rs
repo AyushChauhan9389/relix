@@ -99,3 +99,10 @@ fn catalog_previews_carry_genres_rating_and_year() {
         serde_json::from_value(serde_json::json!({ "id": "x", "type": "series", "name": "X", "releaseInfo": "2008–2013", "imdbRating": 9.5 })).unwrap();
     assert_eq!((series.year(), series.rating()), (Some(2008), Some(9.5)));
 }
+
+#[test]
+fn release_info_may_be_a_number() {
+    let m: relix_proto::addon::MetaPreview =
+        serde_json::from_value(serde_json::json!({ "id": "x", "type": "movie", "name": "X", "releaseInfo": 2026 })).unwrap();
+    assert_eq!(m.year(), Some(2026));
+}

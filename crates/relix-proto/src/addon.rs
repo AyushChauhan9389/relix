@@ -271,6 +271,15 @@ pub struct SubtitlesResponse {
     pub cache: CacheHints,
 }
 
+/// Text some addons send as a bare number (`"releaseInfo": 2026`).
+fn text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde::Deserialize::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
+}
+
 /// A title as it appears in a catalog row.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,6 +291,7 @@ pub struct MetaPreview {
     pub background: Option<String>,
     pub logo: Option<String>,
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "text")]
     pub release_info: Option<String>,
     #[serde(default)]
     pub genres: Vec<String>,
@@ -316,6 +326,7 @@ pub struct Meta {
     pub background: Option<String>,
     pub logo: Option<String>,
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "text")]
     pub release_info: Option<String>,
     pub runtime: Option<String>,
     #[serde(default)]

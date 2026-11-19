@@ -266,6 +266,8 @@ pub fn play(
                 crate::log!("mpv option {name}: {e}");
             }
         }
+        // A stream slower than the film: wait for 4 s of it (mpv: 1 s), not a stall every few seconds.
+        init.set_option("cache-pause-wait", 4)?;
         init.set_option("keep-open", "no")?;
         if let Ok(log) = std::env::var("RELIX_MPV_LOG") {
             init.set_option("log-file", log.as_str())?;
@@ -330,6 +332,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         ("seeking", Format::Flag),
         ("frame-drop-count", Format::Int64),
         ("chapter-list/count", Format::Int64),
+        ("hwdec-current", Format::String),
     ]
     .into_iter()
     .enumerate()
@@ -348,7 +351,8 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
     // The first addon subtitle in the preferred language is selected, unless one already is.
     let mut want_sub = prefs.sub_lang.clone().filter(|l| l != "off");
     let mut drops = DropWatch::new();
-    let mut decoder_logged = false;
+    const SUB_PACE: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut sub_pace = std::time::Instant::now() - SUB_PACE;
     loop {
         for msg in inbox.try_iter() {
             match msg {
@@ -358,7 +362,16 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
             }
         }
         if status.loaded {
-            for mut args in pending.drain(..) {
+            // A few at a time: a hundred at once gets the subtitle host answering 429 to most of
+            // them, and they crowd the video's own download. The preferred language goes first.
+            if let Some(lang) = &want_sub {
+                pending.sort_by_key(|a| &a[3] != lang);
+            }
+            let batch = if sub_pace.elapsed() >= SUB_PACE { pending.len().min(2) } else { 0 };
+            if batch > 0 {
+                sub_pace = std::time::Instant::now();
+            }
+            for mut args in pending.drain(..batch) {
                 if status.sid.is_none() && want_sub.as_deref() == Some(args[3].as_str()) {
                     args[1] = "select".into();
                     want_sub = None;
@@ -401,6 +414,10 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     }
                     status.seeking = v;
                 }
+                // Set once the decoder opens (after the seek, on a resume): which one mpv picked.
+                (13, PropertyData::Str(v)) => {
+                    crate::log!("player: decoding {}", if v.is_empty() || v == "no" { "on the CPU".to_owned() } else { format!("on the GPU ({v})") });
+                }
                 (12, PropertyData::Int64(n)) => (status.intros, status.credits) = chapter_marks(mpv, n, status.duration),
                 (11, PropertyData::Int64(n)) => {
                     // Seeks and stalls skip frames on purpose; only steady playback counts.
@@ -421,12 +438,6 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
             Some(Err(_)) if status.loaded => return Ok((progress(&status), Some(Ended::Failed))),
             Some(Err(e)) => return Err(e),
             _ => {}
-        }
-        // Once frames flow, which decoder mpv picked (hardware or not), for the debug log.
-        if !decoder_logged && status.position > 1. {
-            decoder_logged = true;
-            let hwdec = mpv.get_property::<String>("hwdec-current").unwrap_or_default();
-            crate::log!("player: decoding {}", if hwdec.is_empty() || hwdec == "no" { "on the CPU".to_owned() } else { format!("on the GPU ({hwdec})") });
         }
         let only_position = Status { position: before.position, ..status.clone() } == before;
         if status != before && (!only_position || (status.position - sent_position).abs() >= 0.25) {

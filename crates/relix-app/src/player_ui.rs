@@ -92,15 +92,18 @@ impl Component for Player {
         use_provide_context(|| crate::focus::InPlayer);
         // Whatever the page had focused (the Play that started this) would take Enter meanwhile;
         // it gets focus back after.
-        let page_focus = use_hook(|| {
-            let focused = *Platform::get()
-                .current_window()
-                .focused_accessibility_id
-                .peek();
+        let (page_focus, window) = use_hook(|| {
+            let window = Platform::get().current_window();
+            let focused = *window.focused_accessibility_id.peek();
             focused.request_unfocus();
-            focused
+            (focused, window.id)
         });
-        use_drop(move || page_focus.request_focus());
+        // Closing the window drops this after the window is gone, and asking a gone window panics.
+        use_drop(move || {
+            if Platform::get().try_window(window).is_some() {
+                page_focus.request_focus();
+            }
+        });
         let active = ctx.player_active;
         let mut menu = ctx.player_menu;
         let mut visible = use_state(|| true);
