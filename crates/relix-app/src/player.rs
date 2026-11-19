@@ -351,6 +351,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
     // The first addon subtitle in the preferred language is selected, unless one already is.
     let mut want_sub = prefs.sub_lang.clone().filter(|l| l != "off");
     let mut drops = DropWatch::new();
+    let mut retried = false;
     const SUB_PACE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut sub_pace = std::time::Instant::now() - SUB_PACE;
     loop {
@@ -421,7 +422,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 (12, PropertyData::Int64(n)) => (status.intros, status.credits) = chapter_marks(mpv, n, status.duration),
                 (11, PropertyData::Int64(n)) => {
                     // Seeks and stalls skip frames on purpose; only steady playback counts.
-                    let steady = status.loaded && !status.seeking && !status.buffering && !status.paused;
+                    let steady = status.loaded && !status.seeking && !status.buffering && !status.paused && crate::video::drawing();
                     if drops.lighten(n, steady, std::time::Instant::now()) {
                         crate::log!("player: dropping frames ({n} so far); switching to lighter rendering");
                         if let Err(e) = mpv.command("apply-profile", &["fast"]) {
@@ -436,6 +437,13 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
             Some(Ok(Event::EndFile(_) | Event::Shutdown)) => return Ok((progress(&status), None)),
             // libmpv2 reports an errored end of file this way. Once playing, keep the progress.
             Some(Err(_)) if status.loaded => return Ok((progress(&status), Some(Ended::Failed))),
+            // Debrid links often refuse the first request while the file is made ready: one more try.
+            Some(Err(libmpv2::Error::Raw(-13))) if !retried => {
+                retried = true;
+                crate::log!("player: the stream didn't open; trying once more");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                mpv.command("loadfile", &[url])?;
+            }
             Some(Err(e)) => return Err(e),
             _ => {}
         }

@@ -142,11 +142,20 @@ impl VideoRenderer {
         }
         // Tells mpv a frame went out with this window frame, which it times the next ones by.
         gl.ctx.report_swap();
+        *LAST_FRAME.lock().unwrap() = Some(std::time::Instant::now());
         Some(surface.image_snapshot())
     }
 }
 
 /// The current OpenGL context's renderer name (GL_RENDERER), e.g. "NVIDIA GeForce RTX 3060/PCIe/SSE2".
+static LAST_FRAME: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Whether the window is drawing the video: a closing, hidden or minimized one isn't, and the
+/// frames mpv drops meanwhile say nothing about the GPU. True before any frame (windowless play).
+pub fn drawing() -> bool {
+    LAST_FRAME.lock().unwrap().is_none_or(|t| t.elapsed() < std::time::Duration::from_millis(500))
+}
+
 fn gl_renderer() -> String {
     const GL_RENDERER: u32 = 0x1F01;
     let get = gl_proc(&(), "glGetString");
