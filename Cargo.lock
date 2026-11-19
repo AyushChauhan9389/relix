@@ -1905,8 +1905,6 @@ dependencies = [
 [[package]]
 name = "freya-winit"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "068f5f6647f6bc494931404edf8517ef101b44710281fc05d91a273aad331a77"
 dependencies = [
  "accesskit",
  "accesskit_winit",
