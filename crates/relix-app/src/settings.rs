@@ -20,6 +20,8 @@ impl Component for Settings {
         let mut checking = use_state(|| false);
         let mut found = use_state(|| None::<String>);
         let mut debug_on = use_state(debug::enabled);
+        #[allow(unused_mut)]
+        let mut speed = use_state(String::new);
         let ready = ctx.update.read().clone();
         let check = {
             let ctx = ctx.clone();
@@ -179,6 +181,23 @@ impl Component for Settings {
                                 debug_on.set(on);
                             }))),
                     )
+                    .maybe(*debug_on.read() && cfg!(not(any(target_os = "emscripten", target_os = "android"))), |el| {
+                        el.child(
+                            rect()
+                                .horizontal()
+                                .cross_align(Alignment::Center)
+                                .spacing(12.)
+                                .margin(Gaps::new(12., 0., 0., 0.))
+                                .child(Focusable::new(button("Test stream speed", theme().raised, (255, 255, 255)), move |()| {
+                                    #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+                                    spawn(async move {
+                                        speed.set("Testing the stream you last played (about 15 seconds)...".to_owned());
+                                        speed.set(debug::speed_test().await);
+                                    });
+                                }))
+                                .child(label().text(speed.read().clone()).font_size(13.).color(theme().muted)),
+                        )
+                    })
                     // TMDB's terms ask for this credit wherever its data shows.
                     .maybe(crate::tmdb::enabled(), |el| {
                         el.child(

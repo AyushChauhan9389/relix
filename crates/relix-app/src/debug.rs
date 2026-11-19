@@ -76,6 +76,69 @@ pub fn host(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "?".into())
 }
 
+/// The stream last played, for [`speed_test`].
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+pub static LAST_STREAM: std::sync::Mutex<Option<(String, std::collections::HashMap<String, String>)>> = std::sync::Mutex::new(None);
+
+/// How fast the last played stream downloads over 1 connection, then over 4 at once (each from a
+/// different part of the file): says whether downloading in parallel would help this stream.
+/// Each round stops after 6 seconds or 48 MB, whichever comes first.
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+pub async fn speed_test() -> String {
+    let Some((url, headers)) = LAST_STREAM.lock().unwrap().clone() else {
+        return "Play something first, then come back: this tests the stream you last played.".into();
+    };
+    if !url.starts_with("http") {
+        return "The last stream isn't an http one.".into();
+    }
+    // Total size, from a one-byte request.
+    let size = match fetch(&url, &headers, 0, Some(0)).await {
+        Ok(r) => r.headers().get("content-range").and_then(|v| v.to_str().ok()?.rsplit('/').next()?.parse::<u64>().ok()),
+        Err(e) => return format!("The stream didn't answer: {e}"),
+    };
+    let Some(size) = size else {
+        return "This stream's server doesn't allow fetching parts of the file, so parallel downloading can't work on it.".into();
+    };
+    let (one, four) = (mbit(&url, &headers, size, 1).await, mbit(&url, &headers, size, 4).await);
+    let text = format!("1 connection: {one:.1} Mbit/s. 4 connections: {four:.1} Mbit/s ({}).", host(&url));
+    crate::log!("speed test: {text}");
+    text
+}
+
+/// One ranged GET on a connection of its own (a fresh client, HTTP/1.1 like mpv's).
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+async fn fetch(url: &str, headers: &std::collections::HashMap<String, String>, from: u64, to: Option<u64>) -> Result<reqwest::Response, String> {
+    let client = reqwest::Client::builder().http1_only().connect_timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let mut req = client.get(url).header("Range", format!("bytes={from}-{}", to.map(|t| t.to_string()).unwrap_or_default()));
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    // Without the URL: it can hold a debrid key.
+    req.send().await.and_then(|r| r.error_for_status()).map_err(|e| e.without_url().to_string())
+}
+
+/// Download speed over `n` connections at once, each starting at a different part of the file.
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+async fn mbit(url: &str, headers: &std::collections::HashMap<String, String>, size: u64, n: u64) -> f64 {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    const CAP: u64 = 48 << 20;
+    let got = AtomicU64::new(0);
+    let started = std::time::Instant::now();
+    let all = futures_util::future::join_all((0..n).map(|i| {
+        let got = &got;
+        async move {
+            let Ok(mut r) = fetch(url, headers, size / n * i, None).await else { return };
+            while let Ok(Some(chunk)) = r.chunk().await {
+                if got.fetch_add(chunk.len() as u64, Relaxed) > CAP {
+                    return;
+                }
+            }
+        }
+    }));
+    let _ = crate::net::timeout(std::time::Duration::from_secs(6), all).await;
+    got.load(Relaxed) as f64 * 8. / 1e6 / started.elapsed().as_secs_f64()
+}
+
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => { $crate::debug::write(format_args!($($arg)*)) };

@@ -170,6 +170,10 @@ impl Component for Detail {
                         #[cfg(not(target_os = "emscripten"))]
                         let (mut p, ended) = {
                         let (url, headers, to_app) = (req.url.clone(), req.headers.clone(), to_app.clone());
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            *crate::debug::LAST_STREAM.lock().unwrap() = Some((url.clone(), headers.clone()));
+                        }
                         // The player hands its mpv over from its thread; the video is drawn here.
                         let (to_ui, mut mpv_rx) = tokio::sync::mpsc::unbounded_channel();
                         spawn_in_window({
