@@ -126,6 +126,7 @@ impl Component for Player {
         // Settings > Skip intros automatically: each intro is skipped once as it starts; seeking back
         // into one plays it.
         let auto = use_hook(|| ctx.store.get::<bool>(&ctx.profile, "settings", "auto_skip_intro").ok().flatten().unwrap_or(false));
+        let offer_smaller = use_hook(|| ctx.store.get::<bool>(&ctx.profile, "settings", "offer_smaller").ok().flatten().unwrap_or(true));
         use_side_effect({
             let ctx = ctx.clone();
             let mut skipped = use_state(Vec::<f64>::new);
@@ -228,7 +229,7 @@ impl Component for Player {
                     .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
             // Watch Together plays one stream for everyone, so it never offers another.
-            .maybe(status.slow && !party && (status.buffering || o > 0.01), |el| el.child(smaller_card(&ctx, phone, &safe)))
+            .maybe(status.slow && offer_smaller && !party && (status.buffering || o > 0.01), |el| el.child(smaller_card(&ctx, phone, &safe)))
             .maybe_child(current_intro(&status, &np).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
             .maybe_child(next_in(&status, auto).filter(|_| np.has_next).map(|left| next_card(&ctx, left, phone, &safe)))
             // Watch Together: a button that brings the chat panel back.

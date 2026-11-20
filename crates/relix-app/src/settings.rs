@@ -53,6 +53,24 @@ impl Component for Settings {
             .into_element()
         };
 
+        let mut tab = use_state(|| 0u8);
+        let features = *tab.read() == 1;
+        let tab_pill = |which: u8, name: &'static str| {
+            let on = *tab.read() == which;
+            Focusable {
+                radius: 6.,
+                ..Focusable::new(
+                    rect()
+                        .padding(Gaps::new(8., 18., 8., 18.))
+                        .corner_radius(6.)
+                        .maybe(on, |el| el.background((255, 255, 255)))
+                        .child(label().text(name).font_size(14.).font_weight(FontWeight::BOLD).color(if on { (0, 0, 0) } else { theme().muted })),
+                    move |()| tab.set(which),
+                )
+            }
+            .into_element()
+        };
+
         page.wrap(
             ScrollView::new_controlled(page.controller).scroll_with_arrows(false).drag_scrolling(false).child(
                 rect()
@@ -60,6 +78,21 @@ impl Component for Settings {
                     .padding(Gaps::new(crate::theme::top(), crate::theme::side(), 48., crate::theme::side()))
                     .spacing(12.)
                     .child(label().text("Settings").font_size(32.).font_weight(FontWeight::BOLD))
+                    .child(
+                        rect()
+                            .horizontal()
+                            .padding(Gaps::new_all(3.))
+                            .spacing(3.)
+                            .corner_radius(8.)
+                            .background(theme().raised)
+                            .child(tab_pill(0, "General"))
+                            .child(tab_pill(1, "Features")),
+                    )
+                    .maybe(features, |el| {
+                        el.child(privacy("auto_skip_intro", false, "Skip intros and credits automatically", "Jumps past intros, and starts the next episode 10 seconds into the credits, when the video marks them. Off: Skip Intro and Next Episode buttons show instead."))
+                            .child(privacy("offer_smaller", true, "Offer a smaller version on slow connections", "When a stream stalls 3 times, the player shows a button that continues in a smaller version sized to your connection's speed. Not in Watch Together."))
+                    })
+                    .maybe(!features, |el| { el
                     .child(label().text("APPEARANCE").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(
                         rect()
@@ -136,8 +169,6 @@ impl Component for Settings {
                                 None => rect().into_element(),
                             }),
                     )
-                    .child(label().text("PLAYBACK").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
-                    .child(privacy("auto_skip_intro", false, "Skip intros and credits automatically", "Jumps past intros, and starts the next episode 10 seconds into the credits, when the video marks them. Off: Skip Intro and Next Episode buttons show instead."))
                     .child(label().text("FRIENDS").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
                     .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))
@@ -207,6 +238,7 @@ impl Component for Settings {
                                 .color(theme().muted)
                                 .margin(Gaps::new(24., 0., 0., 0.)),
                         )
+                    })
                     }),
             ),
         )

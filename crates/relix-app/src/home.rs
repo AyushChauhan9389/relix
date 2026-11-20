@@ -205,8 +205,6 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
                 .spacing(if compact { 12. } else { 24. })
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
-                .child(link(NavLink::Settings, "Settings", Route::Settings))
-                .child(link(NavLink::Account, "Account", Route::Account))
                 // Android apps are always full screen.
                 .maybe_child((!cfg!(target_os = "android")).then(|| fullscreen_button(ctx))),
         )
@@ -907,8 +905,72 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .child(item(NavLink::MyList, ICON_LIBRARY, "Library", Route::MyList))
         .child(item(NavLink::Friends, ICON_FRIENDS, "Friends", Route::Friends))
         .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
-        .child(item(NavLink::Settings, ICON_SETTINGS, "Settings", Route::Settings))
-        .child(item(NavLink::Account, ICON_ACCOUNT, "Account", Route::Account))
+}
+
+/// The profile button, bottom left in both desktop looks: a menu to the account and the settings.
+#[derive(PartialEq)]
+pub struct ProfileButton {
+    /// On the Account or Settings page.
+    pub active: bool,
+    /// In the Stremio look's sidebar, where it centres in the rail.
+    pub rail: bool,
+}
+
+impl Component for ProfileButton {
+    fn render(&self) -> impl IntoElement {
+        let mut open = use_state(|| false);
+        let edge = if self.rail { (SIDEBAR_W - 44.) / 2. } else { 24. };
+        let entry = move |icon: &'static str, text: &'static str, to: Route| Focusable {
+            radius: 8.,
+            grow: 1.,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(180.))
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(12.)
+                    .padding(Gaps::new(10., 14., 10., 14.))
+                    .corner_radius(8.)
+                    .child(SvgViewer::new(icon.as_bytes()).width(Size::px(20.)).height(Size::px(20.)).stroke((230, 230, 230)))
+                    .child(label().text(text).font_size(15.)),
+                move |()| {
+                    open.set(false);
+                    drop(RouterContext::get().push(to.clone()));
+                },
+            )
+        };
+        let bright = self.active || *open.read();
+        rect()
+            .position(Position::new_absolute().left(edge).bottom(if self.rail { 16. } else { 24. }))
+            .layer(Layer::OverlayLevel(2))
+            .spacing(8.)
+            .maybe(*open.read(), |el| {
+                el.child(
+                    rect()
+                        .padding(Gaps::new_all(6.))
+                        .corner_radius(12.)
+                        .background(theme().surface)
+                        .border(Border::new().fill(theme().border).width(1.))
+                        .child(entry(ICON_ACCOUNT, "Account", Route::Account))
+                        .child(entry(ICON_SETTINGS, "Settings", Route::Settings)),
+                )
+            })
+            .child(Focusable {
+                radius: 22.,
+                rail: self.rail,
+                ..Focusable::new(
+                    rect()
+                        .width(Size::px(44.))
+                        .height(Size::px(44.))
+                        .center()
+                        .corner_radius(22.)
+                        .background(if bright { theme().raised } else { theme().surface })
+                        .border(Border::new().fill(theme().border).width(1.))
+                        .child(SvgViewer::new(ICON_ACCOUNT.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke(if bright { (255, 255, 255) } else { (200, 200, 200) })),
+                    move |()| open.toggle(),
+                )
+            })
+    }
 }
 
 /// The phone layout's top bar: logo, Series and Movies, and Account.
