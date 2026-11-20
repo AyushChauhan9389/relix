@@ -207,6 +207,15 @@ impl Component for Settings {
                                     crate::addons::open_in_browser(&crate::data_dir().to_string_lossy())
                                 }))
                             })
+                            // There the logs go out through the share sheet: a chat, an email, notes.
+                            .maybe(*debug_on.read() && cfg!(target_os = "android"), |el| {
+                                el.child(Focusable::new(button("Share logs", theme().raised, (255, 255, 255)), |()| {
+                                    #[cfg(target_os = "android")]
+                                    if let Err(e) = crate::android_share(&debug::logs_text()) {
+                                        crate::log!("sharing logs: {e}");
+                                    }
+                                }))
+                            })
                             .child(Switch::new(WritableSetter::new(debug_on.into_readable(), move |on| {
                                 debug::set(on);
                                 debug_on.set(on);

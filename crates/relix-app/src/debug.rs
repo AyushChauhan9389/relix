@@ -139,6 +139,41 @@ async fn mbit(url: &str, headers: &std::collections::HashMap<String, String>, si
     got.load(Relaxed) as f64 * 8. / 1e6 / started.elapsed().as_secs_f64()
 }
 
+/// The ends of crash.log, debug.log and mpv.log as one text, for sharing where the data folder
+/// can't be opened (Android). Links keep only their site: mpv logs stream links, which hold debrid keys.
+#[cfg(target_os = "android")]
+pub fn logs_text() -> String {
+    let tail = |name: &str, max: usize| {
+        let text = std::fs::read(crate::data_dir().join(name)).map(|b| String::from_utf8_lossy(&b[b.len().saturating_sub(max)..]).into_owned()).unwrap_or_default();
+        format!("===== {name} =====\n{}\n", without_links(&text))
+    };
+    format!("Relix {} on {} {}\n{}{}{}", crate::update::version(), std::env::consts::OS, std::env::consts::ARCH, tail("crash.log", 20_000), tail("debug.log", 40_000), tail("mpv.log", 40_000))
+}
+
+/// `text` with every http(s) link cut down to its site.
+#[cfg(any(target_os = "android", test))]
+fn without_links(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("http") {
+        let (before, link) = rest.split_at(at);
+        out.push_str(before);
+        let Some(scheme) = ["https://", "http://"].into_iter().find(|s| link.starts_with(s)) else {
+            out.push_str("http");
+            rest = &link[4..];
+            continue;
+        };
+        let end = link.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>')).unwrap_or(link.len());
+        let site = link[scheme.len()..end].split(['/', '?', '#', '@']).next().unwrap_or("");
+        out.push_str(scheme);
+        out.push_str(site);
+        out.push_str(if scheme.len() + site.len() < end { "/…" } else { "" });
+        rest = &link[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => { $crate::debug::write(format_args!($($arg)*)) };
@@ -150,5 +185,11 @@ mod tests {
     fn host_keeps_only_the_site() {
         assert_eq!(super::host("https://torrentio.strem.fun/realdebrid=SECRETKEY/stream/x.json"), "torrentio.strem.fun");
         assert_eq!(super::host("not a url"), "?");
+    }
+
+    #[test]
+    fn shared_logs_keep_only_each_links_site() {
+        let log = "Opening https://tb.example.com/dl/SECRETKEY/film.mkv?token=abc now\nhttp status ok, see http://a.b";
+        assert_eq!(super::without_links(log), "Opening https://tb.example.com/… now\nhttp status ok, see http://a.b");
     }
 }

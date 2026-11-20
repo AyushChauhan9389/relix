@@ -209,6 +209,61 @@ pub fn android_install(_: &std::path::Path) -> Result<(), String> {
     Err("APKs install on Android only".into())
 }
 
+/// While a video plays the screen turns to landscape (either way up); after, it follows the device again.
+#[cfg(target_os = "android")]
+fn android_landscape(on: bool) {
+    use jni::objects::JObject;
+    use jni::{JValue, jni_sig, jni_str};
+    // ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE and _UNSPECIFIED.
+    let orientation = if on { 6 } else { -1 };
+    let Some(app) = ANDROID.get() else { return };
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut _) };
+    let set = vm.attach_current_thread(|env| {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as *mut _) };
+        let result = env.call_method(&activity, jni_str!("setRequestedOrientation"), jni_sig!("(I)V"), &[JValue::Int(orientation)]).map(drop);
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result
+    });
+    if let Err(e) = set {
+        crate::log!("orientation: {e}");
+    }
+}
+
+/// Android's share sheet with `text` (Settings > Debug mode > Share logs: the data folder is private there).
+#[cfg(target_os = "android")]
+pub fn android_share(text: &str) -> Result<(), jni::errors::Error> {
+    use jni::objects::JObject;
+    use jni::{JValue, jni_sig, jni_str};
+    let Some(app) = ANDROID.get() else { return Ok(()) };
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut _) };
+    vm.attach_current_thread(|env| {
+        let share = |env: &mut jni::Env| -> Result<(), jni::errors::Error> {
+            let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as *mut _) };
+            let (action, kind, extra, text) = (env.new_string("android.intent.action.SEND")?, env.new_string("text/plain")?, env.new_string("android.intent.extra.TEXT")?, env.new_string(text)?);
+            let intent = env.new_object(jni_str!("android/content/Intent"), jni_sig!("(Ljava/lang/String;)V"), &[JValue::Object(&action)])?;
+            env.call_method(&intent, jni_str!("setType"), jni_sig!("(Ljava/lang/String;)Landroid/content/Intent;"), &[JValue::Object(&kind)])?;
+            env.call_method(&intent, jni_str!("putExtra"), jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;"), &[JValue::Object(&extra), JValue::Object(&text)])?;
+            let chooser = env
+                .call_static_method(
+                    jni_str!("android/content/Intent"),
+                    jni_str!("createChooser"),
+                    jni_sig!("(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;"),
+                    &[JValue::Object(&intent), JValue::Object(&JObject::null())],
+                )?
+                .l()?;
+            env.call_method(&activity, jni_str!("startActivity"), jni_sig!("(Landroid/content/Intent;)V"), &[JValue::Object(&chooser)])?;
+            Ok(())
+        };
+        let result = share(env);
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result
+    })
+}
+
 /// Opens `url` in whatever app views it (the browser, YouTube for trailers).
 #[cfg(target_os = "android")]
 fn android_view(url: &str) -> Result<(), jni::errors::Error> {
@@ -1072,6 +1127,11 @@ impl Component for Shell {
                     }
                 });
             }
+        });
+        #[cfg(target_os = "android")]
+        use_side_effect({
+            let player = ctx.player;
+            move || android_landscape(player.read().is_some())
         });
         // Android tells a NativeActivity nothing when its bars move (rotation, a cutout), so this checks.
         #[cfg(target_os = "android")]
