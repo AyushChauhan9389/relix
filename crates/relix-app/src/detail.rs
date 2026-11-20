@@ -9,6 +9,7 @@ use relix_proto::addon::{
 use serde::{Deserialize, Serialize};
 use crate::net::Tasks as JoinSet;
 
+const NO_SMALLER: &str = "No smaller version of this stream was found. Try a lower-quality one below.";
 const DEAD: &str = "This stream didn't play: the link is dead or the format isn't supported. Try another one.";
 
 use crate::focus::{Focusable, use_page_scroller, use_scroller};
@@ -230,6 +231,14 @@ impl Component for Detail {
 
                         if ended == Some(Ended::Failed) {
                             return play_error.set(Some(DEAD.into()));
+                        }
+                        if let Some(Ended::TooSlow(speed)) = ended {
+                            let found = (streams_for.peek().as_deref() == Some(vid.as_str()))
+                                .then(|| smaller_stream(&streams.peek(), &req.url, p.duration, speed))
+                                .flatten();
+                            let Some(smaller) = found else { return play_error.set(Some(NO_SMALLER.into())) };
+                            req = smaller;
+                            continue;
                         }
                         // Closing the player during the credits still counts as watched, but stays closed.
                         let Some(next_id) = next.filter(|_| finished && ended != Some(Ended::Stopped)) else { return };
@@ -1024,5 +1033,38 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, last_play
     match request {
         Some(request) => Focusable::new(card, move |()| play.call(request.clone())).into(),
         None => card.into(),
+    }
+}
+
+/// For "Switch to a smaller version": the largest stream, from any addon, smaller than the one
+/// playing and whose bitrate fits 3/4 of the measured download speed (bytes/s). Streams whose
+/// addon gives no file size are skipped.
+fn smaller_stream(groups: &[(usize, Vec<Stream>)], playing: &str, duration: f64, speed: f64) -> Option<Play> {
+    let size = |s: &Stream| s.behavior_hints.video_size.filter(|&b| b > 0.);
+    let all = || groups.iter().flat_map(|(i, ss)| ss.iter().map(move |s| (*i, s)));
+    let current = all().find(|(_, s)| s.playable_url() == Some(playing)).and_then(|(_, s)| size(s)).unwrap_or(f64::MAX);
+    // Speed unknown: half the size, or any smaller one when the playing one's size is unknown too.
+    let budget = if duration > 0. && speed > 0. { speed * 0.75 * duration } else { current * 0.5 };
+    let (_, i, s) = all().filter_map(|(i, s)| Some((size(s)?, i, s))).filter(|(b, _, _)| *b < current && *b <= budget).max_by(|a, b| a.0.total_cmp(&b.0))?;
+    Play::of(s, i)
+}
+
+#[cfg(test)]
+mod smaller_tests {
+    use super::*;
+
+    fn stream(url: &str, gb: f64) -> Stream {
+        serde_json::from_value(serde_json::json!({ "url": url, "behaviorHints": { "videoSize": gb * 1e9 } })).unwrap()
+    }
+
+    #[test]
+    fn picks_the_largest_that_fits_the_speed() {
+        // A 2 h film; 2 MB/s (16 Mbit/s) fits 10.8 GB at 3/4.
+        let groups = vec![(0, vec![stream("4k", 20.), stream("1080", 9.), stream("720", 3.)]), (1, vec![stream("remux", 12.)])];
+        let pick = |speed| smaller_stream(&groups, "4k", 7200., speed).map(|p| p.url);
+        assert_eq!(pick(2e6).as_deref(), Some("1080"));
+        assert_eq!(pick(0.5e6).as_deref(), None);
+        // Speed unknown: at most half of what's playing.
+        assert_eq!(pick(0.).as_deref(), Some("1080"));
     }
 }

@@ -440,6 +440,8 @@ pub struct StreamHints {
     pub binge_group: Option<String>,
     pub filename: Option<String>,
     pub proxy_headers: Option<ProxyHeaders>,
+    /// The file's size in bytes, when the addon says.
+    pub video_size: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]

@@ -227,6 +227,8 @@ impl Component for Player {
                     .child(bottom_bar(&ctx, &r, &status, np.has_next, menu, phone, &safe).opacity(o).layer(1))
                     .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
+            // Watch Together plays one stream for everyone, so it never offers another.
+            .maybe(status.slow && !party && (status.buffering || o > 0.01), |el| el.child(smaller_card(&ctx, phone, &safe)))
             .maybe_child(current_intro(&status, &np).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
             .maybe_child(next_in(&status, auto).filter(|_| np.has_next).map(|left| next_card(&ctx, left, phone, &safe)))
             // Watch Together: a button that brings the chat panel back.
@@ -720,6 +722,29 @@ fn skip_intro(ctx: &Ctx, r: &Rc<VideoRenderer>, end: f64, phone: bool, safe: &Ga
                 .background((255, 255, 255))
                 .child(label().text("Skip Intro").font_size(17.).font_weight(FontWeight::BOLD).color((0, 0, 0))),
             move |()| crate::social::seek_to(&ctx, r.mpv(), end),
+        )
+    }))
+}
+
+/// After repeated stalls: "Switch to a smaller version", top right under the title.
+fn smaller_card(ctx: &Ctx, phone: bool, safe: &Gaps) -> Rect {
+    let ctx = ctx.clone();
+    let (top, right) = if phone { (80. + safe.top(), 16. + safe.right()) } else { (100., 40.) };
+    rect().position(Position::new_absolute().top(top).right(right)).layer(2).child(FadeIn::image(crate::focus::Focusable {
+        radius: 10.,
+        ..crate::focus::Focusable::new(
+            rect()
+                .spacing(2.)
+                .padding(Gaps::new(12., 18., 12., 18.))
+                .corner_radius(10.)
+                .background((255, 255, 255))
+                .child(label().text("Switch to a smaller version").font_size(16.).font_weight(FontWeight::BOLD).color((0, 0, 0)))
+                .child(label().text("This stream is faster than your connection").font_size(13.).color((70, 70, 70))),
+            move |()| {
+                if let Some(p) = ctx.player.peek().as_ref() {
+                    let _ = p.send(ToPlayer::Smaller);
+                }
+            },
         )
     }))
 }

@@ -25,6 +25,8 @@ pub enum Ended {
     NextRequested,
     /// mpv couldn't open or decode the stream (dead link, unsupported format).
     Failed,
+    /// "Switch to a smaller version": the download speed it measured while stalled, in bytes/s (0 unknown).
+    TooSlow(f64),
 }
 
 /// What the app sends a running player.
@@ -33,6 +35,8 @@ pub enum ToPlayer {
     Subtitles(Vec<[String; 4]>),
     Stop,
     Next,
+    /// "Switch to a smaller version".
+    Smaller,
 }
 
 /// What the controls show around the video.
@@ -111,6 +115,8 @@ pub struct Status {
     /// Where the end credits start, from the chapters: Next Episode shows from there, and
     /// stopping past it counts as finished.
     pub credits: Option<f64>,
+    /// Stalled 3 times since it started: the controls offer a smaller version.
+    pub slow: bool,
 }
 
 impl Default for Status {
@@ -131,6 +137,7 @@ impl Default for Status {
             seeking: false,
             intros: vec![],
             credits: None,
+            slow: false,
         }
     }
 }
@@ -333,6 +340,7 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
         ("frame-drop-count", Format::Int64),
         ("chapter-list/count", Format::Int64),
         ("hwdec-current", Format::String),
+        ("cache-speed", Format::Int64),
     ]
     .into_iter()
     .enumerate()
@@ -352,6 +360,8 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
     let mut want_sub = prefs.sub_lang.clone().filter(|l| l != "off");
     let mut drops = DropWatch::new();
     let mut retried = false;
+    // Stalls after the first seconds, and the download speed sampled while stalled (bytes/s).
+    let (mut stalls, mut speed_sum, mut speed_n) = (0, 0., 0);
     const SUB_PACE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut sub_pace = std::time::Instant::now() - SUB_PACE;
     loop {
@@ -360,6 +370,11 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 ToPlayer::Subtitles(subs) => pending.extend(subs),
                 ToPlayer::Stop => return Ok((progress(&status), Some(Ended::Stopped))),
                 ToPlayer::Next => return Ok((progress(&status), Some(Ended::NextRequested))),
+                ToPlayer::Smaller => {
+                    let speed = if speed_n > 0 { speed_sum / speed_n as f64 } else { 0. };
+                    crate::log!("player: switching to a smaller version ({:.1} Mbit/s measured)", speed * 8. / 1e6);
+                    return Ok((progress(&status), Some(Ended::TooSlow(speed))));
+                }
             }
         }
         if status.loaded {
@@ -407,6 +422,10 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                     if v != status.buffering {
                         crate::log!("player: {}", if v { "buffering" } else { "buffered" });
                     }
+                    if v && !status.buffering && status.loaded && !status.seeking && opened.elapsed().as_secs() > 10 {
+                        stalls += 1;
+                        status.slow = stalls >= 3;
+                    }
                     status.buffering = v;
                 }
                 (10, PropertyData::Flag(v)) => {
@@ -418,6 +437,10 @@ fn run(mpv: &Mpv, url: &str, prefs: &Prefs, inbox: &Receiver<ToPlayer>, send: &i
                 // Set once the decoder opens (after the seek, on a resume): which one mpv picked.
                 (13, PropertyData::Str(v)) => {
                     crate::log!("player: decoding {}", if v.is_empty() || v == "no" { "on the CPU".to_owned() } else { format!("on the GPU ({v})") });
+                }
+                (14, PropertyData::Int64(n)) if status.buffering && n > 0 => {
+                    speed_sum += n as f64;
+                    speed_n += 1;
                 }
                 (12, PropertyData::Int64(n)) => (status.intros, status.credits) = chapter_marks(mpv, n, status.duration),
                 (11, PropertyData::Int64(n)) => {
