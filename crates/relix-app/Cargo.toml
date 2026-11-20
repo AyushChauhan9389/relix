@@ -44,6 +44,8 @@ freya-testing = "=0.5.2"
 jni = "0.22.4"
 # Android has no system root store reqwest can read without a Java helper, so HTTPS uses these roots.
 webpki-root-certs = "1.0.11"
+# Those roots as a PEM file for mpv (player.rs); already in the tree through reqwest.
+base64 = "0.22.1"
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 
 # libmpv's bundled bindings are for 64-bit; 32-bit ARM (older Android TVs) generates its own.

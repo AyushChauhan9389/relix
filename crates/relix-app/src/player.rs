@@ -218,6 +218,26 @@ pub fn android_init(vm: *mut std::ffi::c_void) {
     crate::log!("player: av_jni_set_java_vm not found, decoding in software");
 }
 
+/// Mozilla's certificate roots (the ones Relix's own requests use on Android) as a PEM file for mpv.
+#[cfg(target_os = "android")]
+fn android_roots() -> std::io::Result<std::path::PathBuf> {
+    use base64::Engine;
+    let path = crate::data_dir().join("roots.pem");
+    let mut pem = String::new();
+    for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        pem.push_str("-----BEGIN CERTIFICATE-----\n");
+        // 64 to a line: PEM readers refuse long ones.
+        for line in base64::engine::general_purpose::STANDARD.encode(cert).as_bytes().chunks(64) {
+            pem.push_str(std::str::from_utf8(line).unwrap_or_default());
+            pem.push('\n');
+        }
+        pem.push_str("-----END CERTIFICATE-----\n");
+    }
+    // Written each time: an update may bring new roots, and it's a fifth of a megabyte.
+    std::fs::write(&path, pem)?;
+    Ok(path)
+}
+
 #[cfg(not(target_os = "emscripten"))]
 /// Plays `url` from `start` seconds and blocks until playback stops or the file ends.
 ///
@@ -253,6 +273,22 @@ pub fn play(
                 "auto-safe"
             },
         )?;
+        // Relix never plays through youtube-dl; left on, mpv hands every link that fails to open
+        // (debrid key included) to a yt-dlp it looks for on the device.
+        if let Err(e) = init.set_option("ytdl", "no") {
+            crate::log!("mpv option ytdl: {e}");
+        }
+        // Android has no certificate file mpv's downloader can read, so every https stream failed
+        // its check: it gets the roots that ship inside Relix.
+        #[cfg(target_os = "android")]
+        match android_roots() {
+            Ok(path) => {
+                if let Err(e) = init.set_option("tls-ca-file", path.to_string_lossy().as_ref()) {
+                    crate::log!("mpv option tls-ca-file: {e}");
+                }
+            }
+            Err(e) => crate::log!("player: certificate roots: {e}"),
+        }
         // mpv's default read-ahead (~200 MB) is a fifth of a small TV's memory.
         if cfg!(target_os = "android") {
             init.set_option("demuxer-max-bytes", "64MiB")?;
