@@ -357,7 +357,9 @@ fn run(config: LaunchConfig) {
         );
     // Debug mode: the FPS / frame-time overlay (Ctrl+Shift+P hides it). Debug builds get it from Freya.
     #[cfg(not(debug_assertions))]
-    let config = if debug::enabled() { config.with_plugin(freya::metrics::MetricsPlugin::default().with_visible_performance(true)) } else { config };
+    // Not on Android: with no keyboard to hide it, it covers a phone's screen, and people turned
+    // Debug mode off to be rid of it just when the logs were needed.
+    let config = if debug::enabled() && !cfg!(target_os = "android") { config.with_plugin(freya::metrics::MetricsPlugin::default().with_visible_performance(true)) } else { config };
     launch(config)
 }
 

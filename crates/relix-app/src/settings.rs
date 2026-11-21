@@ -194,8 +194,9 @@ impl Component for Settings {
                                     .child(
                                         label()
                                             .text(format!(
-                                                "Logs what Relix and the player do to debug.log and mpv.log in {}. The performance overlay (Ctrl+Shift+P) appears after a restart.",
-                                                crate::data_dir().display()
+                                                "Logs what Relix and the player do to debug.log and mpv.log in {}.{}",
+                                                crate::data_dir().display(),
+                                                if cfg!(target_os = "android") { "" } else { " The performance overlay (Ctrl+Shift+P) appears after a restart." }
                                             ))
                                             .font_size(13.)
                                             .color(theme().muted),

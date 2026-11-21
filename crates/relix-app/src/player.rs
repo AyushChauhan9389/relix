@@ -264,11 +264,13 @@ pub fn play(
     #[cfg(windows)]
     crate::bundled::wait();
     let mpv = Arc::new(Mpv::with_initializer(|init| {
-        // Android: MediaCodec, copied back so it draws through the same GL path (video.rs).
+        // Android: MediaCodec handing its frames to the GPU as they are (mpv's aimagereader), then
+        // the copied-back kind if that can't start. Copying first garbled 10-bit video on a
+        // Snapdragon phone (Adreno 810), and costs a full frame copy at 4K.
         init.set_option(
             "hwdec",
             if cfg!(target_os = "android") {
-                "mediacodec-copy"
+                "mediacodec,mediacodec-copy"
             } else {
                 "auto-safe"
             },
