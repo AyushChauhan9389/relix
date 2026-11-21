@@ -95,6 +95,8 @@ impl Component for Detail {
                 // midway and leave the player screen up.
                 spawn_in_window(async move {
                     let mut playing = ctx.player;
+                    let mut session = ctx.play_session;
+                    session.set(1);
                     // Requests from the player's controls that Relix handles (fullscreen, Esc).
                     let (to_app, mut from_player) = tokio::sync::mpsc::unbounded_channel();
                     spawn_in_window({
@@ -261,6 +263,12 @@ impl Component for Detail {
                     let mut now = ctx.now_playing;
                     now.set(None);
                     starting.set(false);
+                    // A phone turns back to portrait now; the page keeps its layout key until it has.
+                    session.set(2);
+                    crate::net::sleep(std::time::Duration::from_millis(1500)).await;
+                    if *session.peek() == 2 {
+                        session.set(0);
+                    }
                 });
             }
         });

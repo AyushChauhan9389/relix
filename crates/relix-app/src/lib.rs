@@ -522,6 +522,9 @@ pub struct Ctx {
     /// each new video frame.
     pub now_playing: State<Option<NowPlaying>>,
     pub player_status: State<player::Status>,
+    /// A title page's playback task: 0 none, 1 running (from Play until the player closes, next
+    /// episodes included), 2 just ended. The page isn't remounted meanwhile ([`layout_key`]).
+    pub play_session: State<u8>,
     /// Gain on top of mpv's 100% volume (player_ui::set_volume), 1 when not boosted.
     pub volume_boost: State<f64>,
     pub video_frame: State<u64>,
@@ -772,6 +775,7 @@ fn app() -> impl IntoElement {
     let player = use_state(|| None);
     let now_playing = use_state(|| None);
     let player_status = use_state(player::Status::default);
+    let play_session = use_state(|| 0u8);
     let volume_boost = use_state(|| 1.);
     let video_frame = use_state(|| 0);
     let player_active = use_state(std::time::Instant::now);
@@ -802,6 +806,7 @@ fn app() -> impl IntoElement {
         player,
         now_playing,
         player_status,
+        play_session,
         volume_boost,
         video_frame,
         player_active,
@@ -1017,6 +1022,16 @@ fn update_banner(ready: &update::Ready) -> Rect {
 #[derive(PartialEq)]
 struct Shell;
 
+/// The part of a page's key that remounts it when the look or layout changes. While a title plays
+/// (`session` not 0) it stays as it was: the page's playback task (detail.rs) writes to the page's
+/// state, which a remount drops, and Android turns the screen for the video and back after it.
+fn layout_key(held: &mut String, now: String, session: u8) -> String {
+    if session == 0 || held.is_empty() {
+        *held = now;
+    }
+    held.clone()
+}
+
 /// What a key does: F11 fullscreen, arrows move focus, Esc backs out; while video plays they go
 /// to the player. Gamepads (gamepad.rs) send the same keys.
 fn handle_key(ctx: &Ctx, registry: &Registry, key: &Key) {
@@ -1130,8 +1145,9 @@ impl Component for Shell {
         });
         #[cfg(target_os = "android")]
         use_side_effect({
-            let player = ctx.player;
-            move || android_landscape(player.read().is_some())
+            let (player, session) = (ctx.player, ctx.play_session);
+            // Through a next-episode lookup too, when no player is up for a moment.
+            move || android_landscape(player.read().is_some() || *session.read() == 1)
         });
         // Android tells a NativeActivity nothing when its bars move (rotation, a cutout), so this checks.
         #[cfg(target_os = "android")]
@@ -1180,7 +1196,9 @@ impl Component for Shell {
         // pages when the look or layout changes, so they redraw in the new colours and sizes.
         // Turning a phone remounts too: pages size some things (the hero) by the window's height.
         let sideways = phone && size.width > size.height;
-        let page = motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{look:?}-{phone}-{sideways}"));
+        let held = use_hook(|| Rc::new(std::cell::RefCell::new(String::new())));
+        let layout = layout_key(&mut held.borrow_mut(), format!("{look:?}-{phone}-{sideways}"), *ctx.play_session.read());
+        let page = motion::FadeIn::page(Outlet::<Route>::new()).key(format!("{route}-{layout}"));
         let body = if phone {
             // Inside the system bars: the page with its top bar over it, then the tabs.
             rect()
@@ -1268,5 +1286,21 @@ pub struct NowPlaying {
 impl PartialEq for NowPlaying {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.video, &other.video)
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    #[test]
+    fn a_playing_title_keeps_its_pages_layout_key() {
+        let mut held = String::new();
+        let mut key = |now: &str, session| super::layout_key(&mut held, now.to_owned(), session);
+        assert_eq!(key("portrait", 0), "portrait");
+        // Play turns the phone, the player closes, the phone turns back: no remount throughout.
+        assert_eq!(key("landscape", 1), "portrait");
+        assert_eq!(key("landscape", 2), "portrait");
+        assert_eq!(key("portrait", 0), "portrait");
+        // Turned by hand with nothing playing: the page follows.
+        assert_eq!(key("landscape", 0), "landscape");
     }
 }
