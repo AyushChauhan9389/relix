@@ -23,6 +23,8 @@ const CREDITS_WAIT: f64 = 10.;
 const SPEEDS: [f64; 6] = [0.5, 0.75, 1., 1.25, 1.5, 2.];
 /// The volume goes up to 150% (set_volume).
 pub const MAX_VOLUME: f64 = 150.;
+/// Two presses this close are a double click (desktop: fullscreen) or double tap (phones: skip 10 s).
+const DOUBLE_TAP: Duration = Duration::from_millis(300);
 
 /// Sets the volume, 0-150%. mpv's own volume covers 0-100; above that a gain filter boosts it with a
 /// limiter right after, so loud scenes don't crackle (mpv applies its volume after the filters, so
@@ -65,7 +67,8 @@ pub enum Menu {
 /// controls re-render only when the player's state changes (a few times a second).
 struct VideoView {
     renderer: Rc<VideoRenderer>,
-    on_press: EventHandler<()>,
+    /// With the press's x in the window, when a pointer or finger made it.
+    on_press: EventHandler<Option<f64>>,
 }
 
 impl PartialEq for VideoView {
@@ -78,7 +81,13 @@ impl Component for VideoView {
     fn render(&self) -> impl IntoElement {
         let frame = *use_consume::<Ctx>().video_frame.read();
         let on_press = self.on_press.clone();
-        video(self.renderer.clone(), frame).width(Size::fill()).height(Size::fill()).on_press(move |_| on_press.call(()))
+        video(self.renderer.clone(), frame).width(Size::fill()).height(Size::fill()).on_press(move |e: Event<PressEventData>| {
+            on_press.call(match &*e {
+                PressEventData::Mouse(m) => Some(m.global_location.x),
+                PressEventData::Touch(t) => Some(t.global_location.x),
+                _ => None,
+            })
+        })
     }
 }
 
@@ -108,6 +117,21 @@ impl Component for Player {
         let mut menu = ctx.player_menu;
         let mut visible = use_state(|| true);
         let mut last_click = use_state(|| None::<Instant>);
+        // Phones: the lock button hides every control but Unlock, so a hand on the screen does nothing.
+        let mut locked = use_state(|| false);
+        // The mouse pointer goes with the controls and comes back with them (and when the player closes).
+        #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+        {
+            use_side_effect(move || {
+                let show = *visible.read();
+                Platform::get().with_window(Platform::window_id(), move |w| w.set_cursor_visible(show));
+            });
+            use_drop(move || {
+                if Platform::get().try_window(window).is_some() {
+                    Platform::get().with_window(window.into(), |w| w.set_cursor_visible(true));
+                }
+            });
+        }
         // Checks a few times a second whether the controls should fade out.
         use_hook({
             let status = ctx.player_status;
@@ -177,6 +201,7 @@ impl Component for Player {
         };
 
         let with_panel = party && chat_open;
+        let is_locked = *locked.read();
         let player = rect()
             .width(if with_panel { Size::flex(1.) } else { Size::fill() })
             .height(Size::fill())
@@ -189,9 +214,19 @@ impl Component for Player {
                 // On phones a tap shows or hides the controls instead, as phone players do.
                 on_press: EventHandler::new({
                     let (r, ctx) = (r.clone(), ctx.clone());
-                    move |()| {
+                    move |x: Option<f64>| {
                         if phone {
                             menu.set(None);
+                            // A second tap soon after the first skips 10 seconds, back on the left half
+                            // and ahead on the right; more taps keep skipping. Not while locked.
+                            let again = last_click.peek().is_some_and(|t| t.elapsed() < DOUBLE_TAP);
+                            last_click.set(Some(Instant::now()));
+                            if let (true, false, Some(x)) = (again, *locked.peek(), x) {
+                                let width = Platform::get().current_window().root_size.peek().width as f64;
+                                crate::social::seek_by(&ctx, r.mpv(), if x < width / 2. { -10. } else { 10. });
+                                wake();
+                                return;
+                            }
                             let mut active = active;
                             if *visible.peek() {
                                 active.set(Instant::now() - HIDE_AFTER);
@@ -204,7 +239,7 @@ impl Component for Player {
                         let paused = ctx.player_status.peek().paused;
                         crate::social::set_paused(&ctx, r.mpv(), !paused);
                         menu.set(None);
-                        if last_click.peek().is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
+                        if last_click.peek().is_some_and(|t| t.elapsed() < DOUBLE_TAP) {
                             ctx.toggle_fullscreen();
                             last_click.set(None);
                         } else {
@@ -216,24 +251,42 @@ impl Component for Player {
             .maybe(!status.loaded, |el| el.child(Loading { logo: np.logo.clone(), background: np.background.clone(), title: np.title.clone() }.into_element()))
             // Stalled on the network or seeking past what's downloaded: never just a frozen frame.
             .maybe(status.loaded && (status.buffering || status.seeking), |el| el.child(layer_center().layer(1).child(spinner())))
-            .maybe(status.loaded && status.paused, |el| {
+            .maybe(status.loaded && status.paused && !is_locked, |el| {
                 el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
                     let (r, ctx) = (r.clone(), ctx.clone());
                     move |()| crate::social::set_paused(&ctx, r.mpv(), false)
                 })))
             })
-            .maybe(o > 0.01, |el| {
+            .maybe(is_locked && o > 0.01, |el| {
+                el.child(layer_center().layer(1).opacity(o).child(crate::focus::Focusable::new(
+                    rect().padding(Gaps::new(12., 24., 12., 24.)).corner_radius(999.).background((255, 255, 255)).child(label().text("Unlock").font_size(16.).font_weight(FontWeight::BOLD).color((0, 0, 0))),
+                    move |()| locked.set(false),
+                )))
+            })
+            .maybe(o > 0.01 && !is_locked, |el| {
                 // Own layers above the video: Freya doesn't order siblings on one layer.
                 el.child(top_bar(&ctx, &np.title, &np.episode, phone, &safe).opacity(o).layer(1))
                     .child(bottom_bar(&ctx, &r, &status, np.has_next, menu, phone, &safe).opacity(o).layer(1))
                     .maybe_child((*menu.read()).map(|m| menu_panel(&ctx, m, &r, &status, menu, phone, &safe).opacity(o).layer(2)))
             })
             // Watch Together plays one stream for everyone, so it never offers another.
-            .maybe(status.slow && offer_smaller && !party && (status.buffering || o > 0.01), |el| el.child(smaller_card(&ctx, phone, &safe)))
-            .maybe_child(current_intro(&status, &np).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
-            .maybe_child(next_in(&status, auto).filter(|_| np.has_next).map(|left| next_card(&ctx, left, phone, &safe)))
+            // On phones, top left under the back arrow: no touch does anything until Unlock.
+            .maybe(phone && o > 0.01 && !is_locked, |el| {
+                el.child(
+                    rect().position(Position::new_absolute().top(60. + safe.top()).left(16. + safe.left())).opacity(o).layer(2).child(crate::focus::Focusable::new(
+                        rect().padding(Gaps::new(8., 16., 8., 16.)).corner_radius(999.).background((0, 0, 0, 0.6)).child(label().text("Lock").font_size(15.).font_weight(FontWeight::BOLD)),
+                        move |()| {
+                            menu.set(None);
+                            locked.set(true);
+                        },
+                    )),
+                )
+            })
+            .maybe(status.slow && offer_smaller && !party && !is_locked && (status.buffering || o > 0.01), |el| el.child(smaller_card(&ctx, phone, &safe)))
+            .maybe_child(current_intro(&status, &np).filter(|_| !is_locked).map(|end| skip_intro(&ctx, &r, end, phone, &safe)))
+            .maybe_child(next_in(&status, auto).filter(|_| np.has_next && !is_locked).map(|left| next_card(&ctx, left, phone, &safe)))
             // Watch Together: a button that brings the chat panel back.
-            .maybe(party && !chat_open && o > 0.01, |el| {
+            .maybe(party && !chat_open && o > 0.01 && !is_locked, |el| {
                 let mut open = ctx.social.chat_open;
                 el.child(
                     rect()
