@@ -275,6 +275,14 @@ pub fn play(
                 "auto-safe"
             },
         )?;
+        // Phones and TV boxes: mpv's lighter rendering from the start, as mpv's own Android app
+        // does. Its default (high-quality scaling in several passes) drops frames and drains the
+        // battery on their GPUs, for a difference a small screen doesn't show.
+        if cfg!(target_os = "android")
+            && let Err(e) = init.set_option("profile", "fast")
+        {
+            crate::log!("mpv option profile: {e}");
+        }
         // Relix never plays through youtube-dl; left on, mpv hands every link that fails to open
         // (debrid key included) to a yt-dlp it looks for on the device.
         if let Err(e) = init.set_option("ytdl", "no") {
