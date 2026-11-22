@@ -554,7 +554,7 @@ impl Component for PosterRow {
                                 Placeholder::new(Size::px(poster_w()), poster_h()).into()
                             } else {
                                 let m = &metas[item.index];
-                                poster(m, progress.get(item.index).copied(), new.contains(&m.id), Some(*row))
+                                poster(m, progress.get(item.index).copied(), new.contains(&m.id), Some(*row), poster_w())
                             };
                             rect().key(item.index).padding(Gaps::new(0., 8., 0., 0.)).child(card).into()
                         },
@@ -590,13 +590,14 @@ fn view_all(ctx: &Ctx, next: Option<&(Addon, ResourceRequest)>) -> Option<Elemen
     )
 }
 
-/// A poster that opens its title; `row` is the horizontal row it scrolls within, if any.
-pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row: Option<Scroller>) -> Element {
+/// A poster `w` wide that opens its title; `row` is the horizontal row it scrolls within, if any.
+pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row: Option<Scroller>, w: f32) -> Element {
+    let h = w * 1.5;
     // Shown when there's no poster or it fails to load.
-    let blank = |name: String| -> Element {
+    let blank = move |name: String| -> Element {
         rect()
-            .width(Size::px(poster_w()))
-            .height(Size::px(poster_h()))
+            .width(Size::px(w))
+            .height(Size::px(h))
             .padding(Gaps::new_all(8.))
             .background(theme().placeholder)
             .center()
@@ -610,10 +611,10 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
         .child(match meta.poster.as_deref().and_then(crate::image_url) {
             Some(url) => FadeIn::image(
                 ImageViewer::new(url)
-                    .width(Size::px(poster_w()))
-                    .height(Size::px(poster_h()))
+                    .width(Size::px(w))
+                    .height(Size::px(h))
                     // A soft grey card until the poster arrives.
-                    .loading_placeholder(Placeholder::new(Size::px(poster_w()), poster_h()))
+                    .loading_placeholder(Placeholder::new(Size::px(w), h))
                     .error_renderer(move |_| blank(name.clone())),
             )
             .into(),
@@ -637,16 +638,16 @@ pub fn poster(meta: &MetaPreview, progress: Option<f32>, new_episode: bool, row:
     };
     let has_strip = strip.is_some();
     let art = rect()
-        .width(Size::px(poster_w()))
+        .width(Size::px(w))
         .spacing(6.)
-        .child(rect().width(Size::px(poster_w())).height(Size::px(poster_h())).child(art))
+        .child(rect().width(Size::px(w)).height(Size::px(h)).child(art))
         .maybe(has_strip, |el| el.child(rect().width(Size::fill()).height(Size::px(STRIP_H)).main_align(Alignment::Center).child(strip.unwrap())));
     let card = Focusable { row, radius: theme().radius, grow: 1.08, ..Focusable::new(art, open_title(meta)) };
     if !theme().sidebar {
         return card.into();
     }
     rect()
-        .width(Size::px(poster_w()))
+        .width(Size::px(w))
         .spacing(8.)
         .child(card)
         .child(label().text(meta.name.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis))
@@ -699,15 +700,17 @@ pub fn poster_grid(
     const GAP: f32 = 8.;
     let header_h = use_state(|| 200f32);
     let cols = ((page.width() + GAP) / (poster_w() + GAP)).floor().max(1.) as usize;
+    // Phones: the posters widen to share the whole row, leaving no empty strip at the side.
+    let w = if phone() { ((page.width() - GAP * (cols as f32 - 1.)) / cols as f32).floor().max(poster_w()) } else { poster_w() };
     let titled = theme().sidebar;
     // A fixed row height (the Stremio look adds a title line), so the list knows where rows sit.
-    let row_h = poster_h() + if titled { 30. } else { 0. } + STRIP_H + 6. + 16.;
+    let row_h = w * 1.5 + if titled { 30. } else { 0. } + STRIP_H + 6. + 16.;
     let rows = if placeholders { 2 } else { metas.len().div_ceil(cols) };
     let len = 1 + rows + usize::from(footer.is_some());
     page.wrap(
         VirtualScrollView::new_with_data_controlled(
-            (GridHeader(header), metas, new, placeholders, footer, cols, rows),
-            move |item, (header, metas, new, placeholders, footer, cols, rows)| {
+            (GridHeader(header), metas, new, placeholders, footer, cols, rows, w),
+            move |item, (header, metas, new, placeholders, footer, cols, rows, w)| {
                 if item.index == 0 {
                     let mut measured = header_h;
                     return rect()
@@ -731,9 +734,9 @@ pub fn poster_grid(
                         .into();
                 }
                 let cells: Vec<Element> = if *placeholders {
-                    (0..*cols).map(|_| Placeholder::new(Size::px(poster_w()), poster_h()).into_element()).collect()
+                    (0..*cols).map(|_| Placeholder::new(Size::px(*w), w * 1.5).into_element()).collect()
                 } else {
-                    metas.iter().skip(item_index * cols).take(*cols).map(|m| poster(m, None, new.contains(&m.id), None)).collect()
+                    metas.iter().skip(item_index * cols).take(*cols).map(|m| poster(m, None, new.contains(&m.id), None, *w)).collect()
                 };
                 rect().key(item.index).horizontal().spacing(GAP).height(Size::px(row_h)).children(cells).into()
             },
