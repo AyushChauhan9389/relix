@@ -145,6 +145,28 @@ struct Item {
     #[serde(default)]
     genre_ids: Vec<u32>,
     vote_average: Option<f64>,
+    original_language: Option<String>,
+}
+
+/// TMDB's genre id for animated titles, in both movies and series.
+const ANIMATION: u32 = 16;
+
+/// The animated titles TMDB's lists leave out (Settings > Features). Anime is animation made in
+/// Japanese; everything else animated is "animation".
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct Hide {
+    pub animation: bool,
+    pub anime: bool,
+}
+
+impl Item {
+    fn animated(&self) -> bool {
+        self.genre_ids.contains(&ANIMATION)
+    }
+
+    fn hidden(&self, hide: Hide) -> bool {
+        self.animated() && if self.original_language.as_deref() == Some("ja") { hide.anime } else { hide.animation }
+    }
 }
 
 #[derive(Deserialize)]
@@ -163,8 +185,9 @@ async fn get<T: serde::de::DeserializeOwned>(http: &crate::net::Client, url: Str
 
 /// One page of the filtered catalog, and whether there are more. Titles without an IMDb id are
 /// left out: addons can't find streams for them.
-pub async fn discover(http: &crate::net::Client, kind: &str, f: &Filter, page: u32) -> Result<(Vec<MetaPreview>, bool), String> {
-    let found: Page = get(http, discover_url(kind, f, page)).await?;
+pub async fn discover(http: &crate::net::Client, kind: &str, f: &Filter, page: u32, hide: Hide) -> Result<(Vec<MetaPreview>, bool), String> {
+    let mut found: Page = get(http, discover_url(kind, f, page)).await?;
+    found.results.retain(|i| !i.hidden(hide));
     // TMDB stops at page 500.
     let more = found.page < found.total_pages.min(500);
     Ok((with_imdb_ids(http, kind, found.results).await, more))
@@ -179,8 +202,9 @@ pub async fn search(http: &crate::net::Client, kind: &str, query: &str) -> Resul
 }
 
 /// What's trending on TMDB this week: a Home row.
-pub async fn trending(http: &crate::net::Client, kind: &str) -> Result<Vec<MetaPreview>, String> {
-    let found: Page = get(http, format!("{API}/trending/{}/week", if kind == "series" { "tv" } else { "movie" })).await?;
+pub async fn trending(http: &crate::net::Client, kind: &str, hide: Hide) -> Result<Vec<MetaPreview>, String> {
+    let mut found: Page = get(http, format!("{API}/trending/{}/week", if kind == "series" { "tv" } else { "movie" })).await?;
+    found.results.retain(|i| !i.hidden(hide));
     Ok(with_imdb_ids(http, kind, found.results).await)
 }
 
@@ -201,6 +225,8 @@ pub struct Seed {
 #[derive(Deserialize)]
 struct Found {
     id: u64,
+    #[serde(default)]
+    genre_ids: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -218,19 +244,23 @@ async fn find(http: &crate::net::Client, imdb: &str, kind: &str) -> Option<Found
 }
 
 /// TMDB's lists for one seed: what its viewers also liked (weighted double) and what's similar.
-async fn lists_for(http: &crate::net::Client, seed: &Seed) -> Vec<(i32, Vec<Item>)> {
+/// Animated titles come only from animated seeds: TMDB pads a superhero film's lists with cartoon
+/// spin-offs, which filled For You for people who had watched none.
+async fn lists_for(http: &crate::net::Client, seed: &Seed, hide: Hide) -> Vec<(i32, Vec<Item>)> {
     let Some(found) = find(http, &seed.imdb, &seed.kind).await else { return vec![] };
     let tmdb_kind = if seed.kind == "series" { "tv" } else { "movie" };
     let (recs, similar) = tokio::join!(
         get::<Page>(http, format!("{API}/{tmdb_kind}/{}/recommendations", found.id)),
         get::<Page>(http, format!("{API}/{tmdb_kind}/{}/similar", found.id)),
     );
-    [(2, recs), (1, similar)].into_iter().filter_map(|(w, page)| page.ok().map(|p| (w * seed.weight, p.results))).collect()
+    let from_animation = found.genre_ids.contains(&ANIMATION);
+    let wanted = move |items: Vec<Item>| items.into_iter().filter(|i| !i.hidden(hide) && (from_animation || !i.animated())).collect();
+    [(2, recs), (1, similar)].into_iter().filter_map(|(w, page)| page.ok().map(|p| (w * seed.weight, wanted(p.results)))).collect()
 }
 
 /// "More like this" and "Because you watched X": titles like one title, ranked.
-pub async fn more_like(http: &crate::net::Client, seed: &Seed) -> Result<Vec<MetaPreview>, String> {
-    let lists = lists_for(http, seed).await;
+pub async fn more_like(http: &crate::net::Client, seed: &Seed, hide: Hide) -> Result<Vec<MetaPreview>, String> {
+    let lists = lists_for(http, seed, hide).await;
     if lists.is_empty() {
         return Err("not on TMDB".into());
     }
@@ -240,11 +270,11 @@ pub async fn more_like(http: &crate::net::Client, seed: &Seed) -> Result<Vec<Met
 /// "For You": what viewers of several of the seeds (one type) also liked, ranked by how many
 /// seeds point to it, how high, its rating, and how much each seed says (item-based
 /// collaborative filtering: TMDB's recommendations do the learning). Turned-down seeds subtract.
-pub async fn for_you(http: &crate::net::Client, kind: &str, seeds: &[Seed]) -> Result<Vec<MetaPreview>, String> {
+pub async fn for_you(http: &crate::net::Client, kind: &str, seeds: &[Seed], hide: Hide) -> Result<Vec<MetaPreview>, String> {
     let mut set = JoinSet::new();
     for seed in seeds {
         let (http, seed) = (http.clone(), seed.clone());
-        set.spawn(async move { lists_for(&http, &seed).await });
+        set.spawn(async move { lists_for(&http, &seed, hide).await });
     }
     let mut lists = vec![];
     while let Some(Ok(more)) = set.join_next().await {
@@ -325,7 +355,7 @@ mod tests {
 
     #[test]
     fn titles_several_seeds_recommend_rank_first() {
-        let item = |id: u64| Item { id, title: id.to_string(), overview: None, poster_path: None, backdrop_path: None, release_date: None, genre_ids: vec![], vote_average: Some(7.) };
+        let item = |id: u64| Item { id, title: id.to_string(), overview: None, poster_path: None, backdrop_path: None, release_date: None, genre_ids: vec![], vote_average: Some(7.), original_language: None };
         // 7 is second on two lists; 1 tops just one.
         let lists = vec![(1, vec![item(1), item(7)]), (1, vec![item(2), item(7)])];
         assert_eq!(rank(lists).iter().map(|i| i.id).collect::<Vec<_>>(), [7, 1, 2]);
@@ -337,6 +367,16 @@ mod tests {
         assert_eq!(rank(vec![(1, vec![rated(5, 5.5), rated(6, 8.4)])])[0].id, 6);
         // "Not interested" pushes what it points to out.
         assert_eq!(rank(vec![(1, vec![item(8), item(9)]), (-2, vec![item(8)])]).iter().map(|i| i.id).collect::<Vec<_>>(), [9]);
+    }
+
+    #[test]
+    fn animation_and_anime_hide_separately() {
+        let item = |genre, lang: &str| Item { id: 1, title: String::new(), overview: None, poster_path: None, backdrop_path: None, release_date: None, genre_ids: vec![genre], vote_average: None, original_language: Some(lang.into()) };
+        let (cartoon, anime, film) = (item(ANIMATION, "en"), item(ANIMATION, "ja"), item(28, "ja"));
+        let hidden = |hide| [&cartoon, &anime, &film].map(|i| i.hidden(hide));
+        assert_eq!(hidden(Hide { animation: true, anime: false }), [true, false, false]);
+        assert_eq!(hidden(Hide { animation: false, anime: true }), [false, true, false]);
+        assert_eq!(hidden(Hide::default()), [false; 3]);
     }
 
     #[test]

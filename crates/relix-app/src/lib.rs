@@ -686,6 +686,12 @@ impl Ctx {
     }
 
     /// Asks the sync loop to run soon (no-op when signed out).
+    /// The animated titles this profile turned off (Settings > Features).
+    pub fn tmdb_hide(&self) -> tmdb::Hide {
+        let on = |key| self.store.get::<bool>(&self.profile, "settings", key).ok().flatten().unwrap_or(false);
+        tmdb::Hide { animation: on("hide_animation"), anime: on("hide_anime") }
+    }
+
     /// The viewer's playback preferences (a synced setting).
     pub fn player_prefs(&self) -> player::Prefs {
         self.store.get(&self.profile, "settings", "player").ok().flatten().unwrap_or_default()
@@ -860,6 +866,18 @@ async fn install_defaults(ctx: &Ctx) {
     ctx.save_addons(addons);
 }
 
+/// `a` and `b` as one list, an item of each in turn; what's left of the longer one follows.
+fn take_turns<T>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let (mut a, mut b) = (a.into_iter(), b.into_iter());
+    let mut out = vec![];
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return out,
+            (x, y) => out.extend(x.into_iter().chain(y)),
+        }
+    }
+}
+
 /// Rebuilds Home's rows: one per home catalog, in addon order, each filled as its catalog answers.
 pub async fn load_rows(mut ctx: Ctx) {
     // Runs overlap (addons change, sync, Try again); only the newest one touches the rows.
@@ -876,29 +894,39 @@ pub async fn load_rows(mut ctx: Ctx) {
         let taste = library::taste(&ctx.store, &ctx.profile);
         let (seen, hidden) = (std::sync::Arc::new(taste.seen), std::sync::Arc::new(taste.hidden));
         let keep = |out: &std::collections::HashSet<String>, metas: Vec<MetaPreview>| metas.into_iter().filter(|m| !out.contains(&m.id)).collect::<Vec<_>>();
-        for (kind, title) in [("movie", "For You · Movies"), ("series", "For You · Series")] {
+        let hide = ctx.tmdb_hide();
+        // One For You row, movies and series taking turns; a type joins once two of its titles were liked.
+        let picked = ["movie", "series"].map(|kind| {
             // shortcut: the 8 most recent titles of a type make the taste; weigh older ones in if it feels narrow.
             let liked: Vec<tmdb::Seed> = taste.seeds.iter().filter(|(s, _)| s.kind == kind).take(8).map(|(s, _)| s.clone()).collect();
-            if liked.len() < 2 {
-                continue;
-            }
-            let picked: Vec<tmdb::Seed> = liked.into_iter().chain(taste.avoid.iter().filter(|s| s.kind == kind).cloned()).collect();
-            let id = format!("tmdb/for-you/{kind}");
-            rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
+            let seeds: Vec<tmdb::Seed> = if liked.len() < 2 { vec![] } else { liked.into_iter().chain(taste.avoid.iter().filter(|s| s.kind == kind).cloned()).collect() };
+            (kind, seeds)
+        });
+        if picked.iter().any(|(_, seeds)| !seeds.is_empty()) {
+            let id = "tmdb/for-you".to_owned();
+            rows.push(Row { id: id.clone(), title: "For You".into(), metas: vec![], progress: vec![], loading: true, next: None });
             let (http, seen) = (ctx.http.clone(), seen.clone());
-            set.spawn(async move { (id, tmdb::for_you(&http, kind, &picked).await.map(|m| keep(&seen, m))) });
+            set.spawn(async move {
+                let [(_, movies), (_, series)] = &picked;
+                let (movies, series) = tokio::join!(tmdb::for_you(&http, "movie", movies, hide), tmdb::for_you(&http, "series", series, hide));
+                let found = match (movies, series) {
+                    (Err(e), Err(_)) => Err(e),
+                    (movies, series) => Ok(keep(&seen, take_turns(movies.unwrap_or_default(), series.unwrap_or_default()))),
+                };
+                (id, found)
+            });
         }
         for (seed, name) in taste.seeds.into_iter().take(2) {
             let id = format!("tmdb/because/{}", seed.imdb);
             rows.push(Row { id: id.clone(), title: format!("Because you watched {name}"), metas: vec![], progress: vec![], loading: true, next: None });
             let (http, seen) = (ctx.http.clone(), seen.clone());
-            set.spawn(async move { (id, tmdb::more_like(&http, &seed).await.map(|m| keep(&seen, m))) });
+            set.spawn(async move { (id, tmdb::more_like(&http, &seed, hide).await.map(|m| keep(&seen, m))) });
         }
         for (kind, title) in [("movie", "Trending Movies"), ("series", "Trending Series")] {
             let id = format!("tmdb/trending/{kind}");
             rows.push(Row { id: id.clone(), title: title.into(), metas: vec![], progress: vec![], loading: true, next: None });
             let (http, hidden) = (ctx.http.clone(), hidden.clone());
-            set.spawn(async move { (id, tmdb::trending(&http, kind).await.map(|m| keep(&hidden, m))) });
+            set.spawn(async move { (id, tmdb::trending(&http, kind, hide).await.map(|m| keep(&hidden, m))) });
         }
     }
     for addon in &addons {
@@ -1293,6 +1321,12 @@ impl PartialEq for NowPlaying {
 
 #[cfg(test)]
 mod layout_tests {
+    #[test]
+    fn for_you_takes_movies_and_series_in_turn() {
+        assert_eq!(super::take_turns(vec![1, 3, 5, 6], vec![2, 4]), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(super::take_turns(vec![], vec![7]), [7]);
+    }
+
     #[test]
     fn a_playing_title_keeps_its_pages_layout_key() {
         let mut held = String::new();

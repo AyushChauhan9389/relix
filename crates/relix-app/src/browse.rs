@@ -152,7 +152,7 @@ fn browse(kind_name: &String, start: usize) -> impl IntoElement + use<> {
                     let hidden: HashSet<String> = crate::library::not_interested(&ctx.store, &ctx.profile).into_iter().map(|m| m.id).collect();
                     loading.set(true);
                     spawn_in_scope(async move {
-                        let found = crate::tmdb::discover(&ctx.http, &kind, &f, page as u32).await;
+                        let found = crate::tmdb::discover(&ctx.http, &kind, &f, page as u32, ctx.tmdb_hide()).await;
                         if *generation.peek() != gen_now {
                             return;
                         }
@@ -509,7 +509,7 @@ impl Component for Similar {
             move || {
                 spawn(async move {
                     let hidden: HashSet<String> = crate::library::not_interested(&ctx.store, &ctx.profile).into_iter().map(|m| m.id).collect();
-                    match crate::tmdb::more_like(&ctx.http, &seed).await {
+                    match crate::tmdb::more_like(&ctx.http, &seed, ctx.tmdb_hide()).await {
                         Ok(found) => items.set(found.into_iter().filter(|m| m.id != seed.imdb && !hidden.contains(&m.id)).collect()),
                         Err(e) => {
                             crate::log!("more like this: {e}");

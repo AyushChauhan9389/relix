@@ -90,6 +90,8 @@ impl Component for Settings {
                     )
                     .maybe(features, |el| {
                         el.child(privacy("auto_skip_intro", false, "Skip intros and credits automatically", "Jumps past intros, and starts the next episode 10 seconds into the credits, when the video marks them. Off: Skip Intro and Next Episode buttons show instead."))
+                            .child(privacy("hide_animation", false, "Hide animation", "Leaves animated films and series (other than anime) out of For You, Because you watched, Trending and the Movies and Series pages. Search still finds them."))
+                            .child(privacy("hide_anime", false, "Hide anime", "Leaves Japanese animation out of the same places. Search still finds it."))
                             .child(privacy("offer_smaller", true, "Offer a smaller version on slow connections", "When a stream stalls 3 times, the player shows a button that continues in a smaller version sized to your connection's speed. Not in Watch Together."))
                     })
                     .maybe(!features, |el| { el
@@ -296,6 +298,10 @@ impl Component for Privacy {
                 }
                 on.set(value);
                 crate::social::send_presence(&ctx);
+                // Home's suggestions follow these two at once.
+                if key.starts_with("hide_") {
+                    spawn(crate::load_rows(ctx.clone()));
+                }
                 ctx.sync_soon();
             })))
     }
