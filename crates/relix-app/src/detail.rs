@@ -1125,7 +1125,8 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, download:
             ..Focusable::new(
                 rect()
                     .width(Size::px(48.))
-                    .height(Size::fill())
+                    // A set height: filling took the whole list's height, not the card's.
+                    .height(Size::px(48.))
                     .center()
                     .corner_radius(6.)
                     .background(theme().surface)
@@ -1136,7 +1137,7 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, download:
     });
     let card = Focusable { width: save.is_some().then(|| Size::flex(1.)), ..Focusable::new(card, move |()| play.call(request.clone())) };
     match save {
-        Some(save) => rect().width(Size::fill()).horizontal().content(Content::Flex).spacing(6.).child(card).child(save).into(),
+        Some(save) => rect().width(Size::fill()).horizontal().content(Content::Flex).cross_align(Alignment::Center).spacing(6.).child(card).child(save).into(),
         None => card.into(),
     }
 }
