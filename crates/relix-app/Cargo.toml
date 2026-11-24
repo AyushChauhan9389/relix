@@ -27,7 +27,7 @@ libmpv2 = { version = "6", default-features = false, features = ["render"] }
 # Only to pick its crypto provider at start (lib.rs tls_provider).
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "charset"] }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 # The web build: Freya draws into a WebGL canvas; tokio only for its runtime-free parts (channels).

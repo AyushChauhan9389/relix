@@ -15,6 +15,8 @@ mod drive_links;
 mod filter;
 #[macro_use]
 mod debug;
+mod downloads;
+mod downloads_page;
 #[cfg_attr(target_os = "emscripten", path = "web_off/gamepad.rs")]
 mod gamepad;
 mod focus;
@@ -60,6 +62,7 @@ use together::Friends;
 use focus::{Dir, Registry};
 use home::{Home, Row};
 use my_list::MyList;
+use downloads_page::Downloads;
 use search::Search;
 use settings::Settings;
 use store::Store;
@@ -546,6 +549,11 @@ pub struct Ctx {
     pub safe: State<Gaps>,
     /// Friends and Watch Together.
     pub social: social::Social,
+    /// This device's downloads (downloads.rs), and what wakes their queue.
+    pub downloads: State<Vec<downloads::Download>>,
+    pub downloads_wake: Arc<tokio::sync::Notify>,
+    /// A video a title page should play once it opens (the Downloads page's Play).
+    pub autoplay_video: State<Option<String>>,
 }
 
 impl Ctx {
@@ -825,6 +833,9 @@ fn app() -> impl IntoElement {
         update: use_state(|| None),
         safe: use_state(Gaps::default),
         social,
+        downloads: use_state(|| downloads::load(&store)),
+        downloads_wake: Arc::default(),
+        autoplay_video: use_state(|| None),
     });
 
     use_hook({
@@ -833,6 +844,10 @@ fn app() -> impl IntoElement {
             spawn(update::check(ctx.clone()));
             spawn(library::find_new_episodes(ctx.clone()));
             spawn(social::run(ctx.clone()));
+            #[cfg(not(target_os = "emscripten"))]
+            if downloads::supported() {
+                spawn(downloads::run(ctx.clone()));
+            }
             spawn(sync::run(ctx));
         }
     });
@@ -1022,6 +1037,8 @@ mod routes {
             Account,
             #[route("/my-list")]
             MyList,
+            #[route("/downloads")]
+            Downloads,
             #[route("/settings")]
             Settings,
             #[route("/friends")]

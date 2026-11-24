@@ -119,6 +119,16 @@ pub fn local_rows(store: &Store, profile: &str) -> Vec<Row> {
             next: None,
         });
     }
+    // Downloaded titles, each once (a series with several episodes down is one poster).
+    let mut downloaded: Vec<MetaPreview> = vec![];
+    for d in crate::downloads::load(store).into_iter().filter(|d| d.status == crate::downloads::Status::Done) {
+        if !downloaded.iter().any(|m| m.id == d.meta.id) {
+            downloaded.push(preview(&d.meta));
+        }
+    }
+    if !downloaded.is_empty() {
+        rows.push(Row { id: "local/downloads".into(), title: "Downloads".into(), metas: downloaded, progress: vec![], loading: false, next: None });
+    }
     if !list.is_empty() {
         rows.push(Row { id: "local/my-list".into(), title: "My List".into(), metas: list, progress: vec![], loading: false, next: None });
     }

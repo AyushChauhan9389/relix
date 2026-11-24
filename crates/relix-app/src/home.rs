@@ -135,7 +135,7 @@ pub fn active_link(route: &Route) -> Option<NavLink> {
         Route::Settings => Some(NavLink::Settings),
         Route::Account => Some(NavLink::Account),
         Route::Friends => Some(NavLink::Friends),
-        Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } | Route::Similar { .. } => None,
+        Route::Browse { .. } | Route::BrowseCatalog { .. } | Route::Detail { .. } | Route::Similar { .. } | Route::Downloads => None,
     }
 }
 
@@ -951,6 +951,7 @@ impl Component for ProfileButton {
             .background(theme().surface)
             .border(Border::new().fill(theme().border).width(1.))
             .child(entry(ICON_ACCOUNT, "Account", Route::Account))
+            .maybe(crate::downloads::supported(), |el| el.child(entry(crate::detail::ICON_DOWNLOAD, "Downloads", Route::Downloads)))
             .child(entry(ICON_SETTINGS, "Settings", Route::Settings));
         let button = Focusable {
             radius: size / 2.,

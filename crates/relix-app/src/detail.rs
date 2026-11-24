@@ -128,6 +128,11 @@ impl Component for Detail {
                     let (mut req, mut vid) = (first, first_vid);
                     async {
                     loop {
+                        // Downloaded: from the file, whichever stream was picked (and offline too).
+                        if let Some(d) = crate::downloads::done(&ctx, &vid) {
+                            req.url = d.file.to_string_lossy().into_owned();
+                            req.headers.clear();
+                        }
                         if let Some(addon) = ctx.all_addons().get(req.addon) {
                             let pref = PreferredStream { addon: addon.manifest.id.clone(), name: req.name.clone().unwrap_or_default() };
                             if let Err(e) = ctx.store.put(&ctx.profile, "settings", "preferred_stream", &pref) {
@@ -248,6 +253,10 @@ impl Component for Detail {
                             season.set(v.season);
                         }
                         video.set(Some(next_id.clone()));
+                        if crate::downloads::done(&ctx, &next_id).is_some() {
+                            vid = next_id;
+                            continue;
+                        }
                         let Some(group) = req.binge_group.clone() else { return };
                         // The finished player's screen goes while the next episode's stream is looked up.
                         playing.set(None);
@@ -270,6 +279,20 @@ impl Component for Detail {
                         session.set(0);
                     }
                 });
+            }
+        });
+
+        // Saves the picked stream of the shown video for watching offline.
+        let download = EventHandler::new({
+            let ctx = ctx.clone();
+            move |req: Play| {
+                let (Some(m), Some(vid)) = (meta.peek().clone(), video.peek().clone()) else { return };
+                let episode = m.videos.iter().find(|v| v.id == vid).map(episode_label).unwrap_or_default();
+                let addon = ctx.all_addons().get(req.addon).map(|a| a.manifest.id.clone()).unwrap_or_default();
+                crate::downloads::add(
+                    &ctx,
+                    crate::downloads::Request { meta: m, video: vid, episode, url: req.url, headers: req.headers, addon, name: req.name, filename: req.filename, binge_group: req.binge_group },
+                );
             }
         });
 
@@ -327,11 +350,26 @@ impl Component for Detail {
                 let (kind, id, ctx) = (kind.clone(), id.clone(), ctx.clone());
                 spawn(async move {
                     let req = ResourceRequest::new("meta", &kind, &id);
-                    // The first addon in list order that answers wins, like Stremio.
+                    // The first addon in list order that answers wins, like Stremio. Offline, a
+                    // downloaded title still opens, from the details saved with it.
+                    let mut answer = None;
                     for (_, url) in route(&addons, &req) {
                         if let Ok(r) = get::<MetaResponse>(ctx.http.clone(), url).await {
+                            answer = Some(r);
+                            break;
+                        }
+                    }
+                    if answer.is_none()
+                        && let Some(meta) = crate::downloads::meta_of(&ctx, &id)
+                    {
+                        answer = Some(MetaResponse { meta, cache: Default::default() });
+                    }
+                    if let Some(r) = answer {
+                        {
                             // Open on the season the user left off in (Resume opens the episode itself).
                             let resume = watch.peek().as_ref().and_then(|w| r.meta.videos.iter().find(|v| v.id == w.video_id).cloned());
+                            // The Downloads page's Play names the episode.
+                            let wanted = ctx.autoplay_video.peek().clone();
                             season.set(resume.clone().and_then(|v| v.season).or_else(|| seasons(&r.meta.videos).first().map(|(s, _)| *s)));
                             let first_episode = || seasons(&r.meta.videos).into_iter().find(|(n, _)| *n > 0).and_then(|(_, eps)| eps.first().map(|v| (*v).clone()));
                             if seasons(&r.meta.videos).is_empty() {
@@ -339,14 +377,15 @@ impl Component for Detail {
                                 if from_hero {
                                     autoplay.set(Some(id.clone()));
                                 }
-                            } else if from_hero && let Some(v) = resume.or_else(first_episode) {
+                            } else if from_hero && let Some(v) = wanted.as_ref().and_then(|w| r.meta.videos.iter().find(|v| v.id == *w).cloned()).or(resume).or_else(first_episode) {
                                 season.set(v.season);
                                 video.set(Some(v.id.clone()));
                                 autoplay.set(Some(v.id));
                             }
                             if from_hero {
-                                let mut title = ctx.autoplay_title;
+                                let (mut title, mut wanted) = (ctx.autoplay_title, ctx.autoplay_video);
                                 title.set(None);
+                                wanted.set(None);
                             }
                             meta.set(Some(r.meta));
                             return;
@@ -396,6 +435,12 @@ impl Component for Detail {
             let (ctx, play) = (ctx.clone(), play.clone());
             move || {
                 let Some(target) = autoplay.read().clone() else { return };
+                if let Some(d) = crate::downloads::done(&ctx, &target) {
+                    autoplay.set(None);
+                    let addon = ctx.all_addons().iter().position(|a| a.manifest.id == d.addon).unwrap_or(usize::MAX);
+                    play.call(Play { url: d.url, headers: d.headers, filename: d.filename, binge_group: d.binge_group, name: d.name, addon });
+                    return;
+                }
                 let (groups, done) = (streams.read().clone(), !*searching.read());
                 if streams_for.read().as_deref() != Some(target.as_str()) {
                     return;
@@ -539,10 +584,19 @@ impl Component for Detail {
                         .maybe_child(play_error.read().clone().map(|e| {
                             paragraph().width(Size::fill()).font_size(15.).color(crate::theme::ERROR).span(e)
                         }))
-                        .child(stream_panel(has_stream_addons, *searching.read(), groups, play, {
-                            let shown = video.read().clone();
-                            watch.read().as_ref().filter(|w| Some(&w.video_id) == shown.as_ref()).and_then(|w| w.stream_url.clone())
-                        })),
+                        .maybe_child(downloaded_note(&ctx, video.read().as_deref()))
+                        .child(stream_panel(
+                            has_stream_addons,
+                            *searching.read(),
+                            groups,
+                            play,
+                            // One download per video: the buttons go once it has one.
+                            (crate::downloads::supported() && !ctx.downloads.read().iter().any(|d| Some(&d.video) == video.read().as_ref())).then_some(download),
+                            {
+                                let shown = video.read().clone();
+                                watch.read().as_ref().filter(|w| Some(&w.video_id) == shown.as_ref()).and_then(|w| w.stream_url.clone())
+                            },
+                        )),
                 ))
                 .into()
         } else {
@@ -981,11 +1035,36 @@ async fn binge_stream(ctx: &Ctx, kind: &str, video_id: &str, prev_addon: usize, 
     Play::of(stream, addon)
 }
 
+/// Above the streams, once the shown video has a download: how it's going.
+fn downloaded_note(ctx: &Ctx, video: Option<&str>) -> Option<Rect> {
+    let d = ctx.downloads.read().iter().find(|d| Some(d.video.as_str()) == video).cloned()?;
+    use crate::downloads::Status;
+    let text = match &d.status {
+        Status::Done => "Downloaded. Play uses your download, online or off.".to_owned(),
+        Status::Failed(why) => format!("The download failed: {why}"),
+        Status::Paused => "Download paused. Resume it in Downloads.".to_owned(),
+        _ => match d.size {
+            Some(size) if size > 0 => format!("Downloading: {} of {}. Progress is in Downloads.", crate::downloads::size_text(d.done), crate::downloads::size_text(size)),
+            _ => "Waiting to download. Progress is in Downloads.".to_owned(),
+        },
+    };
+    Some(
+        rect()
+            .width(Size::fill())
+            .margin(Gaps::new(0., 0., 10., 0.))
+            .padding(Gaps::new(10., 14., 10., 14.))
+            .corner_radius(6.)
+            .background(theme().surface)
+            .child(paragraph().width(Size::fill()).font_size(14.).span(text)),
+    )
+}
+
 fn stream_panel(
     has_stream_addons: bool,
     searching: bool,
     groups: Vec<(usize, String, Vec<Stream>)>,
     play: EventHandler<Play>,
+    download: Option<EventHandler<Play>>,
     last_played: Option<String>,
 ) -> Rect {
     let panel = rect().width(Size::fill()).spacing(10.);
@@ -1007,14 +1086,14 @@ fn stream_panel(
             rect()
                 .spacing(6.)
                 .child(label().text(addon).font_size(14.).color(theme().muted))
-                .children(streams.into_iter().map(|s| stream_card(s, i, play.clone(), last_played.as_deref())))
+                .children(streams.into_iter().map(|s| stream_card(s, i, play.clone(), download.clone(), last_played.as_deref())))
                 .into_element()
         }))
         // Slower addons may still answer below what's shown.
         .maybe(searching, |el| el.child(busy("Asking more addons…")))
 }
 
-fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, last_played: Option<&str>) -> Element {
+fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, download: Option<EventHandler<Play>>, last_played: Option<&str>) -> Element {
     let request = Play::of(&stream, addon);
     let last = request.as_ref().is_some_and(|r| Some(r.url.as_str()) == last_played);
     let name = stream.name.clone().unwrap_or_default().replace('\n', " ");
@@ -1038,11 +1117,32 @@ fn stream_card(stream: Stream, addon: usize, play: EventHandler<Play>, last_play
         })
         .child(label().text(name).font_size(15.).font_weight(FontWeight::BOLD))
         .child(paragraph().font_size(13.).color(theme().muted).span(title));
-    match request {
-        Some(request) => Focusable::new(card, move |()| play.call(request.clone())).into(),
+    let Some(request) = request else { return card.into() };
+    let save = download.map(|download| {
+        let request = request.clone();
+        Focusable {
+            radius: 6.,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(48.))
+                    .height(Size::fill())
+                    .center()
+                    .corner_radius(6.)
+                    .background(theme().surface)
+                    .child(SvgViewer::new(ICON_DOWNLOAD.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke((220, 220, 220))),
+                move |()| download.call(request.clone()),
+            )
+        }
+    });
+    let card = Focusable { width: save.is_some().then(|| Size::flex(1.)), ..Focusable::new(card, move |()| play.call(request.clone())) };
+    match save {
+        Some(save) => rect().width(Size::fill()).horizontal().content(Content::Flex).spacing(6.).child(card).child(save).into(),
         None => card.into(),
     }
 }
+
+/// A down arrow into a tray: "Download".
+pub const ICON_DOWNLOAD: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>"#;
 
 /// For "Switch to a smaller version": the largest stream, from any addon, smaller than the one
 /// playing and whose bitrate fits 3/4 of the measured download speed (bytes/s). Streams whose

@@ -171,6 +171,7 @@ impl Component for Settings {
                                 None => rect().into_element(),
                             }),
                     )
+                    .maybe(crate::downloads::supported(), |el| el.child(DownloadFolder))
                     .child(label().text("FRIENDS").font_size(12.).font_weight(FontWeight::BOLD).color(theme().muted).margin(Gaps::new(16., 0., 0., 0.)))
                     .child(privacy("share_watching", true, "Show friends what I'm watching", "Friends see the title next to your name while you watch."))
                     .child(privacy("appear_offline", false, "Appear offline", "Friends see you as offline. You can still join parties."))
@@ -448,6 +449,59 @@ impl Component for UpdateChannel {
                     .background(theme().raised)
                     .child(option("Stable", "stable"))
                     .child(option("Nightly", "nightly")),
+            )
+    }
+}
+
+/// Where new downloads are saved (this device only).
+#[derive(PartialEq)]
+struct DownloadFolder;
+
+impl Component for DownloadFolder {
+    fn render(&self) -> impl IntoElement {
+        let ctx = use_consume::<Ctx>();
+        let text = use_state(|| crate::downloads::folder(&ctx.store).to_string_lossy().into_owned());
+        let saved = use_state(|| false);
+        let save = {
+            let ctx = ctx.clone();
+            move |value: String| {
+                let (mut text, mut saved) = (text, saved);
+                crate::downloads::set_folder(&ctx.store, &value);
+                text.set(crate::downloads::folder(&ctx.store).to_string_lossy().into_owned());
+                saved.set(true);
+            }
+        };
+        rect()
+            .width(Size::fill())
+            .max_width(Size::px(720.))
+            .padding(Gaps::new_all(18.))
+            .spacing(10.)
+            .corner_radius(theme().radius)
+            .background(theme().surface)
+            .child(label().text("Download folder").font_size(16.).font_weight(FontWeight::BOLD))
+            .child(
+                label()
+                    .text(if *saved.read() { "Saved. New downloads go here; earlier ones stay where they are." } else { "Where new downloads are saved on this computer. Empty: Videos/Relix in your home folder." })
+                    .font_size(13.)
+                    .color(theme().muted),
+            )
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .content(Content::Flex)
+                    .cross_align(Alignment::Center)
+                    .spacing(10.)
+                    .child(rect().width(Size::flex(1.)).child(crate::focus::Field(Input::new(text).width(Size::fill()).on_submit({
+                        let save = save.clone();
+                        move |value: String| save(value)
+                    }))))
+                    .child(Focusable::new(button("Save", theme().raised, (255, 255, 255)), move |()| save(text.read().clone())))
+                    .child(Focusable::new(button("Open", theme().raised, (255, 255, 255)), move |()| {
+                        let folder = crate::downloads::folder(&ctx.store);
+                        let _ = std::fs::create_dir_all(&folder);
+                        crate::addons::open_in_browser(&folder.to_string_lossy());
+                    })),
             )
     }
 }
