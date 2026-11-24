@@ -212,25 +212,24 @@ pub fn android_install(_: &std::path::Path) -> Result<(), String> {
     Err("APKs install on Android only".into())
 }
 
-/// While a video plays the screen turns to landscape (either way up); after, it follows the device again.
+/// While a video plays: landscape, full screen with the system bars hidden (MainActivity.setPlaying);
+/// after, the screen follows the device again and the bars come back.
 #[cfg(target_os = "android")]
-fn android_landscape(on: bool) {
+fn android_playing(on: bool) {
     use jni::objects::JObject;
     use jni::{JValue, jni_sig, jni_str};
-    // ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE and _UNSPECIFIED.
-    let orientation = if on { 6 } else { -1 };
     let Some(app) = ANDROID.get() else { return };
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut _) };
     let set = vm.attach_current_thread(|env| {
         let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as *mut _) };
-        let result = env.call_method(&activity, jni_str!("setRequestedOrientation"), jni_sig!("(I)V"), &[JValue::Int(orientation)]).map(drop);
+        let result = env.call_method(&activity, jni_str!("setPlaying"), jni_sig!("(Z)V"), &[JValue::Bool(on)]).map(drop);
         if result.is_err() {
             env.exception_clear();
         }
         result
     });
     if let Err(e) = set {
-        crate::log!("orientation: {e}");
+        crate::log!("full screen: {e}");
     }
 }
 
@@ -1194,7 +1193,7 @@ impl Component for Shell {
         use_side_effect({
             let (player, session) = (ctx.player, ctx.play_session);
             // Through a next-episode lookup too, when no player is up for a moment.
-            move || android_landscape(player.read().is_some() || *session.read() == 1)
+            move || android_playing(player.read().is_some() || *session.read() == 1)
         });
         // Android tells a NativeActivity nothing when its bars move (rotation, a cutout), so this checks.
         #[cfg(target_os = "android")]

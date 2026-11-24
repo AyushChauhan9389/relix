@@ -251,6 +251,14 @@ impl Component for Player {
             .maybe(!status.loaded, |el| el.child(Loading { logo: np.logo.clone(), background: np.background.clone(), title: np.title.clone() }.into_element()))
             // Stalled on the network or seeking past what's downloaded: never just a frozen frame.
             .maybe(status.loaded && (status.buffering || status.seeking), |el| el.child(layer_center().layer(1).child(spinner())))
+            // Phones: while the controls show, Pause in the middle too, as phone players have it (a tap
+            // on the video shows and hides the controls; it doesn't pause).
+            .maybe(phone && o > 0.01 && status.loaded && !status.paused && !status.buffering && !status.seeking && !is_locked, |el| {
+                el.child(layer_center().layer(1).opacity(o).child(icon_button(ICON_PAUSE, 64., true, None, {
+                    let (r, ctx) = (r.clone(), ctx.clone());
+                    move |()| crate::social::set_paused(&ctx, r.mpv(), true)
+                })))
+            })
             .maybe(status.loaded && status.paused && !is_locked, |el| {
                 el.child(layer_center().layer(1).child(icon_button(ICON_PLAY, 64., true, None, {
                     let (r, ctx) = (r.clone(), ctx.clone());
