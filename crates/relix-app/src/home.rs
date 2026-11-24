@@ -205,6 +205,7 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
                 .spacing(if compact { 12. } else { 24. })
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
+                .maybe(crate::downloads::supported(), |el| el.child(DownloadsButton { size: 38. }))
                 .child(ProfileButton { active: matches!(active, Some(NavLink::Account | NavLink::Settings)), rail: false })
                 // Android apps are always full screen.
                 .maybe_child((!cfg!(target_os = "android")).then(|| fullscreen_button(ctx))),
@@ -911,6 +912,48 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
 }
 
+/// Opens Downloads, and shows how they're going: the running one's percent, "!" when one failed.
+#[derive(PartialEq)]
+pub struct DownloadsButton {
+    pub size: f32,
+}
+
+impl Component for DownloadsButton {
+    fn render(&self) -> impl IntoElement {
+        use crate::downloads::Status;
+        let list = use_consume::<Ctx>().downloads.read().clone();
+        let size = self.size;
+        let on_page = RouterContext::get().current::<Route>() == Route::Downloads;
+        let running = list.iter().find(|d| d.status == Status::Running);
+        let failed = list.iter().any(|d| matches!(d.status, Status::Failed(_)));
+        let busy = running.is_some() || list.iter().any(|d| d.status == Status::Queued);
+        let text = match running.and_then(|d| Some((d.done, d.size.filter(|s| *s > 0)?))) {
+            Some((done, total)) => Some(format!("{:.0}%", (done as f64 / total as f64 * 100.).min(100.))),
+            None if failed => Some("!".to_owned()),
+            None => None,
+        };
+        let colour = if failed && running.is_none() { crate::theme::ERROR.into() } else if on_page || busy { Color::WHITE } else { Color::from((200, 200, 200)) };
+        Focusable {
+            radius: size / 2.,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(size))
+                    .height(Size::px(size))
+                    .center()
+                    .corner_radius(size / 2.)
+                    .background(if on_page { theme().raised } else { theme().surface })
+                    // The accent ring: something is downloading or waiting to.
+                    .border(Border::new().fill(if busy { theme().accent } else { theme().border }).width(if busy { 2. } else { 1. }))
+                    .child(match text {
+                        Some(text) => label().text(text).font_size(size * 0.3).font_weight(FontWeight::BOLD).color(colour).into_element(),
+                        None => SvgViewer::new(crate::detail::ICON_DOWNLOAD.as_bytes()).width(Size::px(size / 2.)).height(Size::px(size / 2.)).stroke(colour).into_element(),
+                    }),
+                |()| drop(RouterContext::get().push(Route::Downloads)),
+            )
+        }
+    }
+}
+
 /// The profile button and its menu to the account and the settings: at the right end of the
 /// Netflix look's top bar, opening downwards; at the foot of the Stremio look's sidebar, opening upwards.
 #[derive(PartialEq)]
@@ -951,7 +994,6 @@ impl Component for ProfileButton {
             .background(theme().surface)
             .border(Border::new().fill(theme().border).width(1.))
             .child(entry(ICON_ACCOUNT, "Account", Route::Account))
-            .maybe(crate::downloads::supported(), |el| el.child(entry(crate::detail::ICON_DOWNLOAD, "Downloads", Route::Downloads)))
             .child(entry(ICON_SETTINGS, "Settings", Route::Settings));
         let button = Focusable {
             radius: size / 2.,
@@ -979,6 +1021,7 @@ impl Component for ProfileButton {
             .layer(Layer::OverlayLevel(2))
             .spacing(8.)
             .maybe(*open.read(), |el| el.child(menu))
+            .maybe(crate::downloads::supported(), |el| el.child(DownloadsButton { size }))
             .child(button)
     }
 }

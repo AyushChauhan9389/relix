@@ -37,13 +37,65 @@ impl Component for Downloads {
                             .font_size(14.)
                             .color(theme().muted),
                     )
-                    .children(list.into_iter().map(|d| row(&ctx, d).into_element())),
+                    .children(by_title(list).into_iter().map(|group| match group.as_slice() {
+                        // A movie: one card. A series: its poster and name once, an episode a line.
+                        [d] if d.episode.is_empty() => row(&ctx, d.clone(), false).into_element(),
+                        _ => series(&ctx, group).into_element(),
+                    })),
             ),
         )
     }
 }
 
-fn row(ctx: &Ctx, d: Download) -> Rect {
+/// Downloads grouped by title, titles and episodes in the order they were added.
+fn by_title(list: Vec<Download>) -> Vec<Vec<Download>> {
+    let mut groups: Vec<Vec<Download>> = vec![];
+    for d in list {
+        match groups.iter_mut().find(|g| g[0].meta.id == d.meta.id) {
+            Some(group) => group.push(d),
+            None => groups.push(vec![d]),
+        }
+    }
+    groups
+}
+
+/// A series' card: poster, name and totals, then its episodes.
+fn series(ctx: &Ctx, episodes: Vec<Download>) -> Rect {
+    let first = &episodes[0];
+    let done = episodes.iter().filter(|d| d.status == Status::Done).count();
+    let bytes: u64 = episodes.iter().map(|d| if d.status == Status::Done { d.size.unwrap_or(d.done) } else { d.done }).sum();
+    let summary = format!("{} of {} {} downloaded · {}", done, episodes.len(), if episodes.len() == 1 { "episode" } else { "episodes" }, downloads::size_text(bytes));
+    let poster = first.meta.poster.as_deref().and_then(crate::image_url);
+    rect()
+        .width(Size::fill())
+        .max_width(Size::px(900.))
+        .padding(Gaps::new_all(12.))
+        .spacing(8.)
+        .corner_radius(theme().radius)
+        .background(theme().surface)
+        .child(
+            rect()
+                .width(Size::fill())
+                .horizontal()
+                .cross_align(Alignment::Center)
+                .spacing(16.)
+                .child(
+                    rect().width(Size::px(60.)).height(Size::px(90.)).corner_radius(6.).overflow(Overflow::Clip).background(theme().placeholder).maybe_child(
+                        poster.map(|url| ImageViewer::new(url).width(Size::px(60.)).height(Size::px(90.))),
+                    ),
+                )
+                .child(
+                    rect()
+                        .spacing(6.)
+                        .child(label().text(first.meta.name.clone()).font_size(17.).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis))
+                        .child(label().text(summary).font_size(13.).color(theme().muted)),
+                ),
+        )
+        .children(episodes.into_iter().map(|d| row(ctx, d, true).into_element()))
+}
+
+/// One download: a card of its own, or (`in_series`) a line in its series' card.
+fn row(ctx: &Ctx, d: Download, in_series: bool) -> Rect {
     let fraction = d.size.filter(|s| *s > 0).map(|s| (d.done as f32 / s as f32).clamp(0., 1.));
     let status = match &d.status {
         Status::Done => format!("Downloaded · {}", downloads::size_text(d.size.unwrap_or(d.done))),
@@ -84,24 +136,26 @@ fn row(ctx: &Ctx, d: Download) -> Rect {
     rect()
         .width(Size::fill())
         .max_width(Size::px(900.))
-        .padding(Gaps::new_all(12.))
+        .padding(if in_series { Gaps::new(8., 0., 0., 0.) } else { Gaps::new_all(12.) })
         .horizontal()
         .content(Content::Flex)
         .cross_align(Alignment::Center)
         .spacing(16.)
-        .corner_radius(theme().radius)
-        .background(theme().surface)
-        .child(
-            rect().width(Size::px(60.)).height(Size::px(90.)).corner_radius(6.).overflow(Overflow::Clip).background(theme().placeholder).maybe_child(
-                poster.map(|url| ImageViewer::new(url).width(Size::px(60.)).height(Size::px(90.))),
-            ),
-        )
+        .maybe(!in_series, |el| {
+            el.corner_radius(theme().radius).background(theme().surface).child(
+                rect().width(Size::px(60.)).height(Size::px(90.)).corner_radius(6.).overflow(Overflow::Clip).background(theme().placeholder).maybe_child(
+                    poster.map(|url| ImageViewer::new(url).width(Size::px(60.)).height(Size::px(90.))),
+                ),
+            )
+        })
+        // A line between episodes.
+        .maybe(in_series, |el| el.border(Border::new().fill(theme().border).width(BorderWidth { top: 1., right: 0., bottom: 0., left: 0. })))
         .child(
             rect()
                 .width(Size::flex(1.))
                 .spacing(6.)
-                .child(label().text(d.meta.name.clone()).font_size(17.).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis))
-                .maybe(!d.episode.is_empty(), |el| el.child(label().text(d.episode.clone()).font_size(14.).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
+                .maybe(!in_series, |el| el.child(label().text(d.meta.name.clone()).font_size(17.).font_weight(FontWeight::BOLD).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
+                .maybe(!d.episode.is_empty(), |el| el.child(label().text(d.episode.clone()).font_size(if in_series { 15. } else { 14. }).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
                 .child(paragraph().width(Size::fill()).font_size(13.).color(if matches!(d.status, Status::Failed(_)) { crate::theme::ERROR } else { theme().muted }).span(status))
                 .maybe(d.status != Status::Done && fraction.is_some(), |el| {
                     el.child(
