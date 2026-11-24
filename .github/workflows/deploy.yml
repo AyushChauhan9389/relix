@@ -41,5 +41,8 @@ jobs:
           printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519
+      # Before the build: a full disk fails it (nightlies' installers piled up once).
+      - name: Free space
+        run: bash packaging/server/cleanup.sh
       - name: Deploy
         run: bash packaging/server/deploy.sh
