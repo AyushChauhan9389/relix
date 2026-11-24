@@ -475,8 +475,40 @@ fn plain_name(name: &str) -> bool {
 /// Stores a release file or manifest in the update folder (the release workflow uploads here).
 async fn admin_upload(State(s): State<AppState>, headers: HeaderMap, Path(name): Path<String>, body: Bytes) -> Result<StatusCode, ApiError> {
     require_admin(&s, &headers)?;
+    // Each nightly uploads a few hundred MB, so earlier releases' files go first, or the disk fills.
+    if !name.ends_with(".json") {
+        let removed = prune_updates(&s.config.update_dir, std::time::Duration::from_secs(3600));
+        if !removed.is_empty() {
+            eprintln!("updates: removed {} old files ({})", removed.len(), removed.join(", "));
+        }
+    }
     store_file(&s.config.update_dir, &name, &body).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes the update files no manifest names, once older than `grace` (the release being uploaded
+/// right now isn't in a manifest yet: manifests go last). Returns the names removed.
+fn prune_updates(dir: &std::path::Path, grace: std::time::Duration) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let entries: Vec<_> = entries.flatten().collect();
+    let named: std::collections::HashSet<String> = entries
+        .iter()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        .filter_map(|e| serde_json::from_slice::<relix_proto::update::UpdateManifest>(&std::fs::read(e.path()).ok()?).ok())
+        .map(|m| m.file)
+        .collect();
+    let mut removed = vec![];
+    for e in entries {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().unwrap_or_default() > grace);
+        if name.ends_with(".json") || named.contains(&name) || !old || !e.path().is_file() {
+            continue;
+        }
+        if std::fs::remove_file(e.path()).is_ok() {
+            removed.push(name);
+        }
+    }
+    removed
 }
 
 /// Writes `name` into `dir`: aside, then renamed, so nobody downloads a half-written file.
@@ -645,4 +677,24 @@ async fn admin_remove(State(s): State<AppState>, headers: HeaderMap, Path(id): P
 async fn admin_addons_for_users(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Vec<Addon>> {
     account_of(&s, &headers)?;
     Ok(Json(load_admin_addons(&s.db.lock().unwrap())?.into_iter().map(|a| a.addon).collect()))
+}
+
+#[cfg(test)]
+mod prune_tests {
+    #[test]
+    fn only_files_no_manifest_names_go() {
+        let dir = std::env::temp_dir().join(format!("relix-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["Relix-1-windows.zip", "Relix-2-windows.zip", "Relix-1-android.apk"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        std::fs::write(dir.join("nightly-windows.json"), br#"{"version":"2","file":"Relix-2-windows.zip","signature":""}"#).unwrap();
+        // Everything is new: nothing goes yet (a release being uploaded isn't in a manifest).
+        assert!(super::prune_updates(&dir, std::time::Duration::from_secs(3600)).is_empty());
+        let mut removed = super::prune_updates(&dir, std::time::Duration::ZERO);
+        removed.sort();
+        assert_eq!(removed, ["Relix-1-android.apk", "Relix-1-windows.zip"]);
+        assert!(dir.join("Relix-2-windows.zip").exists() && dir.join("nightly-windows.json").exists());
+    }
 }
