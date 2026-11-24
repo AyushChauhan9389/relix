@@ -103,7 +103,7 @@ fn row(ctx: &Ctx, d: Download, in_series: bool) -> Rect {
             Some(size) => format!("Downloading · {} of {} · {:.0}%", downloads::size_text(d.done), downloads::size_text(size), fraction.unwrap_or(0.) * 100.),
             None => "Starting…".to_owned(),
         },
-        Status::Queued => "Waiting for the downloads before it".to_owned(),
+        Status::Queued => "Waiting its turn".to_owned(),
         Status::Paused => match d.size {
             Some(size) => format!("Paused · {} of {}", downloads::size_text(d.done), downloads::size_text(size)),
             None => "Paused".to_owned(),

@@ -1,4 +1,4 @@
-//! Offline downloads (Windows and Linux; Android next): a stream saved whole to a folder, resumed
+//! Offline downloads (Windows and Linux; Android next), a few at a time: a stream saved whole to a folder, resumed
 //! after a dropped connection, a restart or an expired debrid link, and played from there. The
 //! list lives on this device only (the store's meta table), never synced: files don't travel.
 
@@ -159,15 +159,13 @@ fn set_status(ctx: &Ctx, video: &str, status: Status) {
     save(ctx);
 }
 
-/// The running download's video id and its stop switch.
+/// The running downloads' stop switches, by video id.
 #[cfg(not(target_os = "emscripten"))]
-static RUNNING: std::sync::Mutex<Option<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> = std::sync::Mutex::new(None);
+static RUNNING: std::sync::Mutex<Vec<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> = std::sync::Mutex::new(Vec::new());
 
 fn stop_if_running(video: &str) {
     #[cfg(not(target_os = "emscripten"))]
-    if let Some((v, stop)) = RUNNING.lock().unwrap().as_ref()
-        && v == video
-    {
+    if let Some((_, stop)) = RUNNING.lock().unwrap().iter().find(|(v, _)| v == video) {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     #[cfg(target_os = "emscripten")]
@@ -204,26 +202,79 @@ pub fn size_text(bytes: u64) -> String {
     if gb >= 1. { format!("{gb:.1} GB") } else { format!("{:.0} MB", bytes as f64 / 1e6) }
 }
 
-/// Runs the queue for as long as Relix is open, one download at a time.
+/// The most downloads at once, however fast the connection.
+const MAX_AT_ONCE: usize = 4;
+
+/// How many downloads to run at once, decided again every few seconds from the total speed:
+/// one more is tried, and kept only if the total rose by a fifth (the connection had room);
+/// otherwise the count goes back and stays (`settled`) until the queue empties.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pace {
+    limit: usize,
+    /// The speed before the count was last raised (bytes/s), while that raise is on trial.
+    trial: Option<f64>,
+    settled: bool,
+}
+
+impl Pace {
+    const START: Pace = Pace { limit: 2, trial: None, settled: false };
+
+    fn next(self, speed: f64) -> Pace {
+        match self.trial {
+            Some(before) if speed > before * 1.2 => Pace { trial: None, ..self },
+            Some(_) => Pace { limit: self.limit - 1, trial: None, settled: true },
+            None if !self.settled && self.limit < MAX_AT_ONCE => Pace { limit: self.limit + 1, trial: Some(speed), ..self },
+            None => self,
+        }
+    }
+}
+
+/// Runs the queue for as long as Relix is open, a few downloads at a time ([`Pace`]).
 #[cfg(not(target_os = "emscripten"))]
 pub async fn run(ctx: Ctx) {
+    use freya::prelude::spawn;
     let mut list = ctx.downloads;
     // Running when Relix closed: they pick up where they stopped.
     for d in list.write().iter_mut().filter(|d| d.status == Status::Running) {
         d.status = Status::Queued;
     }
+    let mut pace = Pace::START;
+    let total = |list: &Vec<Download>| list.iter().filter(|d| d.status == Status::Running).map(|d| d.done).sum::<u64>();
     loop {
-        let next = list.peek().iter().find(|d| d.status == Status::Queued).cloned();
-        let Some(d) = next else {
+        let (running, queued) = {
+            let list = list.peek();
+            (list.iter().filter(|d| d.status == Status::Running).count(), list.iter().find(|d| d.status == Status::Queued).cloned())
+        };
+        if let (Some(d), true) = (queued.clone(), running < pace.limit) {
+            set_status(&ctx, &d.video, Status::Running);
+            let ctx = ctx.clone();
+            spawn(async move {
+                let outcome = transfer(&ctx, &d).await;
+                RUNNING.lock().unwrap().retain(|(v, _)| *v != d.video);
+                // Paused or removed meanwhile: that already says what it is now.
+                if ctx.downloads.peek().iter().any(|x| x.video == d.video && x.status == Status::Running) {
+                    set_status(&ctx, &d.video, outcome);
+                }
+                ctx.downloads_wake.notify_one();
+            });
+            continue;
+        }
+        if running == 0 {
+            pace = Pace::START;
             ctx.downloads_wake.notified().await;
             continue;
-        };
-        set_status(&ctx, &d.video, Status::Running);
-        let outcome = transfer(&ctx, &d).await;
-        *RUNNING.lock().unwrap() = None;
-        // Paused or removed meanwhile: that already says what it is now.
-        if list.peek().iter().any(|x| x.video == d.video && x.status == Status::Running) {
-            set_status(&ctx, &d.video, outcome);
+        }
+        // Full, or nothing waiting: until one ends or is added, or 8 seconds of speed are in.
+        let (before, started) = (total(&list.peek()), std::time::Instant::now());
+        let woken = crate::net::timeout(std::time::Duration::from_secs(8), ctx.downloads_wake.notified()).await.is_ok();
+        // Only a full, undisturbed stretch with more waiting says whether another would help.
+        if !woken && queued.is_some() && running == pace.limit {
+            let speed = total(&list.peek()).saturating_sub(before) as f64 / started.elapsed().as_secs_f64();
+            let next = pace.next(speed);
+            if next != pace {
+                crate::log!("download: {:.1} Mbit/s with {} at once; now {}", speed * 8. / 1e6, pace.limit, next.limit);
+            }
+            pace = next;
         }
     }
 }
@@ -244,7 +295,7 @@ async fn transfer(ctx: &Ctx, d: &Download) -> Status {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     let stop = Arc::new(AtomicBool::new(false));
-    *RUNNING.lock().unwrap() = Some((d.video.clone(), stop.clone()));
+    RUNNING.lock().unwrap().push((d.video.clone(), stop.clone()));
     if let Some(dir) = d.file.parent()
         && let Err(e) = std::fs::create_dir_all(dir)
     {
@@ -506,6 +557,25 @@ mod tests {
         let url = serve(body.clone(), false, None);
         assert!(get(&url, &part, 1234).is_ok());
         assert_eq!(std::fs::read(&part).unwrap(), body);
+    }
+
+    #[test]
+    fn more_at_once_only_while_the_total_speed_rises() {
+        let start = Pace::START;
+        // Two give 2 MB/s: a third is tried. It brings 3 MB/s: kept, and a fourth is tried.
+        let three = start.next(2e6);
+        assert_eq!((three.limit, three.trial), (3, Some(2e6)));
+        let kept = three.next(3e6);
+        assert_eq!((kept.limit, kept.trial, kept.settled), (3, None, false));
+        let four = kept.next(3e6);
+        assert_eq!(four.limit, 4);
+        // The fourth adds nothing (the line is full): back to three, for good.
+        let back = four.next(3.1e6);
+        assert_eq!((back.limit, back.settled), (3, true));
+        assert_eq!(back.next(3e6), back);
+        // Never past the most allowed.
+        let top = Pace { limit: MAX_AT_ONCE, trial: None, settled: false };
+        assert_eq!(top.next(9e9), top);
     }
 
     #[test]
