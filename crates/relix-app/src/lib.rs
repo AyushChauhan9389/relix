@@ -1269,8 +1269,9 @@ impl Component for Shell {
             .maybe(!playing && !phone, |el| {
                 el.child(if sidebar { home::sidebar(active) } else { home::nav(active, &ctx, size.width < 1000.) }.layer(Layer::OverlayLevel(2)))
             })
-            .maybe(!playing && !phone, |el| {
-                el.child(home::ProfileButton { active: matches!(active, Some(home::NavLink::Account | home::NavLink::Settings)), rail: sidebar })
+            // The Netflix look has it in its top bar (home::nav).
+            .maybe(!playing && !phone && sidebar, |el| {
+                el.child(home::ProfileButton { active: matches!(active, Some(home::NavLink::Account | home::NavLink::Settings)), rail: true })
             })
             .maybe_child(
                 update

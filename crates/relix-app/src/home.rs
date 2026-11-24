@@ -205,6 +205,7 @@ pub fn nav(active: Option<NavLink>, ctx: &Ctx, compact: bool) -> Rect {
                 .spacing(if compact { 12. } else { 24. })
                 .child(link(NavLink::Addons, "Addons", Route::Addons))
                 .child(link(NavLink::Search, "Search", Route::Search))
+                .child(ProfileButton { active: matches!(active, Some(NavLink::Account | NavLink::Settings)), rail: false })
                 // Android apps are always full screen.
                 .maybe_child((!cfg!(target_os = "android")).then(|| fullscreen_button(ctx))),
         )
@@ -910,19 +911,20 @@ pub fn sidebar(active: Option<NavLink>) -> Rect {
         .child(item(NavLink::Addons, ICON_ADDONS, "Addons", Route::Addons))
 }
 
-/// The profile button, bottom left in both desktop looks: a menu to the account and the settings.
+/// The profile button and its menu to the account and the settings: at the right end of the
+/// Netflix look's top bar, opening downwards; at the foot of the Stremio look's sidebar, opening upwards.
 #[derive(PartialEq)]
 pub struct ProfileButton {
     /// On the Account or Settings page.
     pub active: bool,
-    /// In the Stremio look's sidebar, where it centres in the rail.
+    /// In the Stremio look's sidebar; otherwise in the top bar.
     pub rail: bool,
 }
 
 impl Component for ProfileButton {
     fn render(&self) -> impl IntoElement {
         let mut open = use_state(|| false);
-        let edge = if self.rail { (SIDEBAR_W - 44.) / 2. } else { 24. };
+        let (rail, size) = (self.rail, if self.rail { 44. } else { 38. });
         let entry = move |icon: &'static str, text: &'static str, to: Route| Focusable {
             radius: 8.,
             grow: 1.,
@@ -943,36 +945,40 @@ impl Component for ProfileButton {
             )
         };
         let bright = self.active || *open.read();
+        let menu = rect()
+            .padding(Gaps::new_all(6.))
+            .corner_radius(12.)
+            .background(theme().surface)
+            .border(Border::new().fill(theme().border).width(1.))
+            .child(entry(ICON_ACCOUNT, "Account", Route::Account))
+            .child(entry(ICON_SETTINGS, "Settings", Route::Settings));
+        let button = Focusable {
+            radius: size / 2.,
+            rail,
+            ..Focusable::new(
+                rect()
+                    .width(Size::px(size))
+                    .height(Size::px(size))
+                    .center()
+                    .corner_radius(size / 2.)
+                    .background(if bright { theme().raised } else { theme().surface })
+                    .border(Border::new().fill(theme().border).width(1.))
+                    .child(SvgViewer::new(ICON_ACCOUNT.as_bytes()).width(Size::px(size / 2.)).height(Size::px(size / 2.)).stroke(if bright { (255, 255, 255) } else { (200, 200, 200) })),
+                move |()| open.toggle(),
+            )
+        };
+        if !rail {
+            // The menu hangs under the button, right edges lined up, over the page.
+            return rect()
+                .child(button)
+                .maybe(*open.read(), |el| el.child(rect().position(Position::new_absolute().top(size + 8.).right(0.)).layer(Layer::OverlayLevel(3)).child(menu)));
+        }
         rect()
-            .position(Position::new_absolute().left(edge).bottom(if self.rail { 16. } else { 24. }))
+            .position(Position::new_absolute().left((SIDEBAR_W - size) / 2.).bottom(16.))
             .layer(Layer::OverlayLevel(2))
             .spacing(8.)
-            .maybe(*open.read(), |el| {
-                el.child(
-                    rect()
-                        .padding(Gaps::new_all(6.))
-                        .corner_radius(12.)
-                        .background(theme().surface)
-                        .border(Border::new().fill(theme().border).width(1.))
-                        .child(entry(ICON_ACCOUNT, "Account", Route::Account))
-                        .child(entry(ICON_SETTINGS, "Settings", Route::Settings)),
-                )
-            })
-            .child(Focusable {
-                radius: 22.,
-                rail: self.rail,
-                ..Focusable::new(
-                    rect()
-                        .width(Size::px(44.))
-                        .height(Size::px(44.))
-                        .center()
-                        .corner_radius(22.)
-                        .background(if bright { theme().raised } else { theme().surface })
-                        .border(Border::new().fill(theme().border).width(1.))
-                        .child(SvgViewer::new(ICON_ACCOUNT.as_bytes()).width(Size::px(22.)).height(Size::px(22.)).stroke(if bright { (255, 255, 255) } else { (200, 200, 200) })),
-                    move |()| open.toggle(),
-                )
-            })
+            .maybe(*open.read(), |el| el.child(menu))
+            .child(button)
     }
 }
 
